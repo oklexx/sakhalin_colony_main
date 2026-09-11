@@ -4,8 +4,10 @@ import torch
 import torch.nn as nn
 from typing import List, Tuple, Optional
 
+from rl._nn_common import ActorCriticBase, orthogonal_init
 
-class ActorCritic(nn.Module):
+
+class ActorCritic(ActorCriticBase):
     """MLP actor-critic for discrete actions.
 
     Input:  [B, obs_size] float32
@@ -37,19 +39,13 @@ class ActorCritic(nn.Module):
 
         self._init_weights()
 
-    def _init_weights(self):
+    def _init_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=1.0)
-                nn.init.constant_(m.bias, 0.0)
+            orthogonal_init(m, gain=1.0)
 
-    def forward(
-        self, obs: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         h = self.trunk(obs)
-        logits = self.actor_head(h)
-        values = self.critic_head(h)
-        return logits, values
+        return self.actor_head(h), self.critic_head(h)
 
     def get_action_and_value(
         self,
@@ -57,22 +53,9 @@ class ActorCritic(nn.Module):
         action: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits, values = self.forward(obs)
-        dist = torch.distributions.Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_probs = dist.log_prob(action)
+        action, log_probs, _ = self._categorical_log_prob(logits, action)
         return action, log_probs, values.squeeze(-1)
 
     def get_value(self, obs: torch.Tensor) -> torch.Tensor:
         _, values = self.forward(obs)
         return values.squeeze(-1)
-
-    @property
-    def params(self) -> List[nn.Parameter]:
-        return [p for p in self.parameters() if p.requires_grad]
-
-    def state_dict_for_env(self) -> dict:
-        return {k: v.detach().cpu().clone() for k, v in self.state_dict().items()}
-
-    def load_state_dict_from_env(self, state: dict):
-        self.load_state_dict(state)

@@ -18,6 +18,7 @@ add_library(colony_cpp MODULE
     src/data.cpp
     src/earth.cpp
     src/game.cpp
+    src/rewards.cpp
     src/env.cpp
     src/bindings.cpp
 )

@@ -1,4 +1,5 @@
 #include "colony/env.h"
+#include "colony/rewards.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,66 +12,6 @@
 namespace colony {
 
 // (logging is done inline via step_log_ member in ColonyEnvCpp)
-
-// Proximity bonus: map building id → nearby land type that gives bonus.
-// Buildings consuming a resource benefit from being near that resource.
-static int proximity_land_for(const std::string& id) {
-    // Water consumers
-    if (id == "Farm" || id == "Garden" || id == "CowFarm" || id == "Hothouse"
-        || id == "Goldmine" || id == "Apiary" || id == "Puerperal")
-        return LT_WATER;
-    // Wood consumers
-    if (id == "Coalmine" || id == "CoalCut" || id == "HuntingLand"
-        || id == "Mushroom" || id == "BigFarm")
-        return LT_WOOD;
-    // Oil consumers
-    if (id == "Ironmine" || id == "Sawmill" || id == "BigSawmill"
-        || id == "PowerStation" || id == "WaterMill")
-        return LT_OIL;
-    // Iron consumers
-    if (id == "BigFarm")
-        return LT_IRON;
-    return LT_NONE;  // no proximity bonus
-}
-
-// Provider bonus: bonus for building a building that produces resources needed by idle buildings.
-// Returns bonus proportional to the number of idle buildings that would benefit.
-static double provider_bonus(const Game& g, const BaseData& d) {
-    // Count how many idle buildings would benefit from this building's production
-    int beneficiaries = 0;
-    for (const Base& b : g.bases) {
-        if (!b.need_sunduk) continue;  // skip non-idle buildings
-        // Check if this building produces any resource that the idle building needs
-        for (int r = 0; r < SUNDUK_SIZE; r++) {
-            if (d.profit[r] > 0 && b.data->consume[r] > 0) {
-                beneficiaries++;
-                break;  // count each building only once
-            }
-        }
-    }
-    // Bonus: 0.5 per beneficiary, capped at 3.0
-    return std::min(3.0, 0.5 * beneficiaries);
-}
-
-// Prerequisite bonus: bonus for building a building that is a prerequisite for other building types.
-// This encourages building infrastructure (like WaterChannel) even when there are no idle buildings yet.
-// Returns bonus proportional to the number of building types that depend on this building's production.
-static double prerequisite_bonus(const Game& g, const BaseData& d, const std::vector<const BaseData*>& all_build_data) {
-    // Count how many building types consume resources that this building produces
-    int dependents = 0;
-    for (const BaseData* other : all_build_data) {
-        if (other->id == d.id) continue;  // skip self
-        // Check if other building consumes any resource that this building produces
-        for (int r = 0; r < SUNDUK_SIZE; r++) {
-            if (d.profit[r] > 0 && other->consume[r] > 0) {
-                dependents++;
-                break;  // count each building type only once
-            }
-        }
-    }
-    // Bonus: 0.3 per dependent building type, capped at 2.0
-    return std::min(2.0, 0.3 * dependents);
-}
 
 namespace {
 
@@ -847,6 +788,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             }
             if (!is_road && cfg_.need_fill_bonus > 0.0) {
                 double nf = 0.0;
+                // 1) Idle-driven: здание голодает прямо сейчас (нужен ресурс, а на складе меньше чем consume)
                 for (int r = 0; r < SUNDUK_SIZE && nf == 0.0; r++) {
                     if (d->profit[r] <= 0 || extract_weight_[r] <= 0.0) continue;
                     for (const Base& bb : g.bases) {
@@ -854,6 +796,27 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                         if (bb.data->consume[r] > 0 && g.sunduk[r] < bb.data->consume[r]) {
                             nf = cfg_.need_fill_bonus * extract_weight_[r];
                             break;
+                        }
+                    }
+                }
+                // 2) Deficit-driven (новая логика п.6): если в колонии есть отрицательный баланс ресурса
+                // (потребление > производство), то постройка производителя этого ресурса тоже премируется,
+                // даже если пока нет простаивающих зданий — превентивно. Бонус вполовину меньше.
+                if (nf == 0.0) {
+                    // считаем баланс по каждому ресурсу (как в obs: sum profit - consume активных зданий)
+                    for (int r = 0; r < SUNDUK_SIZE && nf == 0.0; r++) {
+                        if (d->profit[r] <= 0 || extract_weight_[r] <= 0.0) continue;
+                        double balance = 0.0;
+                        for (const Base& bb : g.bases) {
+                            if (bb.build_days > 0) continue;
+                            if (!bb.data->season_works(g.season)) continue;
+                            balance += (double)bb.data->profit[r];
+                            balance -= (double)bb.data->consume[r];
+                        }
+                        // если баланс сильно отрицательный — рекомендуем производителя
+                        if (balance < -5.0) {
+                            double severity = std::min(2.0, std::max(0.5, -balance / 20.0));
+                            nf = cfg_.need_fill_bonus * extract_weight_[r] * 0.5 * severity;
                         }
                     }
                 }
