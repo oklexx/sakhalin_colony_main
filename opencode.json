@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "google/gemini-3.7-flash",
+  "small_model": "google/gemini-3.5-flash-lite",
+  "agent": {
+    "plan": {
+      "model": "google/gemini-3.8-flash",
+      "description": "High complexity: Architecture, complex refactoring, system debugging"
+    },
+    "build": {
+      "model": "google/gemini-3.5-flash",
+      "description": "Medium complexity: Feature implementation, unit tests, code review"
+    },
+    "explore": {
+      "model": "google/gemini-3.5-flash-lite",
+      "description": "Low complexity: Fast edits, parallel checks, text search"
+    }
+  }
+}

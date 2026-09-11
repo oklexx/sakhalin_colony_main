@@ -1,60 +1,24 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.pyd
-*.egg-info/
-dist/
+# Build directories
 build/
-*.egg
-
-# C++ build
-build/
-*.obj
-*.o
-*.lib
-*.exp
-*.pdb
-*.ilk
-*.sln
-*.slnx
+ALL_BUILD.vcxproj
+ZERO_CHECK.dir/
+ALL_BUILD.dir/
+Release/colony_cpp.pyd
 *.vcxproj
 *.vcxproj.filters
-*.tlog
-*.lastbuildstate
-*.FileListAbsolute.txt
-*.CppClean.log
-CMakeCache.txt
-CMakeFiles/
-
-# Binaries
-*.exe
-*.dll
-*.dylib
-
-# Logs
-*.log
-ai_debug_gui.log
-
-# Temp
-temp.txt
-FINAL_OUTPUT.txt
-QUICK_SUMMARY.txt
-REVIEW_SUMMARY.txt
-opencode.json
-opencode.jsonc
-opencode.jsonc.backup
-opencode.jsonc.bak
-
+# Python cache
+__pycache__/
+*.py[cod]
+*.class
 # IDE
-.vs/
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
-Thumbs.db
-Desktop.ini
+# OS files
 .DS_Store
+Thumbs.db
+# Logs and temp
+*.log
+*.tmp
+*.vcxproj
