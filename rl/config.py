@@ -199,6 +199,8 @@ class Config:
     seed: int = 42
     curriculum_stage: int = 0
     unlock_ids: str = ""
+    # Curriculum: фильтр ресурсов (comma-separated, e.g. "water,wood,coal,iron,oil"). Пусто = все ресурсы.
+    curriculum_resources: str = ""
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # PPO hyperparameters
@@ -296,6 +298,7 @@ class Config:
         d = {}
         for k in (
             "map_size", "difficulty", "n_envs", "seed", "curriculum_stage", "unlock_ids",
+            "curriculum_resources",
             "learning_rate", "n_steps", "batch_size", "n_epochs",
             "gamma", "gae_lambda", "clip_range", "ent_coef", "vf_coef", "max_grad_norm",
             "target_kl",
@@ -315,6 +318,8 @@ class Config:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Config":
         reward = d.pop("reward", None)
+        # copy so caller dict not mutated unexpectedly when 'reward' popped
+        d = dict(d)
         cfg = cls(
             map_size=d.get("map_size", 280),
             difficulty=d.get("difficulty", "normal"),
@@ -322,14 +327,15 @@ class Config:
             seed=d.get("seed", 42),
             curriculum_stage=d.get("curriculum_stage", 0),
             unlock_ids=d.get("unlock_ids", ""),
+            curriculum_resources=d.get("curriculum_resources", ""),
             learning_rate=d.get("learning_rate", 3e-4),
             n_steps=d.get("n_steps", 4096),
             batch_size=d.get("batch_size", 8192),
             n_epochs=d.get("n_epochs", 10),
-            gamma=d.get("gamma", 0.995),
+            gamma=d.get("gamma", 0.999),
             gae_lambda=d.get("gae_lambda", 0.98),
             clip_range=d.get("clip_range", 0.2),
-            ent_coef=d.get("ent_coef", 0.05),
+            ent_coef=d.get("ent_coef", 0.01),
             vf_coef=d.get("vf_coef", 0.5),
             max_grad_norm=d.get("max_grad_norm", 0.5),
             target_kl=d.get("target_kl", 0.02),
@@ -362,6 +368,10 @@ class Config:
         )
         if reward is not None:
             cfg.reward = RewardConfig.from_dict(reward)
+        # также поддержать вложенные ключи unlock_ids / curriculum_* внутри reward-словаря (совместимость)
+        for k in ("unlock_ids", "curriculum_resources", "curriculum_stage", "curriculum_schedule"):
+            if k in d and getattr(cfg, k, None) == "" and d[k] not in ("", None, []):
+                setattr(cfg, k, d[k])
         return cfg
 
     def load_from_file(self, path: str) -> "Config":

@@ -847,6 +847,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             }
             if (!is_road && cfg_.need_fill_bonus > 0.0) {
                 double nf = 0.0;
+                // 1) Idle-driven: здание голодает прямо сейчас (нужен ресурс, а на складе меньше чем consume)
                 for (int r = 0; r < SUNDUK_SIZE && nf == 0.0; r++) {
                     if (d->profit[r] <= 0 || extract_weight_[r] <= 0.0) continue;
                     for (const Base& bb : g.bases) {
@@ -854,6 +855,27 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                         if (bb.data->consume[r] > 0 && g.sunduk[r] < bb.data->consume[r]) {
                             nf = cfg_.need_fill_bonus * extract_weight_[r];
                             break;
+                        }
+                    }
+                }
+                // 2) Deficit-driven (новая логика п.6): если в колонии есть отрицательный баланс ресурса
+                // (потребление > производство), то постройка производителя этого ресурса тоже премируется,
+                // даже если пока нет простаивающих зданий — превентивно. Бонус вполовину меньше.
+                if (nf == 0.0) {
+                    // считаем баланс по каждому ресурсу (как в obs: sum profit - consume активных зданий)
+                    for (int r = 0; r < SUNDUK_SIZE && nf == 0.0; r++) {
+                        if (d->profit[r] <= 0 || extract_weight_[r] <= 0.0) continue;
+                        double balance = 0.0;
+                        for (const Base& bb : g.bases) {
+                            if (bb.build_days > 0) continue;
+                            if (!bb.data->season_works(g.season)) continue;
+                            balance += (double)bb.data->profit[r];
+                            balance -= (double)bb.data->consume[r];
+                        }
+                        // если баланс сильно отрицательный — рекомендуем производителя
+                        if (balance < -5.0) {
+                            double severity = std::min(2.0, std::max(0.5, -balance / 20.0));
+                            nf = cfg_.need_fill_bonus * extract_weight_[r] * 0.5 * severity;
                         }
                     }
                 }

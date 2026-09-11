@@ -79,8 +79,8 @@ struct RewardConfig {
     double debt_coeff = 0.1;          // v3 профиль (was 0.02 in v2) — ломает кредитный луп
     double home_overflow_penalty = 2.0;
     double housing_need_bonus = 3.0;
-    double food_need_bonus = 2.0;   // v3 профиль: 2.0
-    double water_need_bonus = 2.0;
+    double food_need_bonus = 0.8;   // v3 профиль: 0.8 (снижено чтобы не перевешивало buy_food_penalty)
+    double water_need_bonus = 0.8;  // v3 профиль: 0.8
     double buy_food_penalty = 3.0;  // - за BUY_FOOD: еда не нужна, покупка = слив денег
 };
 
