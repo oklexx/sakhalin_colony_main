@@ -1,4 +1,5 @@
 #include "colony/env.h"
+#include "colony/rewards.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,66 +12,6 @@
 namespace colony {
 
 // (logging is done inline via step_log_ member in ColonyEnvCpp)
-
-// Proximity bonus: map building id → nearby land type that gives bonus.
-// Buildings consuming a resource benefit from being near that resource.
-static int proximity_land_for(const std::string& id) {
-    // Water consumers
-    if (id == "Farm" || id == "Garden" || id == "CowFarm" || id == "Hothouse"
-        || id == "Goldmine" || id == "Apiary" || id == "Puerperal")
-        return LT_WATER;
-    // Wood consumers
-    if (id == "Coalmine" || id == "CoalCut" || id == "HuntingLand"
-        || id == "Mushroom" || id == "BigFarm")
-        return LT_WOOD;
-    // Oil consumers
-    if (id == "Ironmine" || id == "Sawmill" || id == "BigSawmill"
-        || id == "PowerStation" || id == "WaterMill")
-        return LT_OIL;
-    // Iron consumers
-    if (id == "BigFarm")
-        return LT_IRON;
-    return LT_NONE;  // no proximity bonus
-}
-
-// Provider bonus: bonus for building a building that produces resources needed by idle buildings.
-// Returns bonus proportional to the number of idle buildings that would benefit.
-static double provider_bonus(const Game& g, const BaseData& d) {
-    // Count how many idle buildings would benefit from this building's production
-    int beneficiaries = 0;
-    for (const Base& b : g.bases) {
-        if (!b.need_sunduk) continue;  // skip non-idle buildings
-        // Check if this building produces any resource that the idle building needs
-        for (int r = 0; r < SUNDUK_SIZE; r++) {
-            if (d.profit[r] > 0 && b.data->consume[r] > 0) {
-                beneficiaries++;
-                break;  // count each building only once
-            }
-        }
-    }
-    // Bonus: 0.5 per beneficiary, capped at 3.0
-    return std::min(3.0, 0.5 * beneficiaries);
-}
-
-// Prerequisite bonus: bonus for building a building that is a prerequisite for other building types.
-// This encourages building infrastructure (like WaterChannel) even when there are no idle buildings yet.
-// Returns bonus proportional to the number of building types that depend on this building's production.
-static double prerequisite_bonus(const Game& g, const BaseData& d, const std::vector<const BaseData*>& all_build_data) {
-    // Count how many building types consume resources that this building produces
-    int dependents = 0;
-    for (const BaseData* other : all_build_data) {
-        if (other->id == d.id) continue;  // skip self
-        // Check if other building consumes any resource that this building produces
-        for (int r = 0; r < SUNDUK_SIZE; r++) {
-            if (d.profit[r] > 0 && other->consume[r] > 0) {
-                dependents++;
-                break;  // count each building type only once
-            }
-        }
-    }
-    // Bonus: 0.3 per dependent building type, capped at 2.0
-    return std::min(2.0, 0.3 * dependents);
-}
 
 namespace {
 

@@ -43,7 +43,26 @@ from train_ui2.charts import Bars, Chart
 from train_ui2.controls import ParamGroup, StatCard
 
 CONFIG_PATH = Path.home() / "colony_runs" / "sakhalin_colony_ui2" / "config.json"
-CONFIG_VERSION = 2  # bumped: added curriculum_resources + unified v3 profile
+
+# centralised constants (backward compat re-export)
+from train_ui2.constants import (
+    PARAM_GROUPS,
+    REWARD_GROUPS,
+    REWARD_FLAGS,
+    CURRICULUM_STAGE_MAP,
+    ALL_BUILD_IDS,
+    BUILD_CAPTIONS,
+    RESOURCE_IDS,
+    RESOURCE_CAPTIONS,
+    BUILD_IMAGE_INDEX,
+    CONFIG_VERSION,
+)
+from train_ui2.icons import (
+    building_icon as _building_icon,
+    resource_icon as _resource_icon,
+    format_steps as _fmt_steps,
+    escape_html as _esc,
+)
 
 # eval lines look like:
 # [Eval @ 1,048,576] days=731.0 people=69.0 bases=5.0 return=-3408.7 score=85.00 ...
@@ -52,130 +71,6 @@ _EVAL_RE = re.compile(
     r"return=(-?[\d.]+) score=(-?[\d.]+)")
 _BEST_RE = re.compile(
     r"\[Best\] Saved best_model\.pt \(score=([\d.]+), days=([\d.]+), bases=([\d.]+)\)")
-
-PARAM_GROUPS = {
-    "Среда": ["n_envs", "map_size", "seed", "total_timesteps"],
-    "PPO": ["learning_rate", "gamma", "gae_lambda", "clip_range", "ent_coef",
-            "vf_coef", "max_grad_norm", "target_kl", "n_steps", "batch_size",
-            "n_epochs"],
-    "Оценка и сохранение": ["eval_freq", "eval_episodes", "eval_min_days",
-                            "eval_min_bases", "save_freq",
-                            "early_stopping_patience"],
-}
-REWARD_GROUPS = {
-    "Стройка": ["build_bonus", "chain_bonus", "chain_daily", "novelty",
-                "diversity_bonus", "proximity_bonus", "build_cost_penalty"],
-    "Добыча (v3)": ["first_extraction_bonus", "extraction_daily",
-                    "need_fill_bonus", "loan_penalty"],
-    "Экономика": ["daily_income", "sale_bonus", "tax_daily_bonus",
-                  "manual_tax_penalty", "debt_coeff"],
-    "Выживание": ["survival_bonus", "survival_coeff", "game_over_penalty",
-                  "death_penalty", "tax_fail_penalty", "base_lost_penalty",
-                  "born_bonus", "home_overflow_penalty"],
-    "Потребности": ["housing_need_bonus", "food_need_bonus", "water_need_bonus",
-                    "buy_food_penalty"],
-    "Дисциплина": ["error_penalty", "preserve_penalty", "demolish_penalty",
-                   "idle_build_penalty", "idle_build_threshold_days"],
-    "Milestones и клип": ["milestone_base_bonus", "milestone_people_bonus",
-                          "milestone_day_bonus", "milestone_year_bonus",
-                          "clip_reward_min", "clip_reward_max"],
-}
-# boolean ablation switches
-REWARD_FLAGS = [
-    ("disable_daily_income", "Выкл. daily_income",
-     "Не начислять ежедневный доход (абляция)"),
-    ("disable_net_worth", "Выкл. net worth бонус",
-     "Убрать бонус за чистую стоимость (абляция)"),
-    ("disable_provider_bonus", "Выкл. provider бонус",
-     "Убрать бонус провайдера потребностей (абляция)"),
-]
-
-# ─── Curriculum constants ───────────────────────────────────────────────────
-CURRICULUM_STAGE_MAP = {
-    1: ["House", "SmallHouse", "Farm", "Garden", "Mushroom", "WaterChannel",
-        "Refinery", "Fish", "HuntingLand", "CowFarm", "Apiary", "Hothouse",
-        "Puerperal", "Road"],
-    2: ["Sawmill", "Coalmine", "CoalCut", "Ironmine", "PowerStation",
-        "HydroStation", "AirStation", "Torchlight", "Goldmine", "BigHouse",
-        "BigFarm"],
-    3: ["BigSawmill", "BigRefinary", "BigIronmine", "WaterMill",
-        "SmallAtomStation", "AtomStation", "SuperHouse"],
-}
-# All buildable ids in order of configs/bases.json (without City)
-ALL_BUILD_IDS = [
-    "Farm", "Garden", "WaterChannel", "Sawmill", "Coalmine", "Ironmine", "Refinery", "Goldmine",
-    "PowerStation", "HydroStation", "Road", "House", "SmallHouse", "Fish", "CoalCut",
-    "HuntingLand", "CowFarm", "Mushroom", "BigHouse", "BigFarm", "Apiary", "Torchlight", "Hothouse",
-    "SuperHouse", "BigSawmill", "WaterMill", "BigRefinary", "Puerperal", "BigIronmine",
-    "AirStation", "SmallAtomStation", "AtomStation",
-]
-# Captions for buildings (from bases.json caption if available)
-BUILD_CAPTIONS = {
-    "Farm": "Ферма", "Garden": "Сад", "WaterChannel": "Водоканал", "Sawmill": "Лесопилка",
-    "Coalmine": "Шахта", "Ironmine": "Карьер", "Refinery": "Нефтедобыча", "Goldmine": "Золотой прииск",
-    "PowerStation": "Электростанция", "HydroStation": "Гидростанция", "Road": "Дорога", "House": "Жилой дом",
-    "SmallHouse": "Хижина", "Fish": "Рыбный промысел", "CoalCut": "Угольный разрез",
-    "HuntingLand": "Охотничьи угодья", "CowFarm": "Животноводческая ферма", "Mushroom": "Грибная плантация",
-    "BigHouse": "Жилой район", "BigFarm": "Хозяйство", "Apiary": "Пасека", "Torchlight": "Факел",
-    "Hothouse": "Теплица", "SuperHouse": "Жилой центр", "BigSawmill": "Лесоповал",
-    "WaterMill": "Водокачка", "BigRefinary": "Нефтенасос", "Puerperal": "Дом матери и ребенка",
-    "BigIronmine": "Катакомбы", "AirStation": "Ветряная ЭС", "SmallAtomStation": "Малая АЭС",
-    "AtomStation": "АЭС",
-}
-# Resources: order matches SUNDUK (0..8) = gold, food, coal, iron, oil, stone, water, wood, energy
-RESOURCE_IDS = ["gold", "food", "coal", "iron", "oil", "stone", "water", "wood", "energy"]
-RESOURCE_CAPTIONS = {
-    "gold": "Золото", "food": "Еда", "coal": "Уголь", "iron": "Железо", "oil": "Нефть",
-    "stone": "Камень", "water": "Вода", "wood": "Дерево", "energy": "Энергия",
-}
-# Building -> image index for icon loading
-BUILD_IMAGE_INDEX = {
-    "Farm": 0, "Garden": 1, "WaterChannel": 2, "Sawmill": 3, "Coalmine": 4, "Ironmine": 5,
-    "Refinery": 6, "Goldmine": 7, "PowerStation": 8, "HydroStation": 9, "Road": 12,
-    "House": 13, "SmallHouse": 14, "Fish": 15, "CoalCut": 11, "HuntingLand": 16,
-    "CowFarm": 17, "Mushroom": 18, "BigHouse": 19, "BigFarm": 20, "Apiary": 21,
-    "Torchlight": 22, "Hothouse": 23, "SuperHouse": 24, "BigSawmill": 25, "WaterMill": 26,
-    "BigRefinary": 27, "Puerperal": 28, "BigIronmine": 29, "AirStation": 30, "SmallAtomStation": 31,
-    "AtomStation": 32,
-}
-
-def _fmt_steps(n: float) -> str:
-    n = int(n)
-    if n >= 1_000_000:
-        return f"{n/1_000_000:.2f}M"
-    if n >= 1_000:
-        return f"{n/1000:.0f}k"
-    return str(n)
-
-def _load_icon_pixmap(name: str, size: int = 24) -> Optional[QPixmap]:
-    """Try to load an icon from assets; return None if not found."""
-    candidates = [
-        _PROJECT / "assets" / name,
-        _PROJECT / "ui" / "assets" / name,
-        _PROJECT / "train_ui2" / name,
-    ]
-    for p in candidates:
-        if p.exists():
-            pm = QPixmap(str(p))
-            if not pm.isNull():
-                return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    return None
-
-def _building_icon(bid: str) -> Optional[QPixmap]:
-    idx = BUILD_IMAGE_INDEX.get(bid)
-    if idx is None:
-        return None
-    return _load_icon_pixmap(f"imlBases_{idx:02d}.png", 24)
-
-def _resource_icon(rid: str) -> Optional[QPixmap]:
-    # Map resource to imlMarketItem index: gold0, food1, coal2, iron3, oil4, stone5, water6, wood7, energy8
-    mapping = {"gold": 0, "food": 1, "coal": 2, "iron": 3, "oil": 4, "stone": 5, "water": 6, "wood": 7, "energy": 8}
-    idx = mapping.get(rid, 0)
-    pm = _load_icon_pixmap(f"imlMarketItem_{idx:02d}.png", 20)
-    if pm is None:
-        # fallback to imlIcons
-        pm = _load_icon_pixmap(f"imlIcons_0{idx%6}.png", 20)
-    return pm
 
 
 class MainWindow2(QMainWindow):
@@ -1482,5 +1377,4 @@ class MainWindow2(QMainWindow):
             self.btn_watch.setText("👁 Наблюдать")
 
 
-def _esc(s: str) -> str:
-    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+# _esc imported from train_ui2.icons

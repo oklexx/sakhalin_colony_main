@@ -1,138 +1,118 @@
 from __future__ import annotations
 
-import math
-from typing import List, Sequence, Tuple, Optional
-
 import torch
 import torch.nn as nn
+from typing import List, Tuple, Optional, Dict, Any
+
+from rl._nn_common import ActorCriticBase, orthogonal_init
 
 
-def _orthogonal_init(module: nn.Module, gain: float = 1.0) -> None:
-    if isinstance(module, nn.Conv2d):
-        nn.init.orthogonal_(module.weight.data, gain=gain)
-        if module.bias is not None:
-            module.bias.data.zero_()
-    elif isinstance(module, nn.Linear):
-        nn.init.orthogonal_(module.weight.data, gain=gain)
-        if module.bias is not None:
-            module.bias.data.zero_()
+class ActorCriticHybrid(ActorCriticBase):
+    """Hybrid actor-critic: flat vector + minimap CNN branches concatenated.
 
-
-class ActorCriticHybrid(nn.Module):
-    """Hybrid actor-critic: flat MLP branch + CNN branch, merged trunk.
-
-    The flat branch handles global stats (money, taxes, credits, day count).
-    The CNN branch handles spatial layout (land types, buildings, resources).
-    Both branches feed into a shared trunk MLP, then actor/critic heads.
-
-    Input:  flat_obs [B, obs_size] float32 + minimap [B, C, H, W] float32
-    Output: (logits [B, n_actions], values [B, 1])
+    Observation is a dict with keys 'flat' [B, F] and 'minimap' [B, C, R, R].
+    If observation is a single tensor, it is treated as flat-only.
     """
 
     def __init__(
         self,
         obs_size: int,
-        n_channels: int,
-        grid_size: int,
+        minimap_radius: int,
+        minimap_channels: int,
         n_actions: int,
-        hidden_sizes: Sequence[int] | None = None,
-        device: str | torch.device = "cpu",
+        hidden_sizes: List[int],
+        device: torch.device,
     ):
         super().__init__()
         self.obs_size = obs_size
-        self.n_channels = n_channels
-        self.grid_size = grid_size
+        self.minimap_radius = minimap_radius
+        self.minimap_channels = minimap_channels
         self.n_actions = n_actions
-        hidden = list(hidden_sizes) if hidden_sizes else [256, 256]
-        if len(hidden) == 1:
-            hidden = [hidden[0], hidden[0]]
-        self.hidden_sizes = hidden
+        self.device = device
 
-        # Flat branch: obs_size -> hidden[0]
-        self.flat_proj = nn.Linear(obs_size, hidden[0])
+        self.flat_trunk = nn.Sequential(
+            nn.Linear(obs_size, hidden_sizes[0]),
+            nn.ReLU(),
+        ).to(device) if hidden_sizes else nn.Identity().to(device)
 
-        # CNN branch: n_channels x grid x grid -> hidden[0]
-        conv1 = nn.Conv2d(n_channels, 32, 4, 2, 1)   # 32 x ((grid+2)//2-1)
-        conv2 = nn.Conv2d(32, 64, 2, 2)              # 64 x ((g1+2)//2-1)
-        self.cnn = nn.Sequential(conv1, nn.ReLU(), conv2, nn.ReLU())
-        g1 = (grid_size + 2) // 2 - 1
-        g2 = (g1 + 2) // 2 - 1
-        self.cnn_proj = nn.Linear(64 * g2 * g2, hidden[0])
+        map_size = 2 * minimap_radius + 1
+        self.cnn = nn.Sequential(
+            nn.Conv2d(minimap_channels, 32, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.ReLU(),
+        ).to(device)
 
-        # Shared trunk
-        trunk: List[nn.Module] = []
-        prev = hidden[0]
-        for h in hidden[1:]:
-            trunk.append(nn.Linear(prev, h))
-            trunk.append(nn.ReLU())
+        cnn_out = 64 * map_size * map_size
+        flat_out = hidden_sizes[0] if hidden_sizes else obs_size
+        combined = flat_out + cnn_out
+
+        # remaining hidden layers after concatenation
+        layers: List[nn.Module] = []
+        prev = combined
+        for h in hidden_sizes[1:]:
+            layers.append(nn.Linear(prev, h))
+            layers.append(nn.ReLU())
             prev = h
-        self.trunk = nn.Sequential(*trunk)
 
-        self.actor = nn.Linear(prev, n_actions)
-        self.critic = nn.Linear(prev, 1)
+        self.joint = nn.Sequential(*layers).to(device) if layers else nn.Identity().to(device)
+        joint_out = prev if layers else combined
+        self.actor_head = nn.Linear(joint_out, n_actions).to(device)
+        self.critic_head = nn.Linear(joint_out, 1).to(device)
 
-        # Init
-        _orthogonal_init(self.flat_proj, gain=1.0)
-        for m in self.cnn:
-            _orthogonal_init(m, gain=math.sqrt(2))
-        _orthogonal_init(self.cnn_proj, gain=1.0)
-        for m in self.trunk:
-            _orthogonal_init(m, gain=1.0)
-        _orthogonal_init(self.actor, gain=1.0)
-        _orthogonal_init(self.critic, gain=1.0)
+        self._init_weights()
 
-        self.to(device)
-        self.device = torch.device(device)
+    def _init_weights(self) -> None:
+        for m in self.modules():
+            # CNN benefits from sqrt(2) gain for ReLU
+            if isinstance(m, nn.Conv2d):
+                orthogonal_init(m, gain=1.41421356)
+            else:
+                orthogonal_init(m, gain=1.0)
 
-    def forward(
-        self, flat_obs: torch.Tensor, minimap: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        flat_feat = self.flat_proj(flat_obs)
-        cnn_feat = self.cnn_proj(self.cnn(minimap).flatten(1))
-        x = torch.relu(flat_feat + cnn_feat)
-        x = self.trunk(x)
-        logits = self.actor(x)
-        values = self.critic(x)
-        return logits, values
+    def forward(self, obs: Any) -> Tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(obs, dict):
+            flat = obs.get("flat")
+            mini = obs.get("minimap")
+            if flat is not None and mini is not None:
+                h_flat = self.flat_trunk(flat)
+                h_cnn = self.cnn(mini).flatten(1)
+                h = torch.cat([h_flat, h_cnn], dim=1)
+            elif flat is not None:
+                h = self.flat_trunk(flat)
+            elif mini is not None:
+                h = self.cnn(mini).flatten(1)
+            else:
+                raise ValueError("Hybrid obs dict has no 'flat' or 'minimap'")
+        elif isinstance(obs, torch.Tensor):
+            h = self.flat_trunk(obs)
+        else:
+            raise TypeError(f"Unsupported obs type {type(obs)}")
 
-    def act(
-        self,
-        flat_obs: torch.Tensor,
-        minimap: torch.Tensor,
-        deterministic: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        with torch.no_grad():
-            logits, values = self.forward(flat_obs, minimap)
-        dist = torch.distributions.Categorical(logits=logits)
-        action = dist.sample() if not deterministic else logits.argmax(-1)
-        log_prob = dist.log_prob(action)
-        return action, log_prob, values.squeeze(-1)
+        if hasattr(self, "joint"):
+            h = self.joint(h)
+        return self.actor_head(h), self.critic_head(h)
 
     def get_action_and_value(
         self,
-        flat_obs: torch.Tensor,
-        minimap: torch.Tensor,
+        obs: Any,
         action: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, values = self.forward(flat_obs, minimap)
-        dist = torch.distributions.Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_probs = dist.log_prob(action)
+        logits, values = self.forward(obs)
+        action, log_probs, _ = self._categorical_log_prob(logits, action)
         return action, log_probs, values.squeeze(-1)
 
-    def get_value(
-        self, flat_obs: torch.Tensor, minimap: torch.Tensor
-    ) -> torch.Tensor:
-        _, values = self.forward(flat_obs, minimap)
+    def get_value(self, obs: Any) -> torch.Tensor:
+        _, values = self.forward(obs)
         return values.squeeze(-1)
 
-    @property
-    def params(self) -> List[nn.Parameter]:
-        return [p for p in self.parameters() if p.requires_grad]
-
-    def state_dict_for_env(self) -> dict:
-        return {k: v.detach().cpu().clone() for k, v in self.state_dict().items()}
-
-    def load_state_dict_from_env(self, state: dict):
-        self.load_state_dict(state)
+    def act(self, obs: Any, deterministic: bool = False) -> torch.Tensor:
+        """Sample or greedy action (mirrors actor_critic.py helper)."""
+        logits, _ = self.forward(obs)
+        if deterministic:
+            return torch.argmax(logits, dim=-1)
+        # sample
+        dist = torch.distributions.Categorical(logits=logits)
+        return dist.sample()

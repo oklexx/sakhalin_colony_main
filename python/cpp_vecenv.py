@@ -51,45 +51,26 @@ class CppVecEnv(VecEnv):
             str(PROJECT_ROOT / "configs" / "events.json")
         )
 
-        # Reward configuration
+        # Reward configuration — DRY: use whatever keys caller provides,
+        # no hardcoded list. Unknown keys are ignored (forward compat), missing
+        # fields keep C++ defaults.
         rc = colony_cpp.RewardConfig()
-        _REWARD_KEYS = ("build_bonus", "chain_bonus", "chain_daily",
-                        "first_extraction_bonus", "extraction_daily",
-                        "need_fill_bonus", "loan_penalty",
-                        "novelty", "daily_income", "sale_bonus", "tax_daily_bonus",
-                        "survival_bonus", "game_over_penalty", "diversity_bonus",
-                        "error_penalty", "preserve_penalty", "demolish_penalty",
-                        "manual_tax_penalty",
-                        "build_cost_penalty", "idle_build_penalty", "idle_build_threshold_days",
-                        "survival_coeff",
-                        "milestone_base_bonus", "milestone_people_bonus",
-                        "milestone_day_bonus", "milestone_year_bonus",
-                        "proximity_bonus",
-                        "clip_reward_min", "clip_reward_max",
-                        "disable_net_worth", "disable_daily_income",
-                        "disable_provider_bonus",
-                        "tax_fail_penalty", "death_penalty", "base_lost_penalty",
-                        "born_bonus", "debt_coeff", "home_overflow_penalty",
-                        "housing_need_bonus", "food_need_bonus", "water_need_bonus",
-                        "buy_food_penalty")
         _INT_KEYS = {"idle_build_threshold_days"}
-        _missing = []
+        _missing: list[str] = []
         if reward_config:
-            for k in _REWARD_KEYS:
-                if k in reward_config:
-                    v = reward_config[k]
-                    if k in _INT_KEYS:
-                        v = int(v)
-                    if not hasattr(rc, k):
-                        # Stale colony_cpp.pyd (built before these fields were
-                        # exposed in bindings.cpp). Skip with a warning instead
-                        # of crashing — C++ will keep its compiled-in default.
-                        _missing.append(k)
-                        continue
-                    setattr(rc, k, v)
+            for key, value in reward_config.items():
+                if key in _INT_KEYS:
+                    try:
+                        value = int(value)  # type: ignore[assignment]
+                    except Exception:
+                        pass
+                if not hasattr(rc, key):
+                    _missing.append(key)
+                    continue
+                setattr(rc, key, value)
         if _missing:
-            print(f"[CppVecEnv] WARNING: colony_cpp.pyd is stale — reward keys "
-                  f"{_missing} are not settable; rebuild with build_pyext.bat.",
+            print(f"[CppVecEnv] WARNING: colony_cpp.pyd is stale — keys "
+                  f"{_missing} not settable; rebuild with build_pyext.bat.",
                   flush=True)
         # Apply CLI flags only if explicitly provided (None = use JSON/reward_config value)
         if disable_net_worth is not None:
@@ -100,11 +81,11 @@ class CppVecEnv(VecEnv):
         if os.environ.get("COLONY_DEBUG", "").lower() in ("1", "true", "yes", "on"):
             print("=" * 60, flush=True)
             print("[DEBUG CppVecEnv] C++ RewardConfig after setup:", flush=True)
-            for k in _REWARD_KEYS:
-                print(f"  rc.{k:25s} = {getattr(rc, k)}", flush=True)
+            if reward_config:
+                for k, v in sorted(reward_config.items()):
+                    print(f"  rc.{k:25s} = {v} (requested)", flush=True)
             print(f"  rc.disable_net_worth      = {rc.disable_net_worth}", flush=True)
             print(f"  rc.disable_daily_income   = {rc.disable_daily_income}", flush=True)
-            print(f"  reward_config dict keys   = {list(reward_config.keys()) if reward_config else 'None'}", flush=True)
             print("=" * 60, flush=True)
 
         # Parse unlock_ids

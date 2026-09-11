@@ -12,77 +12,11 @@
 #include "colony/constants.h"
 #include "colony/game.h"
 #include "colony/rng.h"
+#include "colony/reward_config.h"
 #include "colony/running_mean_std.h"
 #include "colony/thread_pool.h"
 
 namespace colony {
-
-// Коэффициенты наград (аналог env-переменных COLONY_* в rl/env.py).
-struct RewardConfig {
-    // Defaults = ЗЕРКАЛО канонического профиля configs/reward_v3.json
-    // (keep in sync с rl/config.py RewardConfig и configs/reward_v3.json).
-    // Python всегда передаёт каждое поле явно, поэтому эти дефолты важны
-    // только для console/GUI-бинарей и тестов.
-    // --- base bonuses ---
-    double build_bonus = 2.0;       // base multiplier: reward = build_bonus + log2(1 + ypv/1000)
-    double chain_bonus = 1.0;       // chain multiplier: reward = chain_bonus * log2(1 + ypv/1000) per consumer
-    double chain_daily = 0.5;       // daily bonus for active chain
-    // --- v3: бонус за ДОБЫЧУ ресурса (событие производства, не уровень склада) ---
-    // Вес ресурса = min(1, 0.25 * число типов зданий-потребителей ресурса):
-    // промежуточные ресурсы (вода/дерево/нефть/уголь) ценятся, «мёртвый груз»
-    // (еда/золото — в порту их никто не потребляет) вес 0 → спам-фермы не выгодно.
-    double first_extraction_bonus = 3.0;  // разово за эпизод: первый раз добыт тип ресурса (×вес)
-    double extraction_daily = 0.3;        // ежедневно за ресурс с активной добычей (×вес×насыщение: 1 прод.=1.0/3)
-    double need_fill_bonus = 1.5;         // бонус за постройку производителя ресурса, которого «голодает» здание
-    double loan_penalty = 0.5;            // стоимость успешного TAKE_LOAN (ломает кредитный луп)
-    double novelty = 5.0;           // bonus for first working of new building type
-    double daily_income = 1.0;      // income multiplier: reward = daily_income * log1p(daily_total / 100)
-    double sale_bonus = 0.5;        // sale multiplier: reward = sale_bonus * log1p(sale_value / 100)
-    double tax_daily_bonus = 0.3;   // daily bonus when no tax due
-    double survival_bonus = 0.0;    // disabled: agent must earn through actions, not passive survival
-    double game_over_penalty = 10.0; // - on game over
-    double diversity_bonus = 3.0;    // bonus for each unique building type built (after first)
-
-    // --- penalties for errors / special actions ---
-    double error_penalty = -2.0;      // v3 профиль (was -1.0 in v2)
-    double preserve_penalty = 0.3;    // v3 профиль: preserve/unpreserve стоит 0.3 (в v2 был мёртвым ключом)
-    double demolish_penalty = -3.0;   // penalty for successful DEMOLISH (new: discourage destroying buildings)
-    double manual_tax_penalty = -0.5; // cost of manual tax payment
-    double build_cost_penalty = 0.0001; // fraction of build cost (subtraction)
-    double idle_build_penalty = -2.0;     // penalty for long period without builds
-    int idle_build_threshold_days = 7;    // threshold in days without builds
-    double survival_coeff = 0.0;         // net_worth change multiplier (v2: disabled)
-
-    // ─── milestone-бонусы ───
-    double milestone_base_bonus = 30.0;    // за каждые 5 баз
-    double milestone_people_bonus = 2.0;  // за каждые 50 человек
-    double milestone_day_bonus = 2.0;     // за каждые 100 дней
-    double milestone_year_bonus = 5.0;    // за первый год (365 дней)
-
-    // ─── пространственные бонусы ───
-    double proximity_bonus = 0.5;  // бонус за строительство рядом с ресурсом
-
-    // ─── клиппинг сырой награды ───
-    double clip_reward_min = -50.0;
-    double clip_reward_max = 50.0;
-
-    // ─── флаги ───
-    bool disable_net_worth = false;
-    bool disable_daily_income = false;
-    bool disable_provider_bonus = false;
-
-    // ─── hardcoded weights (from env.cpp, now configurable) ───
-    double tax_fail_penalty = 5.0;
-    double death_penalty = 20.0;
-    double base_lost_penalty = 30.0;
-    double born_bonus = 1.0;
-    double debt_coeff = 0.1;          // v3 профиль (was 0.02 in v2) — ломает кредитный луп
-    double home_overflow_penalty = 2.0;
-    double housing_need_bonus = 3.0;
-    double food_need_bonus = 0.8;   // v3 профиль: 0.8 (снижено чтобы не перевешивало buy_food_penalty)
-    double water_need_bonus = 0.8;  // v3 профиль: 0.8
-    double buy_food_penalty = 3.0;  // - за BUY_FOOD: еда не нужна, покупка = слив денег
-};
 
 // RL-среда: точная копия ColonyEnv из rl/env.py (награды и наблюдения).
 class ColonyEnvCpp {

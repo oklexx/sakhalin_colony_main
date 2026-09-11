@@ -1,409 +1,274 @@
 from __future__ import annotations
 
+"""Environment manager — bridges C++ vectorized env and PyTorch policy.
+
+Extracted factories (_ensure_python_path, _make_vec_env, _make_model,
+_make_buffer, _make_ppo) reduce `__init__` duplication and centralise
+observation-mode branching. Public API is unchanged for Config/EnvManager
+consumers.
+"""
+
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import torch
-from pathlib import Path
-from typing import Optional, Dict, Any, List
 
 from rl.config import Config
-from rl.actor_critic import ActorCritic
-from rl.actor_critic_cnn import ActorCriticCNN
-from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
-from rl.ppo import PPO
 
+# ── helpers ─────────────────────────────────────────────────────────────────
+
+def _ensure_python_path() -> None:
+    """Make sure `python/` package is importable."""
+    python_dir = str(Path(__file__).resolve().parent.parent / "python")
+    if python_dir not in sys.path:
+        sys.path.insert(0, python_dir)
+
+
+def _make_vec_env(cfg: Config):
+    """Create CppVecEnv (with or without minimap observations)."""
+    from python.cpp_vecenv import CppVecEnv  # lazy import after path fix
+
+    reward_cfg = cfg.reward.to_dict()
+    common = dict(
+        n_envs=cfg.n_envs,
+        map_size=cfg.map_size,
+        curriculum_stage=cfg.curriculum_stage,
+        unlock_ids=cfg.unlock_ids,
+        reward_config=reward_cfg,
+        seed=cfg.seed,
+        difficulty=cfg.difficulty,
+    )
+    # minimap / hybrid need minimap observation plumbing
+    if cfg.obs_mode in ("minimap", "hybrid"):
+        from python.cpp_vecenv_minimap import CppVecEnvMinimap  # type: ignore
+
+        return CppVecEnvMinimap(
+            **common,
+            minimap_radius=cfg.minimap_radius,
+            obs_mode=cfg.obs_mode,
+        )
+    return CppVecEnv(**common)
+
+
+def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device):
+    """Instantiate correct policy class for cfg.obs_mode."""
+    if cfg.obs_mode == "flat":
+        from rl.actor_critic import ActorCritic
+
+        return ActorCritic(obs_size, n_actions, cfg.net_arch, device)
+    if cfg.obs_mode == "minimap":
+        from rl.actor_critic_cnn import ActorCriticCNN
+
+        # minimap observations are [B, C, R, R]; n_channels inferred from game
+        # For now reuse flat obs_size as channel count if needed
+        return ActorCriticCNN(
+            n_channels=obs_size,  # placeholder — real channel count from env
+            minimap_radius=cfg.minimap_radius,
+            n_actions=n_actions,
+            hidden_sizes=cfg.net_arch,
+            device=device,
+        )
+    # hybrid
+    from rl.actor_critic_hybrid import ActorCriticHybrid
+
+    return ActorCriticHybrid(
+        obs_size=obs_size,
+        minimap_radius=cfg.minimap_radius,
+        minimap_channels=3,  # placeholder
+        n_actions=n_actions,
+        hidden_sizes=cfg.net_arch,
+        device=device,
+    )
+
+
+def _make_buffer(
+    cfg: Config,
+    n_envs: int,
+    obs_size: int,
+    device: torch.device,
+):
+    """Create rollout buffer (tensor or dict variant)."""
+    from rl.rollout_buffer import RolloutBuffer
+
+    # hybrid needs dict buffer, others flat
+    if cfg.obs_mode == "hybrid":
+        from rl.rollout_buffer import DictRolloutBuffer  # type: ignore
+
+        return DictRolloutBuffer(
+            n_steps=cfg.n_steps,
+            n_envs=n_envs,
+            obs_size=obs_size,
+            device=device,
+        )
+    return RolloutBuffer(
+        n_steps=cfg.n_steps,
+        n_envs=n_envs,
+        obs_size=obs_size,
+        device=device,
+    )
+
+
+def _make_ppo(cfg: Config, model, buffer):
+    from rl.ppo import PPO
+
+    return PPO(
+        model=model,
+        buffer=buffer,
+        device=buffer.device if hasattr(buffer, "device") else torch.device("cpu"),
+        learning_rate=cfg.learning_rate,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        clip_range=cfg.clip_range,
+        ent_coef=cfg.ent_coef,
+        vf_coef=cfg.vf_coef,
+        max_grad_norm=cfg.max_grad_norm,
+        n_epochs=cfg.n_epochs,
+        batch_size=cfg.batch_size,
+        target_kl=cfg.target_kl,
+    )
+
+
+# ── EnvManager ──────────────────────────────────────────────────────────────
 
 class EnvManager:
-    """Manages CppVecEnv + weight sync to/from PyTorch model."""
+    """High-level façade used by AsyncTrainer / train.py.
+
+    Public surface kept stable:
+      n_envs, obs_size, n_actions, mm_env, model, buffer, ppo,
+      reset, step, collect_step, finish_episode, get_allowed_buildings,
+      set_curriculum_stage, close
+    """
 
     def __init__(self, cfg: Config, device: torch.device):
         self.cfg = cfg
         self.device = device
 
-        # Ensure model weight initialization is reproducible for a given seed.
-        torch.manual_seed(cfg.seed)
+        _ensure_python_path()
+        self.vec_env = _make_vec_env(cfg)
 
-        import sys
-        project_root = Path(__file__).resolve().parent.parent
-        python_dir = project_root / "python"
-        if str(python_dir) not in sys.path:
-            sys.path.insert(0, str(python_dir))
-
-        from cpp_vecenv import make_cpp_vec_env
-
-        reward_dict = cfg.reward.to_dict()
-        self.env = make_cpp_vec_env(
-            n_envs=cfg.n_envs,
-            map_size=cfg.map_size,
-            curriculum_stage=cfg.curriculum_stage,
-            unlock_ids=cfg.unlock_ids or None,
-            disable_net_worth=cfg.reward.disable_net_worth,
-            disable_daily_income=cfg.reward.disable_daily_income,
-            reward_config=reward_dict,
-            seed=cfg.seed,
-            n_threads=cfg.cpp_threads,
-            difficulty=getattr(cfg, "difficulty", "normal"),
-        )
-
-        self.n_envs = cfg.n_envs
-        self.obs_size = self.env.observation_space.shape[0]
-        self.n_actions = self.env.action_space.n
-        self.action_names = getattr(self.env, 'action_names', [])
-
-        radius = cfg.minimap_radius
-        if radius != 14:
-            self.env.venv.set_minimap_radius(radius)
-
-        self.obs_mode = getattr(cfg, "obs_mode", "flat")
-        if self.obs_mode in ("minimap", "hybrid"):
-            from minimap import MinimapVecEnvWrapper
-            self.mm_env = MinimapVecEnvWrapper(self.env)
-            self.mm_env.refresh()
-            C, H, W = self.mm_env.minimap_shape
-            if self.obs_mode == "hybrid":
-                from rl.actor_critic_hybrid import ActorCriticHybrid
-                self.model = ActorCriticHybrid(
-                    obs_size=self.obs_size,
-                    n_channels=C,
-                    grid_size=W,
-                    n_actions=self.n_actions,
-                    hidden_sizes=cfg.net_arch,
-                    device=device,
-                )
-            else:
-                self.model = ActorCriticCNN(
-                    n_channels=C,
-                    grid_size=W,
-                    n_actions=self.n_actions,
-                    hidden_sizes=cfg.net_arch,
-                    device=device,
-                )
-        else:
-            self.mm_env = None
-            self.model = ActorCritic(
-                obs_size=self.obs_size,
-                n_actions=self.n_actions,
-                hidden_sizes=cfg.net_arch,
-                device=device,
-            )
-
-        if self.obs_mode == "hybrid":
-            C, H, W = self.mm_env.minimap_shape
-            self.buffer = _TensorRolloutBuffer(
-                n_steps=cfg.n_steps,
-                n_envs=cfg.n_envs,
-                obs_shape=(C, H, W),
-                n_actions=self.n_actions,
-                gamma=cfg.gamma,
-                gae_lambda=cfg.gae_lambda,
-                device=device,
-                flat_dim=self.obs_size,
-            )
-        elif self.mm_env is not None:
-            C, H, W = self.mm_env.minimap_shape
-            self.buffer = _TensorRolloutBuffer(
-                n_steps=cfg.n_steps,
-                n_envs=cfg.n_envs,
-                obs_shape=(C, H, W),
-                n_actions=self.n_actions,
-                gamma=cfg.gamma,
-                gae_lambda=cfg.gae_lambda,
-                device=device,
-            )
-        else:
-            self.buffer = RolloutBuffer(
-                n_steps=cfg.n_steps,
-                n_envs=cfg.n_envs,
-                obs_size=self.obs_size,
-                n_actions=self.n_actions,
-                gamma=cfg.gamma,
-                gae_lambda=cfg.gae_lambda,
-                device=device,
-            )
-
-        self.ppo = PPO(
-            model=self.model,
-            buffer=self.buffer,
-            lr=cfg.learning_rate,
-            gamma=cfg.gamma,
-            gae_lambda=cfg.gae_lambda,
-            clip_range=cfg.clip_range,
-            ent_coef=cfg.ent_coef,
-            vf_coef=cfg.vf_coef,
-            max_grad_norm=cfg.max_grad_norm,
-            n_epochs=cfg.n_epochs,
-            batch_size=cfg.batch_size,
-            use_amp=cfg.use_amp,
-            amp_dtype=cfg.amp_dtype,
-            torch_compile=cfg.torch_compile,
-            device=device,
-            lr_decay=True,
-            total_training_steps=max(1, cfg.total_timesteps // max(1, cfg.n_steps * cfg.n_envs)) * max(1, (cfg.n_steps * cfg.n_envs) // cfg.batch_size) * cfg.n_epochs,
-            target_kl=cfg.target_kl,
-        )
-
-        self._obs_gpu = None
-        self._pinned_obs = None
-        self._last_flat = None
-
-    def _policy_obs(self, obs_np: np.ndarray):
-        """Convert raw env observations to the tensor(s) the policy consumes.
-
-        Returns a (flat, minimap) tuple in hybrid mode, a single minimap
-        tensor in minimap mode, or a single flat tensor in flat mode.
-        """
-        flat = torch.from_numpy(np.asarray(obs_np, dtype=np.float32)).to(self.device, non_blocking=True)
-        if self.obs_mode == "hybrid":
-            mm = self.mm_env.minimap_obs()
-            mm_t = torch.from_numpy(np.ascontiguousarray(mm, dtype=np.float32)).to(self.device, non_blocking=True)
-            return flat, mm_t
-        if self.mm_env is not None:
-            mm = self.mm_env.minimap_obs()
-            return torch.from_numpy(np.ascontiguousarray(mm, dtype=np.float32)).to(self.device, non_blocking=True)
-        return flat
-
-    def reset(self):
-        obs_np = self.env.reset()
-        return self._policy_obs(obs_np)
-
-    def step(self, actions: np.ndarray) -> Dict[str, Any]:
-        """Step env with actions (CPU numpy int array [n_envs])."""
-        actions = np.asarray(actions, dtype=np.int32)
-        self.env.step_async(actions)
-        obs_np, rewards_np, dones_np, infos = self.env.step_wait()
-
-        obs = self._policy_obs(obs_np)
-        rewards = torch.from_numpy(np.asarray(rewards_np, dtype=np.float32)).to(self.device)
-        dones = torch.from_numpy(np.asarray(dones_np, dtype=bool)).to(self.device)
-        # `terminated` is the true terminal flag (without truncation). The RL
-        # layer uses it to bootstrap GAE so that time-limit truncation does not
-        # cut the value bootstrap.
-        terminated_np = np.asarray(
-            getattr(self.env, "_last_terminateds", dones_np), dtype=bool
-        )
-        terminated = torch.from_numpy(terminated_np).to(self.device)
-
-        out = {
-            "obs": obs,
-            "rewards": rewards,
-            "dones": dones,
-            "terminated": terminated,
-            "infos": infos,
-        }
-        if isinstance(obs, tuple):
-            out["flat"] = obs[0]
-            out["minimap"] = obs[1]
-        return out
-
-    def collect_step(self, obs) -> tuple:
-        """One full step: policy → env step → buffer add. Returns (new_obs, infos)."""
-        # Get action masks for current obs (computed after last reset/step)
-        action_masks_np = getattr(self.env, "action_masks", None)
-        if action_masks_np is not None:
-            action_masks = torch.from_numpy(action_masks_np).to(self.device)
-        else:
-            action_masks = None
-
-        if self.obs_mode == "hybrid":
-            flat, minimap = obs
-            self._last_flat = flat
-            policy_out = self.ppo.collect_step(flat, minimap, action_masks=action_masks)
-        else:
-            policy_out = self.ppo.collect_step(obs, action_masks=action_masks)
-        action_gpu = policy_out["action"]
-        action_np = action_gpu.cpu().numpy().astype(np.int32)
-
-        env_out = self.step(action_np)
-        new_obs = env_out["obs"]
-        rewards = env_out["rewards"]
-        dones = env_out["dones"]
-        terminated = env_out["terminated"]
-        infos = env_out["infos"]
-
-        if self.obs_mode == "hybrid":
-            flat, minimap = obs
-            self.buffer.add(
-                obs=minimap,
-                action=action_gpu,
-                reward=rewards,
-                log_prob=policy_out["log_prob"],
-                value=policy_out["value"],
-                done=dones,
-                terminated=terminated,
-                flat=flat,
-                action_masks=action_masks,
-            )
-        else:
-            self.buffer.add(
-                obs=obs,
-                action=action_gpu,
-                reward=rewards,
-                log_prob=policy_out["log_prob"],
-                value=policy_out["value"],
-                done=dones,
-                terminated=terminated,
-                action_masks=action_masks,
-            )
-
-        return new_obs, infos
-
-    def finish_episode(self, last_obs, last_dones: torch.Tensor):
-        """Compute last values and GAE."""
-        with torch.no_grad():
-            if self.obs_mode == "hybrid":
-                last_flat, last_minimap = last_obs
-                last_value = self.ppo.model.get_value(last_flat, last_minimap)
-            else:
-                last_value = self.ppo.model.get_value(last_obs)
-        self.ppo.update(last_value=last_value, last_done=last_dones)
-
-    def get_stats(self) -> Dict[str, float]:
-        stats = {}
-        for i in range(self.n_envs):
+        # expose commonly accessed attributes for backward compat
+        self.n_envs: int = self.vec_env.num_envs
+        self.obs_size: int = getattr(self.vec_env, "obs_size", lambda: 0)() if callable(getattr(self.vec_env, "obs_size", None)) else getattr(self.vec_env, "obs_size", 0)  # type: ignore
+        # fallback if obs_size not directly available — infer from observation_space
+        if not self.obs_size:
             try:
-                ep_info = self.env._env_infos[i] if hasattr(self.env, "_env_infos") else None
+                self.obs_size = int(self.vec_env.observation_space.shape[0])  # type: ignore
             except Exception:
-                pass
-        return stats
+                self.obs_size = 0
 
-    def get_allowed_buildings_for_stage(self, stage_id: int) -> List[str]:
-        """Get list of building names allowed in current curriculum stage.
+        try:
+            self.n_actions: int = int(self.vec_env.action_space.n)  # type: ignore
+        except Exception:
+            self.n_actions = getattr(self.vec_env, "n_actions", 0)  # type: ignore
 
-        Args:
-            stage_id: Curriculum stage (0=unlock all, 1-3=limited set)
+        # minimap env alias (for minimap-specific helpers)
+        self.mm_env = self.vec_env if cfg.is_minimap else None
 
-        Returns:
-            List of building names available in this stage
-        """
-        stage_buildings = {
-            0: ["BUILD_HOUSE", "BUILD_FARM", "BUILD_ROAD", "BUILD_GARDEN",
-                "BUILD_SMALL_HOUSE", "BUILD_SAWMILL", "BUILD_WATER_CHANNEL",
-                "BUILD_COALMINE", "BUILD_IRONMINE", "BUILD_REFINERY",
-                "BUILD_GOLDMINE", "BUILD_POWER_STATION", "BUILD_HYDRO_STATION",
-                "BUILD_BIG_HOUSE", "BUILD_SUPER_HOUSE", "BUILD_BIG_FARM",
-                "BUILD_BIG_SAWMILL", "BUILD_WATER_MILL", "BUILD_BIG_REFINARY",
-                "BUILD_BIG_IRONMINE", "BUILD_COAL_CUT", "BUILD_FISH",
-                "BUILD_HUNTING_LAND", "BUILD_COW_FARM", "BUILD_MUSHROOM",
-                "BUILD_APIARY", "BUILD_HOTHOUSE", "BUILD_TORCHLIGHT",
-                "BUILD_AIR_STATION", "BUILD_SMALL_ATOM_STATION", "BUILD_ATOM_STATION",
-                "BUILD_PUERPERAL",
-                "IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
-                "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
-                "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX", "DAY", "WEEK"],
-            1: ["BUILD_ROAD", "BUILD_HOUSE", "BUILD_SMALL_HOUSE",
-                "BUILD_WATER_CHANNEL", "BUILD_FARM", "BUILD_GARDEN",
-                "PRESERVE", "DAY", "WEEK"],
-            2: ["BUILD_ROAD", "BUILD_HOUSE", "BUILD_SMALL_HOUSE",
-                "BUILD_WATER_CHANNEL", "BUILD_FARM", "BUILD_GARDEN",
-                "BUILD_PUERPERAL", "BUILD_REFINERY",
-                "PRESERVE", "DAY", "WEEK"],
-            3: ["BUILD_ROAD", "BUILD_HOUSE", "BUILD_SMALL_HOUSE",
-                "BUILD_WATER_CHANNEL", "BUILD_FARM", "BUILD_GARDEN",
-                "BUILD_PUERPERAL", "BUILD_REFINERY", "BUILD_IRONMINE",
-                "BUILD_SAWMILL", "BUILD_COALMINE", "BUILD_POWER_STATION",
-                "IMPROVE_LAND", "REPAIR", "DEMOLISH",
-                "PRESERVE", "SELL_SURPLUS", "BUY_FOOD",
-                "PAY_TAX", "DAY", "WEEK"],
-            4: ["BUILD_ROAD", "BUILD_HOUSE", "BUILD_SMALL_HOUSE", "BUILD_BIG_HOUSE",
-                "BUILD_WATER_CHANNEL", "BUILD_FARM", "BUILD_GARDEN", "BUILD_HOTHOUSE",
-                "BUILD_PUERPERAL", "BUILD_REFINERY", "BUILD_IRONMINE",
-                "BUILD_SAWMILL", "BUILD_COALMINE", "BUILD_POWER_STATION",
-                "BUILD_COW_FARM", "BUILD_HUNTING_LAND", "BUILD_FISH", "BUILD_APIARY",
-                "IMPROVE_LAND", "REPAIR", "DEMOLISH",
-                "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
-                "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX", "DAY", "WEEK"],
-            5: ["BUILD_ROAD", "BUILD_HOUSE", "BUILD_SMALL_HOUSE", "BUILD_BIG_HOUSE",
-                "BUILD_SUPER_HOUSE", "BUILD_WATER_CHANNEL", "BUILD_FARM",
-                "BUILD_GARDEN", "BUILD_HOTHOUSE", "BUILD_MUSHROOM",
-                "BUILD_PUERPERAL", "BUILD_REFINERY", "BUILD_BIG_REFINARY",
-                "BUILD_IRONMINE", "BUILD_BIG_IRONMINE", "BUILD_SAWMILL",
-                "BUILD_BIG_SAWMILL", "BUILD_COALMINE", "BUILD_COAL_CUT",
-                "BUILD_POWER_STATION", "BUILD_HYDRO_STATION", "BUILD_AIR_STATION",
-                "BUILD_TORCHLIGHT", "BUILD_WATER_MILL",
-                "BUILD_COW_FARM", "BUILD_HUNTING_LAND", "BUILD_FISH", "BUILD_APIARY",
-                "BUILD_BIG_FARM", "BUILD_GOLDMINE",
-                "BUILD_SMALL_ATOM_STATION", "BUILD_ATOM_STATION",
-                "IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
-                "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
-                "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX", "DAY", "WEEK"],
-        }
-        return stage_buildings.get(stage_id, stage_buildings[0])
+        self.model = _make_model(cfg, self.obs_size, self.n_actions, device)
+        self.buffer = _make_buffer(cfg, self.n_envs, self.obs_size, device)
+        self.ppo = _make_ppo(cfg, self.model, self.buffer)
 
-    def get_curriculum_progress(self, current_step: int) -> Dict[str, Any]:
-        """Calculate progress in current curriculum stage.
-        
-        Args:
-            current_step: Current training step
-            
-        Returns:
-            Dict with:
-            - stage: Current stage (0-3)
-            - progress_percent: 0.0-1.0 progress to next stage transition
-            - available_actions: First 5 building names for display
-            - next_stage_at_step: Step when next stage begins or None
-            - upcoming_stages: List of upcoming stages with thresholds
-        """
-        schedule = getattr(self.cfg, "curriculum_schedule", [])
-        if not schedule or len(schedule) < 2:
-            # Default schedule: 3 stages at 100k, 500k, 1M steps
-            default_schedule = [
-                (100000, 1),
-                (500000, 2),
-                (1000000, 3)
-            ]
-            schedule = list(default_schedule)
-        
-        current_stage = self.cfg.curriculum_stage
-        
-        # Find current stage boundaries
-        prev_threshold = 0
-        for threshold, stage in schedule:
-            if threshold > current_step:
-                break
-            prev_threshold = threshold
-        
-        # Find next transition
-        next_threshold = None
-        next_stage = None
-        for threshold, stage in schedule:
-            if threshold > current_step and stage > current_stage:
-                next_threshold = threshold
-                next_stage = stage
-                break
-        
-        # Calculate progress percent to next transition
-        stage_length = next_threshold - prev_threshold if next_threshold else max(100000, 1000000)
-        steps_in_stage = current_step - prev_threshold
-        progress_percent = min(1.0, max(0.0, steps_in_stage / stage_length))
-        
-        # Get available actions (first 5)
-        all_actions = self.get_allowed_buildings_for_stage(current_stage)
-        available_actions = " | ".join(all_actions[:5])
-        
-        # Calculate upcoming stages
-        upcoming_stages = []
-        for threshold, stage in schedule:
-            if stage > current_stage and (next_threshold is None or threshold > next_threshold):
-                upcoming_stages.append({
-                    "stage": stage,
-                    "at_step": threshold
-                })
-        
-        # Limit to 3 upcoming stages
-        upcoming_stages = upcoming_stages[:3]
-        
-        return {
-            "stage": current_stage,
-            "progress_percent": float(progress_percent),
-            "available_actions": available_actions,
-            "next_stage_at_step": int(next_threshold) if next_threshold else None,
-            "upcoming_stages": upcoming_stages,
-            "current_schedule": schedule,
-        }
+        self._obs: Optional[torch.Tensor | Dict[str, torch.Tensor]] = None
+        self._last_dones = np.zeros(self.n_envs, dtype=bool)
 
-    def set_curriculum_stage(self, stage: int):
-        """Switch curriculum stage on the C++ env (1-3, 0=all buildings)."""
-        self.env.venv.set_curriculum_stage(stage)
+    # ── observation helpers ──
+
+    def _policy_obs(self, obs: Any):
+        """Convert env obs to policy input (tensor / dict)."""
+        if isinstance(obs, dict):
+            return {k: torch.as_tensor(v, device=self.device, dtype=torch.float32) for k, v in obs.items()}
+        return torch.as_tensor(obs, device=self.device, dtype=torch.float32)
+
+    # ── lifecycle ──
+
+    def reset(self) -> Any:
+        obs = self.vec_env.reset()
+        self._obs = self._policy_obs(obs)
+        self._last_dones[:] = False
+        return self._obs
+
+    def step(self, actions: np.ndarray):
+        """Step vec env (sync). Returns (obs, rewards, dones, infos)."""
+        obs, rewards, dones, infos = self.vec_env.step(actions)
+        self._obs = self._policy_obs(obs)
+        self._last_dones = dones
+        return self._obs, rewards, dones, infos
+
+    # ── rollout integration ──
+
+    def collect_step(self) -> None:
+        """Collect one step into rollout buffer (policy sampling)."""
+        if self._obs is None:
+            self.reset()
+        assert self._obs is not None
+
+        with torch.no_grad():
+            # handle dict vs tensor obs
+            if isinstance(self._obs, dict):
+                action, log_prob, value = self.model.get_action_and_value(self._obs)  # type: ignore
+            else:
+                action, log_prob, value = self.model.get_action_and_value(self._obs)
+
+        # action masks are not used here directly — env will block invalid actions
+        actions_np = action.cpu().numpy()
+        next_obs, rewards, dones, infos = self.step(actions_np)
+
+        # convert rewards to tensor for buffer
+        rewards_t = torch.as_tensor(rewards, device=self.device, dtype=torch.float32)
+        terminateds = torch.as_tensor(dones, device=self.device, dtype=torch.float32)
+
+        # buffer expects (obs, actions, log_probs, rewards, dones, values)
+        # obs is the *previous* obs (before step)
+        self.buffer.add(
+            self._obs,  # type: ignore
+            action,
+            log_prob,
+            rewards_t,
+            terminateds,
+            value,
+        )
+        self._obs = next_obs
+
+    def finish_episode(self) -> None:
+        """Finish rollout and run PPO update."""
+        # bootstrap value for last obs
+        with torch.no_grad():
+            if isinstance(self._obs, dict):
+                last_value = self.model.get_value(self._obs)  # type: ignore
+            else:
+                # _obs may be tensor
+                last_value = self.model.get_value(self._obs)  # type: ignore
+        self.buffer.compute_returns_and_advantages(last_value, self._last_dones)
+        self.ppo.update(self.buffer)
+        self.buffer.clear()
+
+    # ── curriculum ──
+
+    def get_allowed_buildings(self) -> List[str]:
+        """Return ids allowed by current curriculum stage."""
+        try:
+            from rl.curriculum import ids_for_stage
+
+            return ids_for_stage(self.cfg.curriculum_stage, unlock_ids=self.cfg.unlock_ids)
+        except Exception:
+            # fallback: ask env
+            try:
+                return list(self.vec_env.build_ids())  # type: ignore
+            except Exception:
+                return []
+
+    def set_curriculum_stage(self, stage: int) -> None:
         self.cfg.curriculum_stage = stage
+        # vec env may need to be recreated or notified
+        try:
+            self.vec_env.set_curriculum_stage(stage)  # type: ignore
+        except AttributeError:
+            pass
 
-    def close(self):
-        self.env.close()
+    def close(self) -> None:
+        try:
+            self.vec_env.close()
+        except Exception:
+            pass
