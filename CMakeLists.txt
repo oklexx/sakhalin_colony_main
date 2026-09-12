@@ -15,6 +15,7 @@ find_package(pybind11 REQUIRED)
 
 add_library(colony_cpp MODULE
     src/rng.cpp
+    src/resources.cpp
     src/data.cpp
     src/earth.cpp
     src/game.cpp

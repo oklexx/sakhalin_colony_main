@@ -13,9 +13,9 @@
 
 namespace colony {
 
-struct BaseData;
+class BaseData;
 class Game;
-struct Base;
+class Base;
 
 // Returns land-type constant (LT_*) that gives proximity bonus for building id,
 // or LT_NONE if no bonus.

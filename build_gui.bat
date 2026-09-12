@@ -88,6 +88,12 @@ if errorlevel 1 goto :fail
 
 cl.exe /O2 /EHsc /std:c++17 /utf-8 /nologo /c ^
     /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\rewards.cpp" ^
+    /Fo"%OBJDIR%\rewards.obj"
+if errorlevel 1 goto :fail
+
+cl.exe /O2 /EHsc /std:c++17 /utf-8 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
     "%ROOT%\src\env.cpp" ^
     /Fo"%OBJDIR%\env.obj"
 if errorlevel 1 goto :fail
@@ -108,6 +114,7 @@ cl.exe /nologo ^
     "%OBJDIR%\earth.obj" ^
     "%OBJDIR%\game.obj" ^
     "%OBJDIR%\env.obj" ^
+    "%OBJDIR%\rewards.obj" ^
     /Fe"%ROOT%\sakhalin_colony_gui.exe" ^
     /link /SUBSYSTEM:CONSOLE /NODEFAULTLIB:libcmt.lib ^
     "%RLDIR%\lib\raylib.lib" opengl32.lib winmm.lib gdi32.lib user32.lib shell32.lib ^
