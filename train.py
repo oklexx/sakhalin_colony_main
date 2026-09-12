@@ -205,7 +205,7 @@ def main():
         norm_loaded = False
         for cand in norm_candidates:
             if cand.exists():
-                em.env.venv.load_normalization(str(cand))
+                (getattr(em, "vec_env", None) or em.env).venv.load_normalization(str(cand))
                 print(f"[Resume] normalization loaded from {cand}")
                 norm_loaded = True
                 break
@@ -241,7 +241,7 @@ def main():
             _step_counter[0] += 1
             # Get last actions from env
             try:
-                last_actions = em.env._last_actions
+                last_actions = em.vec_env._last_actions
             except AttributeError:
                 last_actions = None
             for i in range(em.n_envs):

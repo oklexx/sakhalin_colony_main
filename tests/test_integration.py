@@ -82,7 +82,7 @@ def test_training_with_eval_integration(tmp_path):
 
     # Save initial normalization
     norm_path = Path(cfg.model_dir) / "normalization.json"
-    em.env.venv.save_normalization(str(norm_path))
+    em.vec_env.venv.save_normalization(str(norm_path))
     assert norm_path.exists(), "normalization.json should exist after initial save"
 
     trainer = AsyncTrainer(cfg=cfg, env_manager=em)

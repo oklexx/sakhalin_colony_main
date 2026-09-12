@@ -100,11 +100,13 @@ def group(title: str, layout=None) -> QGroupBox:
     return box
 
 
-def label(text: str, color: str = TXT, bold: bool = False, size: int = 11) -> QLabel:
+def label(text: str, color: str = TXT, bold: bool = False, size: int = 11, word_wrap: bool = False) -> QLabel:
     lbl = QLabel(text)
     weight = "bold" if bold else "normal"
     lbl.setStyleSheet(
         f"color:{color}; font-size:{size}px; font-weight:{weight}; background:transparent;")
+    if word_wrap:
+        lbl.setWordWrap(True)
     return lbl
 
 

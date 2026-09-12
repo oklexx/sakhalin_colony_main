@@ -16,14 +16,23 @@ class ActorCriticCNN(ActorCriticBase):
 
     def __init__(
         self,
-        n_channels: int,
-        minimap_radius: int,
-        n_actions: int,
-        hidden_sizes: List[int],
-        device: torch.device,
+        n_channels: int = 8,
+        minimap_radius: Optional[int] = None,
+        grid_size: Optional[int] = None,
+        n_actions: int = 45,
+        hidden_sizes: Optional[List[int]] = None,
+        device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
+        if hidden_sizes is None:
+            hidden_sizes = [256, 256]
+        if grid_size is not None:
+            minimap_radius = (grid_size - 1) // 2
+        elif minimap_radius is None:
+            minimap_radius = 14
+        self.n_channels = n_channels
         self.minimap_radius = minimap_radius
+        self.grid_size = 2 * minimap_radius + 1
         self.n_actions = n_actions
         self.device = device
 

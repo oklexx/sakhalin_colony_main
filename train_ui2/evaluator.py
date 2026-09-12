@@ -62,20 +62,35 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
             key=lambda k: int(k.split(".")[1]),
         )
         if not hidden_keys:
+            # hybrid: hidden layers live in flat_trunk + joint
+            flat_keys = sorted(
+                (k for k in model_state if k.startswith("flat_trunk.") and k.endswith(".weight")),
+                key=lambda k: int(k.split(".")[1]),
+            )
+            joint_keys = sorted(
+                (k for k in model_state if k.startswith("joint.") and k.endswith(".weight")),
+                key=lambda k: int(k.split(".")[1]),
+            )
+            hidden_keys = flat_keys + joint_keys
+        if not hidden_keys:
             raise ValueError("cannot infer hidden sizes from checkpoint")
         hidden = [model_state[k].shape[0] for k in hidden_keys]
 
     has_flat_net = any(k.startswith("flat_proj") for k in model_state)
-    if has_flat_net:
+    has_flat_trunk = any(k.startswith("flat_trunk.") for k in model_state)
+    if has_flat_net and "actor.weight" in model_state:
         n_actions = model_state["actor.weight"].shape[0]
     elif "actor_head.weight" in model_state:
         n_actions = model_state["actor_head.weight"].shape[0]
     else:
         n_actions = int(ckpt.get("n_actions", 0))
 
-    if has_flat_net:
+    if has_flat_net or has_flat_trunk:
         from rl.actor_critic_hybrid import ActorCriticHybrid
-        obs_size = int(ckpt.get("obs_size", 0)) or int(model_state["flat_proj.weight"].shape[1])
+        if has_flat_net and "flat_proj.weight" in model_state:
+            obs_size = int(ckpt.get("obs_size", 0)) or int(model_state["flat_proj.weight"].shape[1])
+        else:
+            obs_size = int(ckpt.get("obs_size", 0)) or int(model_state["flat_trunk.0.weight"].shape[1])
         n_channels = int(ckpt.get("n_channels", 8))
         grid = int(ckpt.get("grid_size", 2 * minimap_radius + 1))
         model = ActorCriticHybrid(

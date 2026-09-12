@@ -324,8 +324,19 @@ class PPO:
             clean_state[ck] = v
         if hasattr(model, "hidden_sizes"):
             hidden_sizes = list(model.hidden_sizes)
-        else:
+        elif hasattr(model, "flat_trunk") and hasattr(model, "joint"):
+            hidden_sizes = (
+                [m.out_features for m in model.flat_trunk if isinstance(m, nn.Linear)] +
+                [m.out_features for m in model.joint if isinstance(m, nn.Linear)]
+            )
+        elif hasattr(model, "trunk"):
             hidden_sizes = [m.out_features for m in model.trunk if isinstance(m, nn.Linear)]
+        elif hasattr(model, "joint"):
+            hidden_sizes = [m.out_features for m in model.joint if isinstance(m, nn.Linear)]
+        elif hasattr(model, "flat_trunk"):
+            hidden_sizes = [m.out_features for m in model.flat_trunk if isinstance(m, nn.Linear)]
+        else:
+            hidden_sizes = []
         extra = {}
         if self.is_hybrid:
             extra["n_channels"] = model.n_channels

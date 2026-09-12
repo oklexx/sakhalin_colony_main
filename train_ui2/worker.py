@@ -311,7 +311,7 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         for nc in norm_candidates:
             if nc.exists():
                 try:
-                    em.env.venv.load_normalization(str(nc))
+                    (getattr(em, "vec_env", None) or em.env).venv.load_normalization(str(nc))
                     log("info", f"[Worker] loaded normalization stats from {nc}")
                     norm_loaded = True
                     break

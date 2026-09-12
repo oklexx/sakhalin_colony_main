@@ -61,10 +61,8 @@ def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device
     if cfg.obs_mode == "minimap":
         from rl.actor_critic_cnn import ActorCriticCNN
 
-        # minimap observations are [B, C, R, R]; n_channels inferred from game
-        # For now reuse flat obs_size as channel count if needed
         return ActorCriticCNN(
-            n_channels=obs_size,  # placeholder — real channel count from env
+            n_channels=8,
             minimap_radius=cfg.minimap_radius,
             n_actions=n_actions,
             hidden_sizes=cfg.net_arch,
@@ -76,7 +74,7 @@ def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device
     return ActorCriticHybrid(
         obs_size=obs_size,
         minimap_radius=cfg.minimap_radius,
-        minimap_channels=3,  # placeholder
+        minimap_channels=8,
         n_actions=n_actions,
         hidden_sizes=cfg.net_arch,
         device=device,
@@ -87,6 +85,7 @@ def _make_buffer(
     cfg: Config,
     n_envs: int,
     obs_size: int,
+    n_actions: int,
     device: torch.device,
 ):
     """Create rollout buffer (tensor or dict variant)."""
@@ -106,6 +105,9 @@ def _make_buffer(
         n_steps=cfg.n_steps,
         n_envs=n_envs,
         obs_size=obs_size,
+        n_actions=n_actions,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
         device=device,
     )
 
@@ -117,7 +119,7 @@ def _make_ppo(cfg: Config, model, buffer):
         model=model,
         buffer=buffer,
         device=buffer.device if hasattr(buffer, "device") else torch.device("cpu"),
-        learning_rate=cfg.learning_rate,
+        lr=cfg.learning_rate,
         gamma=cfg.gamma,
         gae_lambda=cfg.gae_lambda,
         clip_range=cfg.clip_range,
@@ -126,6 +128,10 @@ def _make_ppo(cfg: Config, model, buffer):
         max_grad_norm=cfg.max_grad_norm,
         n_epochs=cfg.n_epochs,
         batch_size=cfg.batch_size,
+        use_amp=cfg.use_amp,
+        amp_dtype=cfg.amp_dtype,
+        torch_compile=cfg.torch_compile,
+        total_training_steps=cfg.total_timesteps,
         target_kl=cfg.target_kl,
     )
 
@@ -167,7 +173,7 @@ class EnvManager:
         self.mm_env = self.vec_env if cfg.is_minimap else None
 
         self.model = _make_model(cfg, self.obs_size, self.n_actions, device)
-        self.buffer = _make_buffer(cfg, self.n_envs, self.obs_size, device)
+        self.buffer = _make_buffer(cfg, self.n_envs, self.obs_size, self.n_actions, device)
         self.ppo = _make_ppo(cfg, self.model, self.buffer)
 
         self._obs: Optional[torch.Tensor | Dict[str, torch.Tensor]] = None
@@ -198,51 +204,75 @@ class EnvManager:
 
     # ── rollout integration ──
 
-    def collect_step(self) -> None:
-        """Collect one step into rollout buffer (policy sampling)."""
+    def collect_step(self, obs: Any = None) -> Tuple[Any, List[Dict[str, Any]]]:
+        """Collect one step into rollout buffer (policy sampling).
+
+        Returns (new_obs, infos) for the trainer's episode tracking.
+        """
+        if obs is not None:
+            self._obs = self._policy_obs(obs)
         if self._obs is None:
             self.reset()
         assert self._obs is not None
 
-        with torch.no_grad():
-            # handle dict vs tensor obs
-            if isinstance(self._obs, dict):
-                action, log_prob, value = self.model.get_action_and_value(self._obs)  # type: ignore
-            else:
-                action, log_prob, value = self.model.get_action_and_value(self._obs)
+        action_masks_np = np.asarray(self.vec_env.action_masks, dtype=np.float32)
+        action_masks_t = torch.as_tensor(action_masks_np, device=self.device, dtype=torch.float32)
 
-        # action masks are not used here directly — env will block invalid actions
-        actions_np = action.cpu().numpy()
-        next_obs, rewards, dones, infos = self.step(actions_np)
+        if self.cfg.obs_mode == "hybrid":
+            flat_obs, minimap_obs = self._obs
+            prev_flat = flat_obs
+            prev_minimap = minimap_obs
+        else:
+            flat_obs = self._obs
+            minimap_obs = None
+            prev_flat = flat_obs
 
-        # convert rewards to tensor for buffer
-        rewards_t = torch.as_tensor(rewards, device=self.device, dtype=torch.float32)
-        terminateds = torch.as_tensor(dones, device=self.device, dtype=torch.float32)
-
-        # buffer expects (obs, actions, log_probs, rewards, dones, values)
-        # obs is the *previous* obs (before step)
-        self.buffer.add(
-            self._obs,  # type: ignore
-            action,
-            log_prob,
-            rewards_t,
-            terminateds,
-            value,
+        sampled = self.ppo.collect_step(
+            flat_obs,
+            minimap=minimap_obs,
+            action_masks=action_masks_t,
         )
-        self._obs = next_obs
+        action = sampled["action"]
+        log_prob = sampled["log_prob"]
+        value = sampled["value"]
 
-    def finish_episode(self) -> None:
-        """Finish rollout and run PPO update."""
-        # bootstrap value for last obs
-        with torch.no_grad():
-            if isinstance(self._obs, dict):
-                last_value = self.model.get_value(self._obs)  # type: ignore
-            else:
-                # _obs may be tensor
-                last_value = self.model.get_value(self._obs)  # type: ignore
-        self.buffer.compute_returns_and_advantages(last_value, self._last_dones)
-        self.ppo.update(self.buffer)
-        self.buffer.clear()
+        actions_np = action.cpu().numpy().astype(np.int64)
+        next_obs, rewards, dones, infos = self.vec_env.step(actions_np)
+        next_obs_t = self._policy_obs(next_obs)
+        self._last_dones = dones
+
+        rewards_t = torch.as_tensor(np.asarray(rewards, dtype=np.float32), device=self.device)
+        terminated_np = np.asarray(getattr(self.vec_env, "_last_terminateds", dones), dtype=bool)
+        terminated_t = torch.as_tensor(terminated_np, device=self.device)
+        dones_t = torch.as_tensor(np.asarray(dones, dtype=bool), device=self.device)
+
+        if self.cfg.obs_mode == "hybrid":
+            next_flat, next_minimap = next_obs_t
+            self._obs = next_obs_t
+            self.buffer.add(
+                prev_minimap,
+                action,
+                rewards_t,
+                log_prob,
+                value,
+                dones_t,
+                terminated=terminated_t,
+                flat=prev_flat,
+                action_masks=action_masks_t,
+            )
+        else:
+            self._obs = next_obs_t
+            self.buffer.add(
+                prev_flat,
+                action,
+                rewards_t,
+                log_prob,
+                value,
+                dones_t,
+                terminated=terminated_t,
+                action_masks=action_masks_t,
+            )
+        return self._obs, infos
 
     # ── curriculum ──
 
@@ -263,7 +293,7 @@ class EnvManager:
         self.cfg.curriculum_stage = stage
         # vec env may need to be recreated or notified
         try:
-            self.vec_env.set_curriculum_stage(stage)  # type: ignore
+            self.vec_env.venv.set_curriculum_stage(stage)  # type: ignore
         except AttributeError:
             pass
 

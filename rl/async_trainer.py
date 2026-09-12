@@ -163,6 +163,14 @@ class AsyncTrainer:
                         self._ep_lengths.append(l or 0)
                         if r > self.best_reward:
                             self.best_reward = r
+                ep_ret = info.get("ep_return")
+                if ep_ret is not None and info.get("steps", 0) > 0:
+                    self._ep_returns.append(float(ep_ret))
+                    if len(self._ep_returns) > self._ep_returns_maxlen:
+                        self._ep_returns.pop(0)
+                    self._ep_lengths.append(int(info.get("steps", 0)))
+                    if float(ep_ret) > self.best_reward:
+                        self.best_reward = float(ep_ret)
 
             obs = new_obs
 
@@ -386,7 +394,7 @@ class AsyncTrainer:
 
             # Save CURRENT normalization stats (not the stale file from training start)
             norm_path = save_dir / "best_model.norm.json"
-            self.em.env.venv.save_normalization(str(norm_path))
+            (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(norm_path))
 
             meta = {
                 "best_score": score,
@@ -435,7 +443,7 @@ class AsyncTrainer:
 
         obs = self.em.reset()
         Path(self.cfg.model_dir).mkdir(parents=True, exist_ok=True)
-        self.em.env.venv.save_normalization(str(Path(self.cfg.model_dir) / "normalization.json"))
+        (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(Path(self.cfg.model_dir) / "normalization.json"))
         t_start = time.perf_counter()
         total_done = 0
         rollout_idx = 0
@@ -600,8 +608,8 @@ class AsyncTrainer:
                 ckpt_path = save_dir / f"checkpoint_{total_done}_steps.pt"
                 self.em.ppo.save(str(ckpt_path))
                 norm_path = str(ckpt_path).replace(".pt", ".norm.json")
-                self.em.env.venv.save_normalization(norm_path)
-                self.em.env.venv.save_normalization(str(save_dir / "normalization.json"))
+                (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(norm_path)
+                (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(save_dir / "normalization.json"))
                 self._log(f"[Save] {ckpt_path}")
 
             # Curriculum stage switching
@@ -650,7 +658,7 @@ class AsyncTrainer:
         final_path = save_dir / "final_model.pt"
         self.em.ppo.save(str(final_path))
         norm_path = str(final_path).replace(".pt", ".norm.json")
-        self.em.env.venv.save_normalization(norm_path)
+        (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(norm_path)
         self._log(f"[Save] Final model: {final_path}")
 
         # End-of-Training Tournament: evaluate all candidates and ensure best_model.pt is the true champion
