@@ -79,9 +79,10 @@ unrestricted env (5M cash): 14/32 build actions available
 ALL CHECKS PASSED (0 failure(s))
 ```
 
-Те же проверки на **старых** исходниках (`git show HEAD:src/env.cpp`) дают
-`BUG REPRODUCED: stage switch dropped the manual set` — то есть сначала баг
-воспроизведён, потом исправлен.
+Те же проверки, собранные с **прежней** версией `src/env.cpp`
+(коммит `847e5d5`, файл можно достать через `git show 847e5d5:src/env.cpp`),
+дают `BUG REPRODUCED: stage switch dropped the manual set` —
+то есть сначала баг воспроизведён, потом исправлен.
 
 **Python**: `python -m pytest tests/test_curriculum_scope.py -q` → `19 passed, 2 skipped`
 (в т.ч. eval восстанавливает набор из `best_model.meta.json`, аргументы
