@@ -35,7 +35,8 @@ def _make_vec_env(cfg: Config):
         n_envs=cfg.n_envs,
         map_size=cfg.map_size,
         curriculum_stage=cfg.curriculum_stage,
-        unlock_ids=cfg.unlock_ids,
+        # ручной набор зданий применяется только при включённом чекбоксе
+        unlock_ids=(cfg.unlock_ids if cfg.use_curriculum_tab else ""),
         reward_config=reward_cfg,
         seed=cfg.seed,
         difficulty=cfg.difficulty,
@@ -281,7 +282,10 @@ class EnvManager:
         try:
             from rl.curriculum import ids_for_stage
 
-            return ids_for_stage(self.cfg.curriculum_stage, unlock_ids=self.cfg.unlock_ids)
+            return ids_for_stage(
+                self.cfg.curriculum_stage,
+                unlock_ids=(self.cfg.unlock_ids if self.cfg.use_curriculum_tab else ""),
+            )
         except Exception:
             # fallback: ask env
             try:

@@ -160,6 +160,9 @@ class Config:
     seed: int = 42
     curriculum_stage: int = 0
     unlock_ids: str = ""
+    # True = ручной набор зданий из вкладки «Курикулум» (unlock_ids) применяется к среде;
+    # False = unlock_ids игнорируется, действует только curriculum_stage.
+    use_curriculum_tab: bool = False
     curriculum_resources: str = ""  # csv, e.g. "water,wood,coal"; "" = all
     reward: RewardConfig = field(default_factory=RewardConfig)
 
@@ -301,6 +304,11 @@ class Config:
                 val = src[key]
                 if val not in ("", None, []):
                     setattr(cfg, key, val)
+
+        # legacy configs have no `use_curriculum_tab`: если в них уже записан
+        # ручной набор зданий — считаем, что он должен применяться.
+        if "use_curriculum_tab" not in src and cfg.unlock_ids:
+            cfg.use_curriculum_tab = True
 
         return cfg
 

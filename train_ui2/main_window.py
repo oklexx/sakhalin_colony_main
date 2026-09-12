@@ -210,9 +210,21 @@ class MainWindow2(QMainWindow):
         inner.addWidget(self.spn_mm_radius, row, 1, Qt.AlignLeft)
         row += 1
         inner.addWidget(T.field_label("Курикулум", "0 = все здания, 1–3 = ограниченные наборы (см. вкладку Курикулум)"), row, 0)
+        stage_bar = QHBoxLayout()
+        stage_bar.setSpacing(6)
+        stage_bar.setContentsMargins(0, 0, 0, 0)
         self.cmb_stage = T.combo([0, 1, 2, 3], 0)
         self.cmb_stage.currentIndexChanged.connect(lambda _: self._on_param_changed())
-        inner.addWidget(self.cmb_stage, row, 1, Qt.AlignLeft)
+        stage_bar.addWidget(self.cmb_stage)
+        self.chk_use_curriculum_tab = T.check(
+            "Ручной набор из Курикулума", False,
+            "Применять здания, отмеченные галочками на вкладке «Курикулум» (unlock_ids).\n"
+            "Выключено → работает только выбранный этап 0–3.")
+        self.chk_use_curriculum_tab.stateChanged.connect(lambda _: self._on_param_changed())
+        stage_bar.addWidget(self.chk_use_curriculum_tab)
+        stage_bar.addStretch(1)
+        stage_w = QWidget(); stage_w.setLayout(stage_bar)
+        inner.addWidget(stage_w, row, 1, Qt.AlignLeft)
         row += 1
         inner.addWidget(T.field_label("Карта", "Каждый старт — новый seed (новая карта)"), row, 0)
         seed_bar = QHBoxLayout()
@@ -504,7 +516,7 @@ class MainWindow2(QMainWindow):
         root.addWidget(scroll, 1)
 
         # footer hint
-        root.addWidget(T.label("Совет: этап 0 в расписании = все здания. Ручной набор зданий (галочки) работает независимо от этапов — если отмечены здания, они попадут в unlock_ids и будут доступны с любого этапа.", T.DIM, word_wrap=True))
+        root.addWidget(T.label("Совет: этап 0 в расписании = все здания. Ручной набор зданий (галочки) применяется только при включённом чекбоксе «Ручной набор из Курикулума» на вкладке «Обучение» — тогда доступны ровно отмеченные здания (плюс здания выбранного этапа).", T.DIM, word_wrap=True))
 
         return page
 
@@ -524,6 +536,10 @@ class MainWindow2(QMainWindow):
         self.cmb_stage.blockSignals(True)
         self.cmb_stage.setCurrentIndex(stage)
         self.cmb_stage.blockSignals(False)
+        # пресет = осознанный выбор набора → включаем его применение
+        self.chk_use_curriculum_tab.blockSignals(True)
+        self.chk_use_curriculum_tab.setChecked(True)
+        self.chk_use_curriculum_tab.blockSignals(False)
         self._on_curriculum_changed()
         self.log("info", f"Курикулум: пресет этап {stage} → {len(target)} зданий")
 
@@ -715,6 +731,9 @@ class MainWindow2(QMainWindow):
                     merged["curriculum_schedule"] = []
                 if "unlock_ids" not in merged:
                     merged["unlock_ids"] = ""
+                if "use_curriculum_tab" not in d:
+                    # legacy state file: ручной набор уже был → применяем его
+                    merged["use_curriculum_tab"] = bool(str(merged["unlock_ids"]).strip())
                 if merged.get("gamma") in (0.99, 0.995, 0.997):
                     merged["gamma"] = 0.999
                 if merged.get("ent_coef") == 0.05:
@@ -753,6 +772,11 @@ class MainWindow2(QMainWindow):
             self.cmb_obs_mode.setCurrentIndex(idx)
         self.spn_mm_radius.setValue(int(cfg.get("minimap_radius", 14)))
         self.cmb_stage.setCurrentIndex(int(cfg.get("curriculum_stage", 0)))
+        # legacy-конфиг без флага: включаем, если ручной набор уже был сохранён
+        self.chk_use_curriculum_tab.blockSignals(True)
+        self.chk_use_curriculum_tab.setChecked(bool(cfg.get(
+            "use_curriculum_tab", bool(str(cfg.get("unlock_ids", "")).strip()))))
+        self.chk_use_curriculum_tab.blockSignals(False)
         net = cfg.get("net_arch", [256, 256])
         if isinstance(net, list) and net:
             self.spn_layers.setValue(len(net))
@@ -804,7 +828,7 @@ class MainWindow2(QMainWindow):
             self._set_curriculum_schedule(clean)
         self._extra_cfg = {k: v for k, v in cfg.items() if k not in (
             "model_name","difficulty","obs_mode","minimap_radius","curriculum_stage",
-            "unlock_ids","curriculum_resources","curriculum_schedule",
+            "unlock_ids","use_curriculum_tab","curriculum_resources","curriculum_schedule",
             "net_arch","use_amp","torch_compile","cpp_threads",
             "watch_map_size","watch_seed","watch_visual","watch_speed",
             "config_version"
@@ -851,6 +875,7 @@ class MainWindow2(QMainWindow):
             "minimap_radius": self.spn_mm_radius.value(),
             "curriculum_stage": self.cmb_stage.currentIndex(),
             "unlock_ids": unlock_ids,
+            "use_curriculum_tab": self.chk_use_curriculum_tab.isChecked(),
             "curriculum_resources": curriculum_resources,
             "curriculum_schedule": sched,
             "net_arch": [self.spn_width.value()] * self.spn_layers.value(),
@@ -1177,6 +1202,8 @@ class MainWindow2(QMainWindow):
                 self.config["curriculum_schedule"] = []
             if "unlock_ids" not in self.config:
                 self.config["unlock_ids"] = ""
+            if "use_curriculum_tab" not in self.config:
+                self.config["use_curriculum_tab"] = bool(str(self.config["unlock_ids"]).strip())
             self._restore_state()
             self._save_state()
             self.log("info", f"Конфиг загружен: {path} → все вкладки обновлены")
