@@ -275,6 +275,47 @@ class AsyncTrainer:
             return best_env.last_action
         return None
 
+    def _curriculum_meta(self) -> Dict[str, Any]:
+        """Curriculum fields stored in meta.json next to a checkpoint.
+
+        Persisting them is what lets eval/watch restore the exact scenario the
+        model was trained in (stage + manual set from the «Курикулум» tab).
+        """
+        return {
+            "curriculum_stage_at_best": int(self._curriculum_stage),
+            "unlock_ids": self.cfg.effective_unlock_ids(),
+            "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
+        }
+
+    def _curriculum_kwargs(self) -> Dict[str, Any]:
+        """Curriculum kwargs for `run_eval` (keep eval == training scenario)."""
+        return {
+            "curriculum_stage": int(self._curriculum_stage),
+            "unlock_ids": self.cfg.effective_unlock_ids(),
+            "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
+        }
+
+    def _update_best_meta_curriculum(self, save_dir: Path) -> None:
+        """Merge current curriculum fields into an existing best_model.meta.json.
+
+        The tournament may overwrite best_model.pt after the last eval, leaving a
+        meta file that describes a different curriculum; watch/eval read it, so
+        keep it in sync.
+        """
+        import json
+
+        meta_path = save_dir / "best_model.meta.json"
+        if not meta_path.exists():
+            return
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(meta, dict):
+                return
+            meta.update(self._curriculum_meta())
+            meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except (OSError, ValueError) as ex:
+            self._log(f"[Meta] curriculum update failed: {ex}")
+
     def _eval(self, total_done: int) -> Dict[str, float]:
         """Run evaluation episodes with the current policy.
 
@@ -300,6 +341,8 @@ class AsyncTrainer:
             json.dump({
                 "difficulty": getattr(self.cfg, "difficulty", "normal"),
                 "config": {"reward": self.cfg.reward.to_dict()},
+                # eval must play under the SAME curriculum as training
+                **self._curriculum_meta(),
             }, f)
 
         if self.loop_detector:
@@ -330,6 +373,7 @@ class AsyncTrainer:
                     mode=getattr(self.cfg, "obs_mode", "flat"),
                     minimap_radius=getattr(self.cfg, "minimap_radius", 14),
                     difficulty=getattr(self.cfg, "difficulty", "normal"),
+                    **self._curriculum_kwargs(),
                 )
                 all_days.extend(result.get("episode_days", [result["days"]]))
                 all_bases.extend(result.get("episode_bases", [result["bases"]]))
@@ -407,7 +451,8 @@ class AsyncTrainer:
                 "min_days": min_days,
                 "total_timesteps": total_done,
                 "episodes": len(all_days),
-                "curriculum_stage_at_best": self._curriculum_stage,
+                # stage + manual set → watch/eval can rebuild the same scenario
+                **self._curriculum_meta(),
                 "ci95": ci95,
                 "difficulty": getattr(self.cfg, "difficulty", "normal"),
                 "config": {"reward": self.cfg.reward.to_dict()},
@@ -701,6 +746,7 @@ class AsyncTrainer:
                             mode=getattr(self.cfg, "obs_mode", "flat"),
                             minimap_radius=getattr(self.cfg, "minimap_radius", 14),
                             difficulty=getattr(self.cfg, "difficulty", "normal"),
+                            **self._curriculum_kwargs(),
                         )
                         all_days.extend(res.get("episode_days", [res["days"]]))
                         all_bases.extend(res.get("episode_bases", [res["bases"]]))
@@ -738,6 +784,7 @@ class AsyncTrainer:
                 cp_norm = Path(str(best_cand_path).replace(".pt", ".norm.json"))
                 if cp_norm.exists():
                     shutil.copy(str(cp_norm), str(save_dir / "best_model.norm.json"))
+                self._update_best_meta_curriculum(save_dir)
         except Exception as te:
             self._log(f"[Tournament] Error during tournament: {te}")
 

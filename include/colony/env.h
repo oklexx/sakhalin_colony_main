@@ -31,6 +31,10 @@ public:
                  int64_t no_people_days = GAME_OVER_NO_PEOPLE_DAYS);
 
     void set_curriculum_stage(int stage);
+    // Ручной набор зданий из вкладки «Курикулум» (unlock_ids). Хранится в среде,
+    // чтобы смена этапа не теряла его (см. set_curriculum_stage).
+    void set_unlock_ids(const std::vector<std::string>& ids);
+    const std::vector<std::string>& unlock_ids() const { return manual_unlock_ids_; }
     void set_rewards(const RewardConfig& cfg) {
         std::lock_guard lock(*cfg_mutex_);
         cfg_ = cfg;
@@ -129,6 +133,8 @@ private:
     int road_count() const;
     std::vector<Season> step_seasons(int y, int m, int d, int n_days) const;
     void compute_catalog();
+    // Перестроить unlocked_ из этапа + ручного набора
+    void rebuild_unlocked();
 
     struct PairHash {
         size_t operator()(const std::pair<int, int>& p) const {
@@ -152,6 +158,8 @@ private:
     bool no_city_game_over_;
     int64_t no_people_days_;
     std::unordered_set<std::string> unlocked_;
+    // Ручной набор (unlock_ids): сохраняется между сменами этапа курикулума
+    std::vector<std::string> manual_unlock_ids_;
     bool has_unlocked_;
 
     std::vector<std::string> build_ids_;
@@ -254,6 +262,11 @@ public:
         curriculum_stage_ = stage;
         for (auto& env : envs_) env.set_curriculum_stage(stage);
     }
+    void set_unlock_ids(const std::vector<std::string>& ids) {
+        unlock_ids_ = ids;
+        for (auto& env : envs_) env.set_unlock_ids(ids);
+    }
+    const std::vector<std::string>& unlock_ids() const { return unlock_ids_; }
     void set_rewards(const RewardConfig& cfg) {
         cfg_ = cfg;
         for (auto& env : envs_) env.set_rewards(cfg);

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -804,11 +805,26 @@ int main(int argc, char* argv[]) {
     int curriculum_stage = 0;
     int minimap_radius = -1;
     std::string reward_config_path;
+    std::vector<std::string> unlock_ids;  // ручной набор из вкладки «Курикулум»
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--seed" && i+1 < argc) seed = std::stoll(argv[++i]);
         else if (a == "--map-size" && i+1 < argc) map_size = std::stoi(argv[++i]);
         else if (a == "--stage" && i+1 < argc) curriculum_stage = std::stoi(argv[++i]);
+        else if (a == "--unlock-id" && i+1 < argc) unlock_ids.push_back(argv[++i]);
+        else if (a == "--unlock-ids" && i+1 < argc) {
+            // CSV, как в UI (unlock_ids): --unlock-ids WaterChannel,Road
+            std::string csv = argv[++i];
+            std::stringstream ss(csv);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                // trim
+                size_t b = item.find_first_not_of(" \t");
+                size_t e = item.find_last_not_of(" \t");
+                if (b == std::string::npos) continue;
+                unlock_ids.push_back(item.substr(b, e - b + 1));
+            }
+        }
         else if (a == "--minimap-radius" && i+1 < argc) minimap_radius = std::stoi(argv[++i]);
         else if (a == "--headless-ai") headless_ai = true;
         else if (a == "--actions-file" && i+1 < argc) ai_actions_path = argv[++i];
@@ -885,7 +901,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    ColonyEnvCpp env(bd, ed, seed, map_size, curriculum_stage, {}, rc, "normal", gui_no_city_game_over, gui_no_people_days);
+    // Ручной набор зданий (--unlock-ids) применяется вместе с этапом: на этапе 0
+    // без него открывались все 32 здания, и наблюдение за моделью, обученной на
+    // одном водоканале, показывало постройку прииска.
+    ColonyEnvCpp env(bd, ed, seed, map_size, curriculum_stage, unlock_ids, rc, "normal", gui_no_city_game_over, gui_no_people_days);
     if (minimap_radius > 0) {
         env.set_minimap_radius(minimap_radius);
     }
@@ -919,9 +938,9 @@ int main(int argc, char* argv[]) {
     {
         FILE* f = fopen("ai_debug_gui.log", "a");
         if (f) {
-            fprintf(f, "=== GUI STARTUP === headless=%d actions_path='%s' state_path='%s' seed=%lld map_size=%d stage=%d\n",
+            fprintf(f, "=== GUI STARTUP === headless=%d actions_path='%s' state_path='%s' seed=%lld map_size=%d stage=%d unlock_ids=%zu\n",
                     headless_ai, ai_actions_path.c_str(), ai_state_path.c_str(),
-                    (long long)seed, map_size, curriculum_stage);
+                    (long long)seed, map_size, curriculum_stage, unlock_ids.size());
             fclose(f);
         }
     }

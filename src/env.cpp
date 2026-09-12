@@ -45,10 +45,11 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
       cfg_(cfg),
       map_size_(map_size),
       curriculum_stage_(curriculum_stage),
-      has_unlocked_(false),
       difficulty_(difficulty),
       no_city_game_over_(no_city_game_over),
       no_people_days_(no_people_days),
+      manual_unlock_ids_(unlock_ids),
+      has_unlocked_(false),
       game_(*base_data_, *events_data_, seed, map_size, difficulty, no_city_game_over, no_people_days) {
     // пул построек
     std::unordered_set<std::string> subset;
@@ -63,34 +64,21 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
     for (int i = 0; i < n_build_; i++) build_id_to_idx_[build_ids_[i]] = i;
     manager_base_ = A_BUILD0 + n_build_;
 
-    // курикулум
-    if (curriculum_stage > 0) {
-        for (int s = 1; s <= curriculum_stage && s <= 3; s++) {
-            const char* const* list = nullptr;
-            int n = 0;
-            if (s == 1) { list = CURRICULUM_STAGE_1; n = (int)(sizeof(CURRICULUM_STAGE_1) / sizeof(char*)); }
-            if (s == 2) { list = CURRICULUM_STAGE_2; n = (int)(sizeof(CURRICULUM_STAGE_2) / sizeof(char*)); }
-            if (s == 3) { list = CURRICULUM_STAGE_3; n = (int)(sizeof(CURRICULUM_STAGE_3) / sizeof(char*)); }
-            for (int i = 0; i < n; i++) unlocked_.insert(list[i]);
-        }
-        has_unlocked_ = true;
-    }
-    if (!unlock_ids.empty()) {
-        for (const std::string& id : unlock_ids) unlocked_.insert(id);
-        has_unlocked_ = true;
-    }
+    // курикулум (этап + ручной набор)
+    rebuild_unlocked();
 
     compute_catalog();
     // RL-среда не использует undo — отключаем для производительности
     game_.set_enable_undo(false);
 }
 
-void ColonyEnvCpp::set_curriculum_stage(int stage) {
-    curriculum_stage_ = stage;
+// Разрешённый набор = пресет этапа (1..3) ∪ ручной набор из вкладки «Курикулум».
+// Пусто и там и там (этап 0, ручного набора нет) = разрешено всё (has_unlocked_ = false).
+void ColonyEnvCpp::rebuild_unlocked() {
     unlocked_.clear();
     has_unlocked_ = false;
-    if (stage > 0) {
-        for (int s = 1; s <= stage && s <= 3; s++) {
+    if (curriculum_stage_ > 0) {
+        for (int s = 1; s <= curriculum_stage_ && s <= 3; s++) {
             const char* const* list = nullptr;
             int n = 0;
             if (s == 1) { list = CURRICULUM_STAGE_1; n = (int)(sizeof(CURRICULUM_STAGE_1) / sizeof(char*)); }
@@ -100,6 +88,26 @@ void ColonyEnvCpp::set_curriculum_stage(int stage) {
         }
         has_unlocked_ = true;
     }
+    // Ручной набор применяется и на этапе 0 — иначе «поставил только водоканал»
+    // снова открывало все 32 здания.
+    for (const std::string& id : manual_unlock_ids_) {
+        if (id.empty()) continue;
+        unlocked_.insert(id);
+        has_unlocked_ = true;
+    }
+}
+
+void ColonyEnvCpp::set_curriculum_stage(int stage) {
+    curriculum_stage_ = stage;
+    // Раньше здесь unlocked_ просто очищался: смена этапа (расписание /
+    // «сбросить курикулум») молча теряла ручной набор. Теперь он сохраняется.
+    rebuild_unlocked();
+    compute_catalog();
+}
+
+void ColonyEnvCpp::set_unlock_ids(const std::vector<std::string>& ids) {
+    manual_unlock_ids_ = ids;
+    rebuild_unlocked();
     compute_catalog();
 }
 

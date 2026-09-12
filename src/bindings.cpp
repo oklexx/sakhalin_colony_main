@@ -437,6 +437,8 @@ PYBIND11_MODULE(colony_cpp, m) {
             return d;
         })
         .def("set_curriculum_stage", &ColonyEnvCpp::set_curriculum_stage, py::arg("stage"))
+        .def("set_unlock_ids", &ColonyEnvCpp::set_unlock_ids, py::arg("ids"))
+        .def("unlock_ids", &ColonyEnvCpp::unlock_ids)
         .def("set_rewards", &ColonyEnvCpp::set_rewards, py::arg("cfg"))
         .def("reward_config", &ColonyEnvCpp::reward_config);
 
@@ -504,6 +506,8 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("total_chain_daily", &ColonyVecEnvCpp::total_chain_daily)
         .def("mean_net_worth", &ColonyVecEnvCpp::mean_net_worth)
         .def("set_curriculum_stage", &ColonyVecEnvCpp::set_curriculum_stage, py::arg("stage"))
+        .def("set_unlock_ids", &ColonyVecEnvCpp::set_unlock_ids, py::arg("ids"))
+        .def("unlock_ids", &ColonyVecEnvCpp::unlock_ids)
         .def("set_rewards", &ColonyVecEnvCpp::set_rewards, py::arg("cfg"))
         .def("set_step_log", &ColonyVecEnvCpp::set_step_log, py::arg("env_idx"), py::arg("path"))
         .def("clear_step_log", &ColonyVecEnvCpp::clear_step_log, py::arg("env_idx"))

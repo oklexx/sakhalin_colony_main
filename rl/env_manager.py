@@ -36,7 +36,8 @@ def _make_vec_env(cfg: Config):
         map_size=cfg.map_size,
         curriculum_stage=cfg.curriculum_stage,
         # ручной набор зданий применяется только при включённом чекбоксе
-        unlock_ids=(cfg.unlock_ids if cfg.use_curriculum_tab else ""),
+        # (единая точка правды — Config.effective_unlock_ids / rl.curriculum)
+        unlock_ids=cfg.effective_unlock_ids(),
         reward_config=reward_cfg,
         seed=cfg.seed,
         difficulty=cfg.difficulty,
@@ -278,13 +279,18 @@ class EnvManager:
     # ── curriculum ──
 
     def get_allowed_buildings(self) -> List[str]:
-        """Return ids allowed by current curriculum stage."""
-        try:
-            from rl.curriculum import ids_for_stage
+        """Return ids allowed by current curriculum stage + manual set."""
+        return self.get_allowed_buildings_for_stage(self.cfg.curriculum_stage)
 
-            return ids_for_stage(
-                self.cfg.curriculum_stage,
-                unlock_ids=(self.cfg.unlock_ids if self.cfg.use_curriculum_tab else ""),
+    def get_allowed_buildings_for_stage(self, stage: int) -> List[str]:
+        """Ids allowed at `stage` (stage preset ∪ manual set from the UI tab)."""
+        try:
+            from rl.curriculum import allowed_ids
+
+            return allowed_ids(
+                stage,
+                unlock_ids=self.cfg.unlock_ids,
+                use_curriculum_tab=self.cfg.use_curriculum_tab,
             )
         except Exception:
             # fallback: ask env
@@ -296,9 +302,30 @@ class EnvManager:
     def set_curriculum_stage(self, stage: int) -> None:
         self.cfg.curriculum_stage = stage
         # vec env may need to be recreated or notified
+        venv = None
         try:
-            self.vec_env.venv.set_curriculum_stage(stage)  # type: ignore
+            venv = self.vec_env.venv  # type: ignore[attr-defined]
+            venv.set_curriculum_stage(stage)
         except AttributeError:
+            return
+        # C++ set_curriculum_stage() rebuilds the stage preset from scratch; older
+        # builds also dropped the manual set, so re-apply it explicitly. Without
+        # this, a stage switch (schedule / «сбросить курикулум») silently
+        # unlocked every building — including ones the user never ticked.
+        manual = self.cfg.effective_unlock_ids()
+        if not manual:
+            return
+        setter = getattr(venv, "set_unlock_ids", None)
+        if not callable(setter):
+            if not getattr(self, "_warned_stale_pyd", False):
+                self._warned_stale_pyd = True
+                print("[EnvManager] WARNING: colony_cpp.pyd is stale (no set_unlock_ids) — "
+                      "manual unlock_ids may be dropped on curriculum stage switch; "
+                      "rebuild with build_pyext.bat.", flush=True)
+            return
+        try:
+            setter([bid for bid in manual.split(",") if bid])
+        except Exception:
             pass
 
     def close(self) -> None:
