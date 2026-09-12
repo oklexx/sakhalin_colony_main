@@ -23,6 +23,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "python"))
 from rl.config import (
     Config, RewardConfig, load_default_reward_config, default_reward_profile_path,
 )
+from rl.curriculum import allowed_ids
 from rl.env_manager import EnvManager
 from rl.async_trainer import AsyncTrainer
 
@@ -85,6 +86,14 @@ def parse_args():
                    help="Log every step (action, reward, building info) to log_dir/name/actions.log")
     p.add_argument("--curriculum-schedule", type=str, default=None,
                    help="Stage schedule as 'timesteps:stage,timesteps:stage,...' e.g. '200000:1,400000:2,500000:3'")
+    p.add_argument("--curriculum-stage", type=int, default=_d.curriculum_stage, choices=[0, 1, 2, 3],
+                   help="Curriculum stage: 0 = all buildings, 1-3 = cumulative presets")
+    p.add_argument("--unlock-ids", type=str, default=_d.unlock_ids,
+                   help="Manual building set (CSV), same as the UI «Курикулум» tab: "
+                        "--unlock-ids WaterChannel. Merged with the stage preset; "
+                        "on stage 0 it is the ONLY allowed set.")
+    p.add_argument("--use-curriculum-tab", action="store_true",
+                   help="Apply --unlock-ids (default: enabled automatically when --unlock-ids is given)")
     return p.parse_args()
 
 
@@ -121,9 +130,14 @@ def main():
     if args.disable_daily_income is not None:
         reward.disable_daily_income = args.disable_daily_income
 
+    use_curriculum_tab = bool(args.use_curriculum_tab) or bool(args.unlock_ids.strip())
+
     cfg = Config(
         map_size=args.map_size,
         difficulty=args.difficulty,
+        curriculum_stage=args.curriculum_stage,
+        unlock_ids=args.unlock_ids,
+        use_curriculum_tab=use_curriculum_tab,
         eval_seeds=args.eval_seeds if args.eval_seeds is not None else [42],
         eval_use_median=not args.eval_use_mean,
         early_stopping_patience=args.early_stopping_patience,
@@ -176,6 +190,9 @@ def main():
     print(f"[Config] AMP={cfg.use_amp} ({cfg.amp_dtype}) compile={cfg.torch_compile}")
     print(f"[Config] device={device}")
     print(f"[Config] model_dir={cfg.model_dir}")
+    print(f"[Config] curriculum: stage={cfg.curriculum_stage} "
+          f"manual={cfg.effective_unlock_ids() or '—'} "
+          f"({len(allowed_ids(cfg.curriculum_stage, cfg.effective_unlock_ids(), True))} buildings)")
 
     t0 = time.time()
     em = EnvManager(cfg, device)

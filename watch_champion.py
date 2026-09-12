@@ -39,24 +39,58 @@ class TeeWriter:
         self.file.flush()
 
 
-def apply_curriculum_stage(env, stage):
-    """Apply curriculum stage to the env. None = skip, 0 = all buildings, 1-3 = stages."""
+def apply_curriculum_stage(env, stage, unlock_ids=None):
+    """Apply curriculum stage (and manual set) to the env.
+
+    None stage = skip, 0 = all buildings, 1-3 = stage presets.
+
+    NOTE: C++ ``set_curriculum_stage()`` rebuilds the stage preset from scratch.
+    Builds whose pyd predates the fix also dropped the manual set there, so when
+    a manual set is requested we re-apply it explicitly via ``set_unlock_ids``
+    (present in current builds; older ones are simply skipped).
+    """
     if stage is not None:
         env.cpp_env.set_curriculum_stage(stage)
+        manual = [bid for bid in str(unlock_ids or "").split(",") if bid]
+        setter = getattr(env.cpp_env, "set_unlock_ids", None)
+        if manual and callable(setter):
+            setter(manual)
+
+
+def read_curriculum_from_meta(model_dir):
+    """Read stage + manual set + checkbox flag from the model meta files."""
+    from rl.curriculum import read_curriculum_meta
+
+    return read_curriculum_meta(Path(model_dir))
 
 
 def read_stage_from_meta(model_dir):
     """Read curriculum_stage_at_best from best_model.meta.json. Returns None if not found."""
-    import json
-    meta_path = model_dir / "best_model.meta.json"
-    if not meta_path.exists():
+    return read_curriculum_from_meta(model_dir)["curriculum_stage"]
+
+
+def curriculum_action_mask(allowed, action_names):
+    """Action mask (1.0/0.0) that locks BUILD_* actions outside `allowed`.
+
+    Safety net for the GUI watch: the C++ exe only restricts the env if it was
+    rebuilt with --unlock-ids support. Intersecting the mask here guarantees the
+    watched policy can never pick a building the curriculum forbids. Returns
+    None when the curriculum does not restrict anything.
+    """
+    if allowed is None:
         return None
-    try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-        return meta.get("curriculum_stage_at_best")
-    except (json.JSONDecodeError, OSError):
-        return None
+    allowed_norm = {str(b).replace("_", "").upper() for b in allowed}
+    mask = []
+    restricted = False
+    for name in action_names:
+        if name.startswith("BUILD_"):
+            bid = name[len("BUILD_"):].replace("_", "").upper()
+            ok = bid in allowed_norm
+            restricted = restricted or not ok
+            mask.append(1.0 if ok else 0.0)
+        else:
+            mask.append(1.0)
+    return mask if restricted else None
 
 
 def write_action(action_file: Path, action: int) -> None:
@@ -131,6 +165,7 @@ def launch_visual_watch(
     seed: int,
     map_size: int,
     curriculum_stage: int | None = None,
+    unlock_ids: str | None = None,
     reward_config_path: str | None = None,
     minimap_radius: int | None = None,
 ) -> "subprocess.Popen":
@@ -146,6 +181,10 @@ def launch_visual_watch(
     ]
     if curriculum_stage is not None:
         args.extend(["--stage", str(curriculum_stage)])
+    if unlock_ids:
+        # The GUI env must be restricted too, otherwise its action_mask re-enables
+        # every building and the watched policy picks e.g. прииск again.
+        args.extend(["--unlock-ids", str(unlock_ids)])
     if reward_config_path:
         args.extend(["--reward-config", reward_config_path])
     if minimap_radius is not None:
@@ -185,6 +224,10 @@ def main():
     parser.add_argument("--curriculum-stage", type=int, default=None,
                         help="Override curriculum stage (0=all buildings, 1-3). "
                              "If not set, reads from best_model.meta.json")
+    parser.add_argument("--unlock-ids", type=str, default=None,
+                        help="Comma-separated building ids from the «Курикулум» tab "
+                             "(manual set). If not set, reads unlock_ids from the "
+                             "model meta. Pass \"\" to explicitly allow all buildings.")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
     args = parser.parse_args()
@@ -289,7 +332,28 @@ def main():
                     break
             except (Exception,):
                 pass
-    env = CppColonyEnv(map_size=args.map_size, reward_config=reward_cfg)
+
+    # Curriculum: the watched env MUST have the same allowed-buildings set as
+    # training. Previously the manual set from the «Курикулум» tab was lost here
+    # and stage 0 unlocked every building — the champion then built Goldmine
+    # (прииск) even though only WaterChannel was allowed during training.
+    from rl.curriculum import resolve_curriculum
+
+    resolved = resolve_curriculum(
+        model_dir,
+        curriculum_stage=args.curriculum_stage,
+        unlock_ids=args.unlock_ids,
+    )
+    stage = int(resolved["curriculum_stage"])
+    manual_csv = str(resolved["unlock_ids"])
+    n_allowed = len(resolved["allowed"])
+
+    env = CppColonyEnv(
+        map_size=args.map_size,
+        reward_config=reward_cfg,
+        curriculum_stage=stage,
+        unlock_ids=manual_csv or None,
+    )
     # Match the env's minimap grid to the policy's (see train_ui/evaluator.py).
     # Without this, watching a hybrid/minimap model trained with
     # minimap_radius != 14 dies with a shape mismatch on the first step.
@@ -315,16 +379,25 @@ def main():
         print(f"WARNING: no normalization found in {model_dir}, using raw observations")
         print(f"  Available files: {[f.name for f in model_dir.iterdir() if f.suffix in ('.json', '.pt')]}")
 
-    stage = args.curriculum_stage
-    if stage is None:
-        stage = read_stage_from_meta(model_dir)
-    if stage is not None:
-        apply_curriculum_stage(env, stage)
-        print(f"Curriculum stage: {stage}")
+    # (stage/unlock ids were already applied at construction above — calling
+    # set_curriculum_stage() here would drop the manual set on older pyd builds)
+    stored = read_curriculum_from_meta(model_dir)
+    if stored["curriculum_stage"] is not None or stored["unlock_ids"] is not None:
+        print(f"Curriculum (from model meta): stage={stage}"
+              f"{f', manual={manual_csv}' if manual_csv else ''}"
+              f" → {n_allowed} buildings allowed")
     else:
-        print("Curriculum stage: not set (all buildings)")
+        print("Curriculum: not set (all buildings)"
+              if not (stage or manual_csv) else
+              f"Curriculum (CLI): stage={stage}"
+              f"{f', manual={manual_csv}' if manual_csv else ''}"
+              f" → {n_allowed} buildings allowed")
 
     action_names = env._action_names
+    cur_mask = curriculum_action_mask(resolved["allowed"], action_names)
+    if cur_mask is not None:
+        locked = sum(1 for v in cur_mask[2:] if v == 0.0)
+        print(f"Action mask: {locked} locked build action(s) forced off")
 
     if args.step_log:
         env.set_step_log(args.step_log)
@@ -351,19 +424,28 @@ def main():
                             np.ascontiguousarray(mm, dtype=np.float32)
                         ).to(dev).reshape(1, *np.asarray(mm).shape)
                         logits, _ = policy(flat_t, mm_t)
-                        action = int(logits.argmax(dim=-1).item())
                     elif is_cnn:
                         mm = env.cpp_env.minimap()
                         mm_t = torch.as_tensor(
                             np.ascontiguousarray(mm, dtype=np.float32)
                         ).to(dev).reshape(1, *np.asarray(mm).shape)
                         logits, _ = policy(mm_t)
-                        action = int(logits.argmax(dim=-1).item())
                     else:
                         obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(dev)
                         obs_t = obs_t.reshape(1, -1)
                         logits, _ = policy(obs_t)
-                        action = int(logits.argmax(dim=-1).item())
+
+                    # Action masking — same as training/eval. Without it the
+                    # watched policy may pick a building the curriculum locked
+                    # (it would only bounce off the env with an error penalty).
+                    if hasattr(env, "action_mask"):
+                        try:
+                            mask = np.asarray(env.action_mask(), dtype=np.float32)
+                            mask_t = torch.as_tensor(mask, device=dev).reshape(1, -1)
+                            logits = logits.masked_fill(mask_t == 0, float("-inf"))
+                        except Exception:
+                            pass
+                    action = int(logits.argmax(dim=-1).item())
 
                 obs, reward, terminated, truncated, info = env.step(action)
                 total_reward += reward
@@ -446,6 +528,7 @@ def main():
             seed=args.seed,
             map_size=args.map_size,
             curriculum_stage=stage,
+            unlock_ids=manual_csv,
             reward_config_path=reward_cfg_path,
             minimap_radius=resolved_minimap_radius,
         )
@@ -474,6 +557,7 @@ def main():
                 seed=args.seed,
                 map_size=args.map_size,
                 curriculum_stage=stage,
+                unlock_ids=manual_csv,
                 reward_config_path=reward_cfg_path,
                 minimap_radius=resolved_minimap_radius,
             )
@@ -562,6 +646,11 @@ def main():
                             if mask is not None:
                                 mask_t = torch.tensor(mask, dtype=torch.float32, device=dev).reshape(1, -1)
                                 logits = logits.masked_fill(mask_t == 0, float("-inf"))
+                            # ...and the curriculum mask (GUI exe may predate
+                            # --unlock-ids support and unlock everything)
+                            if cur_mask is not None:
+                                cm_t = torch.tensor(cur_mask, dtype=torch.float32, device=dev).reshape(1, -1)
+                                logits = logits.masked_fill(cm_t == 0, float("-inf"))
                             action = int(logits.argmax(dim=-1).item())
                         action_name = action_names[action] if action < len(action_names) else str(action)
                         if step_count <= 10 or step_count % 50 == 0:

@@ -331,6 +331,26 @@ class Config:
         self._validate()
         return self
 
+    # ── curriculum ──
+    def effective_unlock_ids(self) -> str:
+        """Manual building set as CSV, or "" when the «Курикулум» checkbox is off.
+
+        Every env instance (training, eval, watch) must build its curriculum from
+        this — otherwise a locked building (e.g. Goldmine) leaks into a scenario
+        where only WaterChannel was requested.
+        """
+        from rl.curriculum import manual_ids_csv
+
+        return manual_ids_csv(self.unlock_ids, self.use_curriculum_tab)
+
+    def curriculum_meta(self) -> Dict[str, Any]:
+        """Curriculum fields to persist next to a checkpoint (meta.json)."""
+        return {
+            "curriculum_stage_at_best": int(self.curriculum_stage),
+            "unlock_ids": self.effective_unlock_ids(),
+            "use_curriculum_tab": bool(self.use_curriculum_tab),
+        }
+
     # ── convenience ──
     @property
     def is_hybrid(self) -> bool:

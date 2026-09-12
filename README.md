@@ -227,9 +227,13 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 
 ---
 
-## 7. Curriculum (rl/env_manager.py:280-345)
+## 7. Curriculum (rl/curriculum.py — единый источник)
 
 Стадия задаёт список разблокированных построек (маски в C++, накопительно): **0 = все 32** · 1 = 14 базовых (дома/фермы/еда/вода/Refinery/Puerperal/Road…) · 2 = +11 (Sawmill/шахты/энергия…) · 3 = +7 (Big*/Atom/SuperHouse) = все 32. Стадий 4–5 в C++ нет (эквивалентны 3). Переключение: `--curriculum-schedule '200000:1,400000:2'`.
+
+Ручной набор из вкладки «Курикулум» (`unlock_ids`) объединяется с пресетом этапа и **на этапе 0 становится единственным разрешённым списком** — например `--unlock-ids WaterChannel --curriculum-stage 0` оставляет только водоканал. Чекбокс «Ручной набор из Курикулума» (`use_curriculum_tab`) включает/выключает его; при выключенном работает только этап.
+
+**Единая точка правды:** `rl/curriculum.py` (`allowed_ids(stage, unlock_ids, use_curriculum_tab)`), которой обязаны пользоваться ВСЕ среды — обучение (`rl/env_manager.py`), eval (`train_ui2/evaluator.run_eval`) и наблюдение (`watch_champion.py` + GUI-окно `--unlock-ids`). Сценарий записывается рядом с моделью (`curriculum_stage_at_best` / `unlock_ids` / `use_curriculum_tab` в `best_model.meta.json` и `meta.json`), оттуда его восстанавливают eval и «Наблюдение»; иначе модель, обученная на одном водоканале, строила бы прииск под полным набором зданий. `ColonyEnvCpp::set_curriculum_stage()` больше не сбрасывает ручной набор (см. `set_unlock_ids`).
 
 ---
 

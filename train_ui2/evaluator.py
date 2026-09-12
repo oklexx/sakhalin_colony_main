@@ -149,16 +149,26 @@ def run_eval(
     minimap_radius: int = 14,
     log_path: str | Path | None = None,
     difficulty: str = "normal",
+    curriculum_stage: int | None = None,
+    unlock_ids: str | None = None,
+    use_curriculum_tab: bool | None = None,
 ) -> Dict[str, float]:
     """Run the trained policy in the colony env and return mean stats.
 
     mode: "auto" (detect from checkpoint), "flat" (209-dim MLP), "minimap" (CNN).
     log_path: if set, writes a per-step observation log to this file.
+
+    Curriculum: explicit `curriculum_stage` / `unlock_ids` / `use_curriculum_tab`
+    win; otherwise values stored next to the checkpoint (best_model.meta.json,
+    meta.json) are restored. The eval env MUST use the same allowed-buildings
+    set as training — otherwise a WaterChannel-only champion plays with every
+    building unlocked and starts erecting Goldmine (прииск) instead.
     Returns dict: days, people, bases, episodes, avg_return (all non-negative).
     """
     import torch
     from cpp_env import CppColonyEnv
     from minimap import MinimapSingleEnvWrapper
+    from rl.curriculum import resolve_curriculum
 
     model_path = Path(model_path)
     if not model_path.exists():
@@ -171,15 +181,19 @@ def run_eval(
     use_minimap = isinstance(policy, ActorCriticCNN)
     is_hybrid = isinstance(policy, ActorCriticHybrid)
 
-    # Read reward config from model's meta.json to match training parameters
+    # Read reward/curriculum config from the model's meta.json to match training
     reward_cfg = None
     model_dir = model_path.parent
+    meta: Dict[str, Any] = {}
     for meta_name in ("best_model.meta.json", "meta.json"):
         meta_path = model_dir / meta_name
         if meta_path.exists():
             try:
                 import json as _json
-                meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                loaded = _json.loads(meta_path.read_text(encoding="utf-8"))
+                if not isinstance(loaded, dict):
+                    continue
+                meta = loaded
                 reward_cfg = meta.get("config", {}).get("reward")
                 difficulty = meta.get("difficulty", difficulty)
                 if reward_cfg:
@@ -187,7 +201,28 @@ def run_eval(
             except (Exception,):
                 pass
 
-    env = CppColonyEnv(map_size=map_size, reward_config=reward_cfg, difficulty=difficulty)
+    # Explicit args win; otherwise restore the scenario stored next to the model.
+    resolved = resolve_curriculum(
+        model_dir,
+        meta=meta,
+        curriculum_stage=curriculum_stage,
+        unlock_ids=unlock_ids,
+        use_curriculum_tab=use_curriculum_tab,
+    )
+    cur_stage = int(resolved["curriculum_stage"])  # type: ignore[arg-type]
+    manual_csv = str(resolved["unlock_ids"])
+    eval_allowed = list(resolved["allowed"])  # type: ignore[arg-type]
+
+    env = CppColonyEnv(
+        map_size=map_size,
+        reward_config=reward_cfg,
+        difficulty=difficulty,
+        curriculum_stage=cur_stage,
+        unlock_ids=manual_csv or None,
+    )
+    print(f"[Eval] curriculum: stage={cur_stage}, "
+          f"manual={manual_csv or '—'}, allowed={len(eval_allowed)} buildings",
+          flush=True)
     # The policy was built for a specific minimap grid (ppo.py saves grid_size
     # in the checkpoint). A default env reports radius 14 -> grid 29, so any
     # non-default training radius must be pushed into the env here, otherwise
@@ -227,6 +262,8 @@ def run_eval(
         log_file = open(log_path, "w", encoding="utf-8")
         log_file.write(f"EVAL LOG | model={model_path} | episodes={episodes} | seed={seed}\n")
         log_file.write(f"reward_config={reward_cfg}\n")
+        log_file.write(f"curriculum: stage={cur_stage} manual={manual_csv or '—'} "
+                       f"allowed={len(eval_allowed)} buildings\n")
         log_file.write(f"action_names={action_names}\n")
         log_file.write("=" * 120 + "\n")
 

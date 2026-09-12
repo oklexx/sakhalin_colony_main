@@ -275,6 +275,18 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
                 f"error={cfg.reward.error_penalty} game_over={cfg.reward.game_over_penalty}")
     log("info", f"[Worker] curriculum_stage={cfg.curriculum_stage} "
                 f"schedule={cfg.curriculum_schedule}")
+    # Явный лог разрешённых зданий: так видно, что ручной набор из вкладки
+    # «Курикулум» действительно дошёл до среды (иначе сценарий молча теряется).
+    try:
+        from rl.curriculum import allowed_ids as _allowed_ids
+
+        _manual = cfg.effective_unlock_ids()
+        _allowed = _allowed_ids(cfg.curriculum_stage, _manual, True)
+        log("info", f"[Worker] curriculum: stage={cfg.curriculum_stage} "
+                    f"manual={_manual or '—'} checkbox={bool(cfg.use_curriculum_tab)} "
+                    f"→ {len(_allowed)} buildings allowed")
+    except Exception as _ex:  # noqa: BLE001 — не роняем обучение из-за лога
+        log("warn", f"[Worker] curriculum log failed: {type(_ex).__name__}: {_ex}")
     log("info", f"[Worker] model_dir={cfg.model_dir}")
 
     t0 = time.perf_counter()
