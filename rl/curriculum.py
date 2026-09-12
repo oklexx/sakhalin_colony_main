@@ -28,13 +28,26 @@ ALL_IDS: List[str] = [
     "AirStation", "SmallAtomStation", "AtomStation",
 ]
 
-def ids_for_stage(stage: int) -> List[str]:
-    """Cumulative ids up to stage (0 = all)."""
-    if stage == 0:
+def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List[str]:
+    """Cumulative ids up to stage (0 = all), plus explicit manual `unlock_ids`.
+
+    Mirrors C++ `ColonyEnvCpp` logic: если задан непустой ручной набор,
+    он объединяется с набором этапа и становится единственным разрешённым
+    списком (даже на этапе 0, где иначе доступны все здания).
+    """
+    manual: List[str] = []
+    if unlock_ids:
+        if isinstance(unlock_ids, str):
+            manual = [s.strip() for s in unlock_ids.split(",") if s.strip()]
+        else:
+            manual = [str(s).strip() for s in unlock_ids if str(s).strip()]
+
+    if stage == 0 and not manual:
         return list(ALL_IDS)
     out: List[str] = []
     for s in range(1, stage + 1):
         out.extend(STAGE_MAP.get(s, []))
+    out.extend(manual)
     # de-duplicate while preserving order
     seen: set[str] = set()
     uniq: List[str] = []
