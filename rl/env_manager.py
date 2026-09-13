@@ -90,18 +90,30 @@ def _make_buffer(
     n_actions: int,
     device: torch.device,
 ):
-    """Create rollout buffer (tensor or dict variant)."""
-    from rl.rollout_buffer import RolloutBuffer
+    """Create rollout buffer (flat tensor or N-D tensor variant for minimap/hybrid)."""
+    from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
 
-    # hybrid needs dict buffer, others flat
-    if cfg.obs_mode == "hybrid":
-        from rl.rollout_buffer import DictRolloutBuffer  # type: ignore
-
-        return DictRolloutBuffer(
+    grid = 2 * cfg.minimap_radius + 1
+    if cfg.obs_mode == "minimap":
+        return _TensorRolloutBuffer(
             n_steps=cfg.n_steps,
             n_envs=n_envs,
-            obs_size=obs_size,
+            obs_shape=(8, grid, grid),
+            n_actions=n_actions,
+            gamma=cfg.gamma,
+            gae_lambda=cfg.gae_lambda,
             device=device,
+        )
+    if cfg.obs_mode == "hybrid":
+        return _TensorRolloutBuffer(
+            n_steps=cfg.n_steps,
+            n_envs=n_envs,
+            obs_shape=(8, grid, grid),
+            n_actions=n_actions,
+            gamma=cfg.gamma,
+            gae_lambda=cfg.gae_lambda,
+            device=device,
+            flat_dim=obs_size,
         )
     return RolloutBuffer(
         n_steps=cfg.n_steps,
@@ -183,11 +195,18 @@ class EnvManager:
 
     # ── observation helpers ──
 
+    def _to_tensor(self, x: Any) -> torch.Tensor:
+        if isinstance(x, torch.Tensor):
+            return x.to(device=self.device, dtype=torch.float32)
+        return torch.as_tensor(np.asarray(x), device=self.device, dtype=torch.float32)
+
     def _policy_obs(self, obs: Any):
-        """Convert env obs to policy input (tensor / dict)."""
+        """Convert env obs to policy input (tensor / dict / tuple)."""
         if isinstance(obs, dict):
-            return {k: torch.as_tensor(v, device=self.device, dtype=torch.float32) for k, v in obs.items()}
-        return torch.as_tensor(obs, device=self.device, dtype=torch.float32)
+            return {k: self._to_tensor(v) for k, v in obs.items()}
+        if isinstance(obs, tuple):
+            return tuple(self._to_tensor(x) for x in obs)
+        return self._to_tensor(obs)
 
     # ── lifecycle ──
 

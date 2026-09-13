@@ -166,8 +166,9 @@ class CppVecEnv(VecEnv):
         self._reset_options()
         return self._get_obs()
 
-    def step_async(self, actions: np.ndarray) -> None:
-        self.cpp_vec.step_async_batch(actions.tolist())
+    def step_async(self, actions: Any) -> None:
+        actions_list = actions.tolist() if hasattr(actions, "tolist") else list(actions)
+        self.cpp_vec.step_async_batch(actions_list)
 
     def step_wait(self):
         result = self.cpp_vec.step_wait_batch()
