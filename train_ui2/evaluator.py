@@ -46,7 +46,7 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
         clean[ck] = v
     model_state = clean
 
-    has_cnn = any(k.startswith("cnn.") for k in model_state)
+    has_cnn = any(k.startswith("cnn.") or k.startswith("conv.") for k in model_state)
 
     if mode == "auto":
         mode = "minimap" if has_cnn else "flat"
@@ -104,7 +104,7 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
     elif mode == "minimap" or has_cnn:
         first_conv = None
         for k in sorted(model_state):
-            if k.startswith("cnn.") and k.endswith(".weight") and model_state[k].dim() == 4:
+            if (k.startswith("cnn.") or k.startswith("conv.")) and k.endswith(".weight") and model_state[k].dim() == 4:
                 first_conv = model_state[k]
                 break
         if first_conv is None:

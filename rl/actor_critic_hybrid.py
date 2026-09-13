@@ -92,6 +92,8 @@ class ActorCriticHybrid(ActorCriticBase):
         if isinstance(flat, dict):
             flat_in = flat.get("flat", flat)
             mini = flat.get("minimap")
+        elif isinstance(flat, (tuple, list)) and len(flat) == 2 and minimap is None:
+            flat_in, mini = flat
         else:
             flat_in = flat
             mini = minimap
