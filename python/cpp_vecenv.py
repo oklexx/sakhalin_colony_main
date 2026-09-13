@@ -92,6 +92,7 @@ class CppVecEnv(VecEnv):
         unlock_list = []
         if unlock_ids:
             unlock_list = [s.strip() for s in unlock_ids.split(",") if s.strip()]
+        print(f"[CppVecEnv] init: n_envs={n_envs}, curriculum_stage={curriculum_stage}, unlock_ids='{unlock_ids}', unlock_list={unlock_list}", flush=True)
 
         # Create C++ batched environment
         self.cpp_vec = colony_cpp.ColonyVecEnvCpp(

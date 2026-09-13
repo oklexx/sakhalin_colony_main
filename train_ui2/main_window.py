@@ -633,6 +633,11 @@ class MainWindow2(QMainWindow):
     def _on_curriculum_changed(self, *_):
         # sync stage combo if building selection matches a preset
         # do not auto-change stage if user manually edits — just mark dirty
+        checked = any(chk.isChecked() for chk in self._building_checks.values())
+        if checked and not self.chk_use_curriculum_tab.isChecked():
+            self.chk_use_curriculum_tab.blockSignals(True)
+            self.chk_use_curriculum_tab.setChecked(True)
+            self.chk_use_curriculum_tab.blockSignals(False)
         QTimer.singleShot(100, self._save_state)
 
     # ── Tab: Модели ──
@@ -1330,12 +1335,20 @@ class MainWindow2(QMainWindow):
             return
         seed = self.spn_watch_seed.value()
         speed_txt = self.cmb_watch_speed.currentText()
+        checked_buildings = [bid for bid, chk in self._building_checks.items() if chk.isChecked()]
+        if len(checked_buildings) == len(ALL_BUILD_IDS):
+            unlock_ids = ""
+        else:
+            unlock_ids = ",".join(checked_buildings)
+
         args = [sys.executable, "-u", str(_PROJECT / "watch_champion.py"),
                 "--model-dir", str(model_dir),
                 "--episodes", "1000000", "--max-steps", "1000000",
                 "--device", "cpu",
                 "--map-size", str(self.spn_watch_map.value()),
-                "--speed", "0" if speed_txt == "max" else speed_txt]
+                "--speed", "0" if speed_txt == "max" else speed_txt,
+                "--curriculum-stage", str(self.cmb_stage.currentIndex()),
+                "--unlock-ids", unlock_ids]
         if seed > 0:
             args += ["--seed", str(seed)]
         log_file = os.path.join(tempfile.gettempdir(),

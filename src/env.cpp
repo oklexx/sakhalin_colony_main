@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 
 #include <json.hpp>
@@ -95,6 +96,12 @@ void ColonyEnvCpp::rebuild_unlocked() {
         unlocked_.insert(id);
         has_unlocked_ = true;
     }
+    std::cout << "[C++ ColonyEnvCpp] rebuild_unlocked: stage=" << curriculum_stage_ 
+              << " manual_count=" << manual_unlock_ids_.size() 
+              << " has_unlocked=" << has_unlocked_ 
+              << " total_unlocked=" << unlocked_.size() << ":";
+    for (const auto& id : unlocked_) std::cout << " " << id;
+    std::cout << std::endl;
 }
 
 void ColonyEnvCpp::set_curriculum_stage(int stage) {
