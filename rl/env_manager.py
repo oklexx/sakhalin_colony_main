@@ -145,6 +145,7 @@ def _make_ppo(cfg: Config, model, buffer):
         torch_compile=cfg.torch_compile,
         total_training_steps=cfg.total_timesteps,
         target_kl=cfg.target_kl,
+        obs_version=cfg.obs_version,
     )
 
 
@@ -319,6 +320,12 @@ class EnvManager:
             assert want == have, (
                 f"курикулум не применён: env={sorted(have)[:5]}…({len(have)}) "
                 f"expected={sorted(want)[:5]}…({len(want)})")
+        # PR 5: obs layout version — an old binary has no "obs_version" key
+        # and reads as v0, so a stale .so fails here with a clear message.
+        have_v = got.get("obs_version", 0)
+        assert int(have_v) == int(st.obs_version), (
+            f"курикулум не применён: obs_version env={have_v} "
+            f"expected={st.obs_version} (stale colony_cpp? rebuild the extension)")
         # PR 4: resource weights ride the same transport — same parity rule.
         # Exact compare: doubles end-to-end (C++ stores double since PR 4).
         if st.all_resources:
@@ -363,6 +370,7 @@ class EnvManager:
             self.cfg.unlock_ids,
             self.cfg.use_curriculum_tab,
             self.cfg.curriculum_resources,
+            self.cfg.obs_version,
         )
         try:
             venv = self.vec_env.venv  # type: ignore[attr-defined]

@@ -285,6 +285,9 @@ class AsyncTrainer:
             "curriculum_stage_at_best": int(self._curriculum_stage),
             "unlock_ids": self.cfg.effective_unlock_ids(),
             "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
+            # PR 5: without this the eval-dir meta reads as legacy v0 and the
+            # stored-vs-env check fails mid-training on a v1 run.
+            "obs_version": int(getattr(self.cfg, "obs_version", 1)),
         }
 
     def _curriculum_kwargs(self) -> Dict[str, Any]:
@@ -293,6 +296,9 @@ class AsyncTrainer:
             "curriculum_stage": int(self._curriculum_stage),
             "unlock_ids": self.cfg.effective_unlock_ids(),
             "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
+            # PR 5: run_eval's version is explicit-only, so a --obs-version 0
+            # training run must thread it here or in-training eval errors out.
+            "obs_version": int(getattr(self.cfg, "obs_version", 1)),
         }
 
     def _update_best_meta_curriculum(self, save_dir: Path) -> None:

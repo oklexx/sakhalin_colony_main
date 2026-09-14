@@ -89,7 +89,8 @@ def test_curriculum_from_meta_missing_is_none():
     cur = curriculum_from_meta({})
 
     assert cur == {"curriculum_stage": None, "unlock_ids": None,
-                     "use_curriculum_tab": None, "resources": None}
+                     "use_curriculum_tab": None, "resources": None,
+                     "obs_version": None}
 
 
 def test_read_curriculum_meta_merges_both_files(tmp_path):
@@ -232,6 +233,7 @@ def test_run_eval_builds_env_with_restored_curriculum(tmp_path, monkeypatch):
         "curriculum_stage_at_best": 0,
         "unlock_ids": "WaterChannel",
         "use_curriculum_tab": True,
+        "obs_version": 1,
     }), encoding="utf-8")
 
     ev.run_eval(model_path, episodes=1, max_days=2, seed=1, normalization_path=None)
@@ -303,6 +305,7 @@ def test_run_eval_explicit_curriculum_overrides_meta(tmp_path, monkeypatch):
         "curriculum_stage_at_best": 3,
         "unlock_ids": "Goldmine",
         "use_curriculum_tab": True,
+        "obs_version": 1,
     }), encoding="utf-8")
 
     ev.run_eval(model_path, episodes=1, max_days=2, seed=1, normalization_path=None,

@@ -164,6 +164,7 @@ class Config:
     # False = unlock_ids игнорируется, действует только curriculum_stage.
     use_curriculum_tab: bool = False
     curriculum_resources: str = ""  # csv, e.g. "water,wood,coal"; "" = all
+    obs_version: int = 1  # PR 5: 0 = legacy 246-dim obs, 1 = 287-dim frame
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # ── PPO ──
@@ -352,6 +353,7 @@ class Config:
             self.unlock_ids,
             self.use_curriculum_tab,
             self.curriculum_resources,
+            self.obs_version,
         )
 
     def curriculum_meta(self) -> Dict[str, Any]:
@@ -361,6 +363,7 @@ class Config:
             "unlock_ids": self.effective_unlock_ids(),
             "use_curriculum_tab": bool(self.use_curriculum_tab),
             "curriculum_resources": str(self.curriculum_resources or ""),
+            "obs_version": int(self.obs_version),
         }
 
     # ── convenience ──

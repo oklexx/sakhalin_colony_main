@@ -95,10 +95,15 @@ def parse_args():
                         "on stage 0 it is the ONLY allowed set.")
     p.add_argument("--use-curriculum-tab", action="store_true",
                    help="Apply --unlock-ids (default: enabled automatically when --unlock-ids is given)")
-    p.add_argument("--curriculum-resources", type=str, default=_d.curriculum_resources,
+    p.add_argument("--curriculum-resources", "--priority-resources", type=str,
+                   default=_d.curriculum_resources,
                    help="Resource priority set (CSV), same as the UI «Курикулум» tab: "
                         "--curriculum-resources water,wood. Only listed resources grant "
-                        "extraction bonuses; empty = all (legacy behaviour).")
+                        "extraction bonuses; empty = all (legacy behaviour). "
+                        "--priority-resources is an alias of this flag.")
+    p.add_argument("--obs-version", type=int, default=_d.obs_version, choices=[0, 1],
+                   help="Obs layout: 0 = legacy 246-dim, 1 = 287-dim frame "
+                        "(default; +9 resource weights +32 build bits).")
     p.add_argument("--allow-stale-pyd", action="store_true",
                    help="Debugging only: run even if the colony_cpp binary is stale "
                         "(same as COLONY_ALLOW_STALE_PYD=1). Expect wrong behaviour.")
@@ -153,6 +158,7 @@ def main():
         unlock_ids=args.unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
         curriculum_resources=args.curriculum_resources,
+        obs_version=args.obs_version,
         eval_seeds=args.eval_seeds if args.eval_seeds is not None else [42],
         eval_use_median=not args.eval_use_mean,
         early_stopping_patience=args.early_stopping_patience,
@@ -219,6 +225,20 @@ def main():
         ckpt = torch.load(args.resume_model, map_location=device, weights_only=False)
         state = ckpt.get("model_state", ckpt)
         clean = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+        # PR 5: a v0 checkpoint on a v1 env (or vice versa) must fail here
+        # with a clear message, not in load_state_dict with a shape error.
+        from rl.curriculum import (
+            check_obs_version_compat,
+            check_policy_obs_compat,
+            ckpt_flat_width,
+        )
+        check_obs_version_compat(
+            ckpt.get("obs_version"), cfg.obs_version,
+            ckpt_path=args.resume_model)
+        _flat_w = ckpt_flat_width(clean)
+        if _flat_w is not None:
+            check_policy_obs_compat(
+                _flat_w, int(em.obs_size), ckpt_path=args.resume_model)
         em.model.load_state_dict(clean)
         if "optimizer_state" in ckpt:
             try:

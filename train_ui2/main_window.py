@@ -198,7 +198,7 @@ class MainWindow2(QMainWindow):
         self.cmb_difficulty.currentTextChanged.connect(lambda _: self._on_param_changed())
         inner.addWidget(self.cmb_difficulty, row, 1, Qt.AlignLeft)
         row += 1
-        inner.addWidget(T.field_label("Режим obs", "flat=MLP 246, minimap=CNN, hybrid=оба"), row, 0)
+        inner.addWidget(T.field_label("Режим obs", "flat=MLP 287, minimap=CNN, hybrid=оба"), row, 0)
         self.cmb_obs_mode = T.combo(["flat", "minimap", "hybrid"], "flat")
         self.cmb_obs_mode.currentTextChanged.connect(lambda _: self._on_param_changed())
         inner.addWidget(self.cmb_obs_mode, row, 1, Qt.AlignLeft)

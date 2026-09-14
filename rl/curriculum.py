@@ -56,6 +56,9 @@ class CurriculumState:
     gate ignores it. `stage_report` is report-only (obs feature, dumps).
     `all_resources` / `resource_weights` are the PR 4 soft priority weights
     (neutral = all 1.0, i.e. legacy behaviour bit-for-bit).
+    `obs_version` selects the obs layout: 0 = legacy 246-dim, 1 = 287-dim
+    (PR 5 «frame»: +9 effective weights +32 build_allowed bits). The version
+    is fixed at env construction — a mid-run change is refused by C++.
     """
 
     all_builds: bool
@@ -63,11 +66,12 @@ class CurriculumState:
     all_resources: bool = True
     resource_weights: tuple[float, ...] = _FULL_WEIGHTS
     stage_report: int = 0
+    obs_version: int = 1
 
     @classmethod
     def all(cls, stage_report: int = 0) -> "CurriculumState":
         """Unrestricted state (conventionally carries ALL_IDS for logging)."""
-        return cls(True, tuple(ALL_IDS), True, _FULL_WEIGHTS, stage_report)
+        return cls(True, tuple(ALL_IDS), True, _FULL_WEIGHTS, stage_report, 1)
 
     def to_dict(self) -> dict:
         """Transport form for C++ set_curriculum() and the GUI --curriculum JSON."""
@@ -77,6 +81,7 @@ class CurriculumState:
             "all_resources": bool(self.all_resources),
             "resource_weights": [float(w) for w in self.resource_weights],
             "stage": int(self.stage_report),
+            "obs_version": int(self.obs_version),
         }
 
     @classmethod
@@ -91,6 +96,7 @@ class CurriculumState:
             resource_weights=tuple(float(w) for w in weights)
             if weights is not None else _FULL_WEIGHTS,
             stage_report=int(d.get("stage", d.get("stage_report", 0))),
+            obs_version=int(d.get("obs_version", 1)),
         )
 
 
@@ -201,6 +207,7 @@ def build_state(
     unlock_ids: str | List[str] | None = None,
     use_curriculum_tab: bool = True,
     resources: str | List[str] | None = None,
+    obs_version: int = 1,
 ) -> CurriculumState:
     """Compute the CurriculumState from (stage, manual set, checkbox).
 
@@ -211,7 +218,12 @@ def build_state(
     `resources`: PR 4 priority set (CSV/list/None). None/"" ⇒ all_resources
     (legacy behaviour); otherwise soft weights (1.0 listed, 0.0 rest). A full
     9-weight set normalises to all_resources, mirroring the building rule.
+    `obs_version`: PR 5 obs layout (0 = legacy 246-dim, 1 = 287-dim frame).
+    Only 0/1 are accepted — anything else fails fast here, not in C++.
     """
+    if int(obs_version) not in (0, 1):
+        raise ValueError(f"obs_version must be 0 or 1, got {obs_version!r}")
+    obs_i = int(obs_version)
     stage_i = max(0, int(stage))
     manual = parse_unlock_ids(unlock_ids)
     if use_curriculum_tab:
@@ -224,8 +236,8 @@ def build_state(
     all_res = weights is None or all(w == 1.0 for w in weights)
     res_tuple = _FULL_WEIGHTS if all_res else tuple(weights)  # type: ignore[arg-type]
     if set(ids) == _ALL_IDS_SET:
-        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i)
-    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i)
+        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i, obs_i)
+    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i, obs_i)
 
 
 def allowed_ids(
@@ -255,7 +267,8 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     """
     if not isinstance(meta, dict):
         return {"curriculum_stage": None, "unlock_ids": None,
-                "use_curriculum_tab": None, "resources": None}
+                "use_curriculum_tab": None, "resources": None,
+                "obs_version": None}
     nested = meta.get("config")
     if not isinstance(nested, dict):
         nested = {}
@@ -271,11 +284,13 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     manual = pick("unlock_ids")
     use_tab = pick("use_curriculum_tab")
     resources = pick("curriculum_resources")
+    obs_version = pick("obs_version")
     return {
         "curriculum_stage": int(stage) if stage is not None else None,
         "unlock_ids": None if manual is None else str(manual),
         "use_curriculum_tab": None if use_tab is None else bool(use_tab),
         "resources": None if resources is None else str(resources),
+        "obs_version": int(obs_version) if obs_version is not None else None,
     }
 
 
@@ -298,6 +313,7 @@ def read_curriculum_meta(model_dir) -> Dict[str, object]:
         "unlock_ids": None,
         "use_curriculum_tab": None,
         "resources": None,
+        "obs_version": None,
     }
     model_dir = Path(model_dir)
     for meta_name in _META_NAMES:
@@ -359,12 +375,17 @@ def resolve_state(
     unlock_ids: str | List[str] | None = None,
     use_curriculum_tab: bool | None = None,
     resources: str | List[str] | None = None,
+    obs_version: int = 1,
 ) -> CurriculumState:
     """resolve_curriculum + build_state in one call (eval/watch paths).
 
     Returns the CurriculumState to hand to the env constructor — «not stored»
     and «stored as empty» both resolve through the same code as training, so
     the eval/watch scenario can never silently differ from training.
+
+    `obs_version` is explicit-only (never restored from meta): a stored v0
+    must ERROR against a v1 env, not silently rebuild it — see
+    check_obs_version_compat().
     """
     resolved = resolve_curriculum(
         model_dir,
@@ -381,6 +402,102 @@ def resolve_state(
         str(resolved["unlock_ids"]),
         True,
         resolved["resources"],  # type: ignore[arg-type]
+        obs_version,
+    )
+
+
+# ── PR 5: obs-version compatibility ──────────────────────────────────────────
+# Flat-obs size by layout version (n_build=32). Message-only: the real sizes
+# come from C++ ColonyEnvCpp::obs_size(), this map only names mismatches.
+_OBS_SIZE_BY_VERSION = {0: 246, 1: 287}
+
+
+def obs_size_for_version(version: int) -> int:
+    """Flat-obs dimensionality for an obs layout version (0 → 246, 1 → 287)."""
+    try:
+        return _OBS_SIZE_BY_VERSION[int(version)]
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"unknown obs_version: {version!r}") from None
+
+
+def stored_obs_version(model_dir, meta: Dict[str, object] | None = None) -> int | None:
+    """Obs version a checkpoint was trained with, from its meta files.
+
+    Returns None when there is nothing to read (no meta files, no meta dict);
+    meta files (or a non-empty meta dict) that predate obs_version mean a
+    legacy v0 run and come back as 0.
+    """
+    stored = read_curriculum_meta(model_dir) if model_dir is not None else {}
+    if meta:
+        for key, value in curriculum_from_meta(meta).items():
+            if stored.get(key) is None and value is not None:
+                stored[key] = value
+    if stored.get("obs_version") is not None:
+        return int(stored["obs_version"])  # type: ignore[arg-type]
+    if model_dir is not None:
+        from pathlib import Path
+
+        model_dir = Path(model_dir)
+        if any((model_dir / name).exists() for name in _META_NAMES):
+            return 0
+    if meta:
+        return 0
+    return None
+
+
+def check_obs_version_compat(
+    stored: int | None, env_version: int, *, ckpt_path: str = "checkpoint"
+) -> None:
+    """Fail fast when a checkpoint's obs layout differs from the env's.
+
+    A v0 policy fed v1 frames (or vice versa) would die in a cryptic matmul
+    — or worse, run with silently misaligned features. None (unknown) skips
+    the check; the policy-vs-env size check below still guards that case.
+    """
+    if stored is None or int(stored) == int(env_version):
+        return
+    raise RuntimeError(
+        f"obs mismatch: checkpoint '{ckpt_path}' was trained on obs v{stored} "
+        f"({obs_size_for_version(stored)}-dim), but the env serves obs v{env_version} "
+        f"({obs_size_for_version(env_version)}-dim); re-run with "
+        f"--obs-version {stored} or retrain the model"
+    )
+
+
+def ckpt_flat_width(state_dict) -> int | None:
+    """First-layer flat input width of a checkpoint state_dict.
+
+    None for CNN-only policies (no flat input at all). Used by the resume
+    paths to compare the checkpoint's real tensor width against the env.
+    """
+    for key in ("trunk.0.weight", "flat_trunk.0.weight", "flat_proj.weight"):
+        w = state_dict.get(key) if hasattr(state_dict, "get") else None
+        if w is not None:
+            try:
+                return int(w.shape[1])
+            except (AttributeError, IndexError, TypeError):
+                return None
+    return None
+
+
+def check_policy_obs_compat(
+    policy_flat_dim: int, env_obs_size: int, *, ckpt_path: str = "checkpoint"
+) -> None:
+    """Fail fast when a flat policy's input width differs from the env's obs.
+
+    Catches the no-meta case (a bare .pt with no version recorded) by
+    comparing the actual tensor widths instead of version tags.
+    """
+    if int(policy_flat_dim) == int(env_obs_size):
+        return
+    hint = ""
+    for ver, size in sorted(_OBS_SIZE_BY_VERSION.items()):
+        if size == int(policy_flat_dim):
+            hint = f" (the policy looks like obs v{ver}: try --obs-version {ver})"
+            break
+    raise RuntimeError(
+        f"obs mismatch: policy '{ckpt_path}' expects a {policy_flat_dim}-dim flat "
+        f"observation, but the env serves {env_obs_size}{hint}"
     )
 
 

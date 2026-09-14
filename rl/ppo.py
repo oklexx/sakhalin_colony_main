@@ -37,8 +37,10 @@ class PPO:
         lr_decay: bool = True,
         total_training_steps: int = 0,
         target_kl: float = 0.0,
+        obs_version: int = 1,
     ):
         self.model = model
+        self.obs_version = obs_version
         self.buffer = buffer
         self.lr = lr
         self.gamma = gamma
@@ -353,6 +355,7 @@ class PPO:
             "buffer_pos": self.buffer.pos,
             "n_actions": model.n_actions,
             "hidden_sizes": hidden_sizes,
+            "obs_version": int(getattr(self, "obs_version", 1)),
             **extra,
         }, path)
 

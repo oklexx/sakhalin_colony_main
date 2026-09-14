@@ -25,10 +25,10 @@ namespace colony {
 struct Curriculum {
     bool all_builds = true;                    // false => restricted
     std::unordered_set<std::string> allowed_builds;
-    bool all_resources = true;                 // PR 4: веса ресурсов (пока всегда true)
+    bool all_resources = true;                 // PR 4: false => resource_weights активны
     std::array<double, SUNDUK_SIZE> resource_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     int stage_report = 0;                      // только для obs-фичи и дампов
-    int obs_version = 0;                       // PR 5
+    int obs_version = 0;  // PR 5: 0 = legacy 246-dim obs, 1 = 287-dim (frame appended)
     // Разобрать JSON вида {"all_builds":bool,"allowed_builds":[...],"stage":int}
     // (транспорт watch_champion -> GUI/main). Бросает std::runtime_error.
     static Curriculum from_json(const std::string& text);
@@ -124,7 +124,12 @@ public:
     int n_build() const { return n_build_; }
     int n_bases() const { return (int)game_.bases.size(); }
     int n_actions() const { return A_BUILD0 + n_build_ + N_MANAGERS; }
-    int obs_size() const { return 27 + n_build_ + 7 + 9 + 4 * n_build_ + 9 + n_build_ + 2; }
+    // PR 5: obs v1 appends the frame AFTER the v0 tail, so obs v0 is a strict
+    // prefix of obs v1 (246 = 27+32+7+9+128+9+32+2; 287 = 246+9+32).
+    int obs_size() const {
+        return 27 + n_build_ + 7 + 9 + 4 * n_build_ + 9 + n_build_ + 2 +
+               (curriculum_.obs_version >= 1 ? SUNDUK_SIZE + n_build_ : 0);
+    }
     // Action mask: 1.0 = available, 0.0 = blocked. Size = n_actions().
     std::vector<float> action_mask();
     const std::vector<std::string>& build_ids() const { return build_ids_; }

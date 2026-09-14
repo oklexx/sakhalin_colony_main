@@ -154,10 +154,13 @@ def run_eval(
     use_curriculum_tab: bool | None = None,
     curriculum_resources: str | None = None,
     allow_stale_pyd: bool | None = None,
+    obs_version: int = 1,
 ) -> Dict[str, float]:
     """Run the trained policy in the colony env and return mean stats.
 
-    mode: "auto" (detect from checkpoint), "flat" (209-dim MLP), "minimap" (CNN).
+    mode: "auto" (detect from checkpoint), "flat" (MLP: 287-dim v1, 246-dim
+    v0), "minimap" (CNN). `obs_version` selects the eval env's obs layout
+    (explicit-only, never restored from meta); a stored mismatch raises.
     log_path: if set, writes a per-step observation log to this file.
 
     Curriculum: explicit `curriculum_stage` / `unlock_ids` / `use_curriculum_tab`
@@ -226,6 +229,7 @@ def run_eval(
         unlock_ids=unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
         resources=curriculum_resources,
+        obs_version=obs_version,
     )
     cur_stage = int(resolved["curriculum_stage"])  # type: ignore[arg-type]
     manual_csv = str(resolved["unlock_ids"])
@@ -237,6 +241,24 @@ def run_eval(
         difficulty=difficulty,
         curriculum=st,
     )
+    # PR 5: obs-layout compatibility — a v0 policy on a v1 env (or vice
+    # versa) must fail here with a clear message, not in a matmul.
+    from rl.curriculum import (
+        check_obs_version_compat,
+        check_policy_obs_compat,
+        stored_obs_version,
+    )
+    check_obs_version_compat(
+        stored_obs_version(model_dir, meta or None),
+        st.obs_version,
+        ckpt_path=str(model_path),
+    )
+    flat_dim = getattr(policy, "obs_size", None)
+    if flat_dim is not None:  # CNN-only policies have no flat input
+        check_policy_obs_compat(
+            int(flat_dim), int(env.observation_space.shape[0]),
+            ckpt_path=str(model_path),
+        )
     print(f"[Eval] curriculum: stage={cur_stage}, "
           f"manual={manual_csv or '—'}, allowed={len(eval_allowed)} buildings",
           flush=True)

@@ -130,3 +130,22 @@ def test_normalizer_load_cpp_nested_shape(tmp_path):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.skipif(not ENV_OK, reason="colony_cpp not available")
+def test_normalizer_load_rejects_obs_size_mismatch(tmp_path):
+    """A v1 (287) file on a v0 (246) normalizer must fail, not misalign."""
+    from cpp_env import Normalizer
+
+    norm = Normalizer(obs_size=287)
+    norm._rms.set_mean([0.0] * 287)
+    norm._rms.set_var([1.0] * 287)
+    path = tmp_path / "norm.json"
+    norm.save(str(path))
+
+    with pytest.raises(ValueError) as excinfo:
+        Normalizer(obs_size=246).load(str(path))
+    assert "normalization mismatch" in str(excinfo.value)
+    assert "287" in str(excinfo.value)
+    # matching size still loads
+    Normalizer(obs_size=287).load(str(path))

@@ -60,6 +60,10 @@ struct RewardConfig {
     // по разрешённым постройкам. false = как раньше (по всем 32), старые прогоны
     // не меняются.
     bool priority_count_over_allowed = false;
+    // PR 5: zero the catalog rows (4 features per buildable) of locked
+    // buildings in obs. false = catalog ignores gating (default, old runs
+    // unchanged); idle_by_type/counts are NEVER filtered.
+    bool obs_mask_locked_catalog = false;
 
     // formerly hardcoded C++ weights — must be exported or C++ keeps defaults
     double tax_fail_penalty = 5.0;

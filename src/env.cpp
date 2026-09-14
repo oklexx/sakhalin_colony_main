@@ -88,10 +88,18 @@ Curriculum Curriculum::from_json(const std::string& text) {
         for (int k = 0; k < SUNDUK_SIZE; k++)
             c.resource_weights[(size_t)k] = j["resource_weights"][(size_t)k].get<double>();
     }
+    // PR 5: obs layout version (default 0 = legacy 246-dim).
+    c.obs_version = j.value("obs_version", 0);
     return c;
 }
 
 void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
+    // PR 5: the obs layout is fixed at construction (all buffers are sized
+    // then); a version switch mid-run would corrupt every downstream tensor.
+    if (c.obs_version != curriculum_.obs_version)
+        throw std::runtime_error("set_curriculum: obs_version change (" +
+                                 std::to_string(curriculum_.obs_version) + " -> " +
+                                 std::to_string(c.obs_version) + ") requires an env rebuild");
     curriculum_ = c;
     seat_build_gate();  // тот же this, но гейт дешёвый — пересадить явно
     compute_catalog();
@@ -540,8 +548,15 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
     push((float)((double)n_idle_sunduk / 10.0));
     push((float)((double)n_idle_workers / 10.0));
     for (float p : sale_prices_) push(p);
+    // PR 5: catalog rows are per building (i*4+k); the flag zeroes the rows
+    // of locked buildings (opt-in ablation, default off).
     const std::vector<float>& cat = catalog_by_season_[season_idx];
-    for (float c : cat) push(c);
+    for (int i = 0; i < n_build_; i++) {
+        bool zero_row = cfg_.obs_mask_locked_catalog && !curriculum_.all_builds &&
+                        curriculum_.allowed_builds.find(build_ids_[(size_t)i]) ==
+                            curriculum_.allowed_builds.end();
+        for (int k = 0; k < 4; k++) push(zero_row ? 0.0f : cat[(size_t)i * 4 + (size_t)k]);
+    }
 
     // Resource balance: net production - consumption per resource across all active buildings
     // Positive = surplus, negative = deficit
@@ -586,6 +601,21 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
     int64_t tax_amount = g.annual_tax_amount();
     double ratio = (tax_amount > 0) ? (double)g.money / (double)tax_amount : 0.0;
     push((float)std::min(2.0, ratio));
+
+    // PR 5, obs v1: the frame - effective resource weights (all_resources
+    // renders as nine 1.0s, exactly what the economy applies) + build_allowed
+    // bits (all_builds renders as all 1.0s). Appended AFTER the v0 tail so v0
+    // stays a strict prefix of v1.
+    if (curriculum_.obs_version >= 1) {
+        for (int r = 0; r < SUNDUK_SIZE; r++)
+            push(curriculum_.all_resources ? 1.0f : (float)curriculum_.resource_weights[(size_t)r]);
+        for (int i = 0; i < n_build_; i++) {
+            bool allowed = curriculum_.all_builds ||
+                           curriculum_.allowed_builds.find(build_ids_[(size_t)i]) !=
+                               curriculum_.allowed_builds.end();
+            push(allowed ? 1.0f : 0.0f);
+        }
+    }
 
     return obs_buf_;
 }

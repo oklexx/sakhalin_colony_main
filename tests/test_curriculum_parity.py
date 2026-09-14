@@ -31,6 +31,7 @@ def _reported(env_cpp) -> dict:
     return {
         "all_builds": bool(got["all_builds"]),
         "allowed_builds": sorted(got.get("allowed_builds", [])),
+        "obs_version": int(got.get("obs_version", -1)),
     }
 
 
@@ -79,6 +80,7 @@ def _visual_path(st):
     lambda: build_state(1, "Goldmine", True),       # restricted: preset + manual
     lambda: build_state(0, None, True),             # unrestricted
     lambda: build_state(2, None, False),            # restricted: preset only
+    lambda: build_state(0, None, True, None, 0),      # PR 5: v0 layout
 ])
 def test_all_paths_report_identical_curriculum(make_state):
     st = make_state()
@@ -266,3 +268,74 @@ def test_priority_metrics_end_to_end():
     assert prio == 0, "energy at weight 0 is reached but not priority"
     reached_e, prio_e = _autumn_metrics(build_state(0, None, False, "energy"))
     assert prio_e == reached_e > 0, "energy at weight 1 is priority"
+
+
+# ── PR 5: obs layout on the real env ─────────────────────────────────────
+
+@pytest.mark.parametrize("obs_version,expected", [(1, 287), (0, 246)])
+def test_obs_layout_sizes(obs_version, expected):
+    st = build_state(0, None, True, None, obs_version)
+    env = _single_env(st)
+    try:
+        obs, _ = env.reset(seed=7)
+        assert len(obs) == expected == env.cpp_env.obs_size()
+        assert int(env.cpp_env.curriculum()["obs_version"]) == obs_version
+    finally:
+        env.close()
+
+
+def test_v1_frame_visible_in_obs():
+    st = build_state(0, "WaterChannel", True, "water", 1)
+    env = _single_env(st)
+    try:
+        obs, _ = env.reset(seed=7)
+        assert len(obs) == 287
+        # reset() returns the NORMALIZED obs — read the raw frame from C++.
+        raw = list(env.cpp_env.obs())
+        assert len(raw) == 287
+        weights = list(raw[246:255])
+        assert weights[6] == pytest.approx(1.0)
+        assert sum(weights) == pytest.approx(1.0)
+        bits = list(raw[255:287])
+        assert sum(bits) == pytest.approx(1.0)
+        idx = max(range(32), key=lambda i: bits[i])
+        assert env.cpp_env.build_ids()[idx] == "WaterChannel"
+    finally:
+        env.close()
+
+
+def test_set_curriculum_refuses_version_change():
+    st = build_state(0, None, True, None, 1)
+    env = _single_env(st)
+    try:
+        d = st.to_dict()
+        d["obs_version"] = 0
+        with pytest.raises(Exception, match="obs_version"):
+            env.cpp_env.set_curriculum(d)
+        # same-version update still works (schedule path)
+        d["obs_version"] = 1
+        d["all_builds"] = False
+        d["allowed_builds"] = ["WaterChannel"]
+        env.cpp_env.set_curriculum(d)
+        assert env.cpp_env.curriculum()["all_builds"] is False
+    finally:
+        env.close()
+
+
+def test_env_manager_obs_layout_and_buffer():
+    """EnvManager on v1: 287-dim obs, version in curriculum(), sized buffer."""
+    pytest.importorskip("torch")
+    import torch
+
+    from rl.config import Config
+    from rl.env_manager import EnvManager
+
+    for ver, size in ((1, 287), (0, 246)):
+        cfg = Config(n_envs=2, map_size=_MAP, obs_version=ver)
+        em = EnvManager(cfg, torch.device("cpu"))
+        try:
+            assert em.obs_size == size
+            assert int(em.vec_env.venv.curriculum()["obs_version"]) == ver
+            assert em.buffer.obs.shape[1] == size
+        finally:
+            em.close()

@@ -143,12 +143,16 @@ def test_run_eval_with_normalization(tmp_path, monkeypatch):
 
     ckpt = _make_actor_critic_checkpoint(tmp_path)
 
+    import cpp_env as cpp_env_mod
+
+    real_obs = int(cpp_env_mod.CppColonyEnv(
+        map_size=100).observation_space.shape[0])
     import json
     norm_data = {
-        "mean": [0.0] * 203,
-        "var": [1.0] * 203,
+        "mean": [0.0] * real_obs,
+        "var": [1.0] * real_obs,
         "count": 100,
-        "obs_size": 203,
+        "obs_size": real_obs,
         "clip": 10.0,
     }
     norm_path = tmp_path / "norm.json"
@@ -190,16 +194,22 @@ def test_run_eval_missing_model(tmp_path):
         run_eval(tmp_path / "nope.pt", episodes=1, max_days=1)
 
 
-def _make_hybrid_checkpoint(tmp_path: Path, grid_size: int = 57) -> Path:
+def _make_hybrid_checkpoint(tmp_path: Path, grid_size: int = 57,
+                            obs_size: int | None = None) -> Path:
     """Hybrid policy checkpoint as saved by rl/ppo.py (grid_size in extras)."""
     from rl.actor_critic_hybrid import ActorCriticHybrid
 
-    m = ActorCriticHybrid(obs_size=246, n_channels=8, grid_size=grid_size,
+    if obs_size is None:  # default: match the current default env layout
+        import cpp_env as cpp_env_mod
+
+        obs_size = int(cpp_env_mod.CppColonyEnv(
+            map_size=100).observation_space.shape[0])
+    m = ActorCriticHybrid(obs_size=obs_size, n_channels=8, grid_size=grid_size,
                           n_actions=45, hidden_sizes=[64], device="cpu")
     ckpt_path = tmp_path / "hybrid_model.pt"
     torch.save({
         "model_state": m.state_dict(),
-        "obs_size": 246,
+        "obs_size": obs_size,
         "n_actions": 45,
         "hidden_sizes": [64],
         "n_channels": 8,
@@ -268,3 +278,60 @@ def test_run_eval_flat_untouched_by_radius_fix(tmp_path, monkeypatch):
 
     assert result["episodes"] == 1.0
     assert int(created[0].cpp_env.minimap_radius()) == 14
+
+
+@pytest.mark.skipif(not ENV_OK, reason="env not available")
+def test_run_eval_obs_mismatch_raises(tmp_path):
+    """A v0-sized policy on the default v1 env must fail with 'obs mismatch'."""
+    from rl.actor_critic import ActorCritic
+    from train_ui2.evaluator import run_eval
+
+    m = ActorCritic(obs_size=246, n_actions=45, hidden_sizes=[64],
+                    device=torch.device("cpu"))
+    ckpt = tmp_path / "v0_model.pt"
+    torch.save({"model_state": m.state_dict(), "obs_size": 246,
+                "n_actions": 45, "hidden_sizes": [64], "obs_version": 0},
+               str(ckpt))
+    with pytest.raises(RuntimeError, match="obs mismatch"):
+        run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
+                 map_size=100)
+
+
+@pytest.mark.skipif(not ENV_OK, reason="env not available")
+def test_run_eval_obs_version_0_runs_v0_policy(tmp_path):
+    """The same v0 policy runs when the eval env is explicitly v0."""
+    from rl.actor_critic import ActorCritic
+    from train_ui2.evaluator import run_eval
+
+    m = ActorCritic(obs_size=246, n_actions=45, hidden_sizes=[64],
+                    device=torch.device("cpu"))
+    ckpt = tmp_path / "v0_model.pt"
+    torch.save({"model_state": m.state_dict(), "obs_size": 246,
+                "n_actions": 45, "hidden_sizes": [64], "obs_version": 0},
+               str(ckpt))
+    result = run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
+                      map_size=100, obs_version=0)
+    assert result["episodes"] == 1.0
+
+
+@pytest.mark.skipif(not ENV_OK, reason="env not available")
+def test_run_eval_stored_meta_mismatch_raises(tmp_path):
+    """Legacy meta (obs_version=0) + default v1 eval must fail loudly."""
+    import json
+
+    import cpp_env as cpp_env_mod
+    from rl.actor_critic import ActorCritic
+    from train_ui2.evaluator import run_eval
+
+    real_obs = int(cpp_env_mod.CppColonyEnv(
+        map_size=100).observation_space.shape[0])
+    m = ActorCritic(obs_size=real_obs, n_actions=45, hidden_sizes=[64],
+                    device=torch.device("cpu"))
+    ckpt = tmp_path / "flat_model.pt"
+    torch.save({"model_state": m.state_dict(), "obs_size": real_obs,
+                "n_actions": 45, "hidden_sizes": [64]}, str(ckpt))
+    (tmp_path / "meta.json").write_text(json.dumps({"obs_version": 0}),
+                                        encoding="utf-8")
+    with pytest.raises(RuntimeError, match=r"obs v0.*246.*obs v1.*287"):
+        run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
+                 map_size=100)

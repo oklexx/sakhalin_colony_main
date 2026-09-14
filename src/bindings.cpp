@@ -98,6 +98,8 @@ Curriculum curriculum_from_dict(const py::dict& d) {
             throw std::runtime_error("curriculum dict: resource_weights must hold 9 numbers");
         for (int j = 0; j < SUNDUK_SIZE; j++) c.resource_weights[(size_t)j] = w[(size_t)j];
     }
+    // PR 5: obs layout version (absent = 0, legacy layout).
+    if (d.contains("obs_version")) c.obs_version = d["obs_version"].cast<int>();
     return c;
 }
 
@@ -111,6 +113,7 @@ py::dict curriculum_to_dict(const Curriculum& c) {
     d["all_resources"] = c.all_resources;
     std::vector<double> w(c.resource_weights.begin(), c.resource_weights.end());
     d["resource_weights"] = w;
+    d["obs_version"] = c.obs_version;
     return d;
 }
 
@@ -409,6 +412,7 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readwrite("disable_daily_income", &RewardConfig::disable_daily_income)
         .def_readwrite("disable_provider_bonus", &RewardConfig::disable_provider_bonus)
         .def_readwrite("priority_count_over_allowed", &RewardConfig::priority_count_over_allowed)
+        .def_readwrite("obs_mask_locked_catalog", &RewardConfig::obs_mask_locked_catalog)
         // formerly-hardcoded weights (env.cpp) — exposed so Python/UI can tune them
         .def_readwrite("tax_fail_penalty", &RewardConfig::tax_fail_penalty)
         .def_readwrite("death_penalty", &RewardConfig::death_penalty)

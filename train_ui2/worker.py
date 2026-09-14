@@ -314,6 +314,19 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         for k, v in state.items():
             ck = k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k
             clean[ck] = v
+        # PR 5: a v0 checkpoint on a v1 env (or vice versa) must fail here
+        # with a clear message, not in load_state_dict with a shape error.
+        from rl.curriculum import (
+            check_obs_version_compat,
+            check_policy_obs_compat,
+            ckpt_flat_width,
+        )
+        check_obs_version_compat(
+            ckpt.get("obs_version"), cfg.obs_version, ckpt_path=resume_model)
+        _flat_w = ckpt_flat_width(clean)
+        if _flat_w is not None:
+            check_policy_obs_compat(
+                _flat_w, int(em.obs_size), ckpt_path=resume_model)
         em.model.load_state_dict(clean)
         log("info", f"[Worker] loaded weights from {resume_model}")
 

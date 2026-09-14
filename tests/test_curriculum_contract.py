@@ -336,3 +336,106 @@ def test_resource_names_match_cpp_and_ui():
     assert m, "C++ names array not found"
     cpp_names = re.findall(r'"(\w+)"', m.group(1))
     assert cpp_names == list(RESOURCE_NAMES)
+
+
+# ── PR 5: obs layout version ─────────────────────────────────────────────
+
+def test_build_state_obs_version_default_and_explicit():
+    assert build_state(0, None, True).obs_version == 1
+    assert build_state(0, None, True, None, 0).obs_version == 0
+    assert build_state(0, "WaterChannel", True, "water", 0).obs_version == 0
+
+
+def test_build_state_obs_version_invalid_raises():
+    with pytest.raises(ValueError, match="obs_version must be 0 or 1"):
+        build_state(0, None, True, None, 2)
+
+
+def test_curriculum_state_obs_roundtrip():
+    st = build_state(1, "Goldmine", True, "water,wood", 0)
+    d = st.to_dict()
+    assert d["obs_version"] == 0
+    assert CurriculumState.from_dict(d).to_dict() == d
+    # absent key = current default (tolerant read)
+    d2 = dict(d)
+    del d2["obs_version"]
+    assert CurriculumState.from_dict(d2).obs_version == 1
+    assert CurriculumState.all().obs_version == 1
+
+
+def test_curriculum_meta_carries_obs_version():
+    from rl.config import Config
+
+    assert Config().curriculum_meta()["obs_version"] == 1
+    assert Config(obs_version=0).curriculum_meta()["obs_version"] == 0
+    assert Config(obs_version=0).curriculum_state().obs_version == 0
+
+
+def test_curriculum_from_meta_picks_obs_version(tmp_path):
+    from rl.curriculum import curriculum_from_meta, read_curriculum_meta
+
+    assert curriculum_from_meta({"obs_version": 0})["obs_version"] == 0
+    assert curriculum_from_meta({"config": {"obs_version": 1}})["obs_version"] == 1
+    assert curriculum_from_meta({})["obs_version"] is None
+    _write_meta(tmp_path / "meta.json", {"obs_version": 1, "unlock_ids": ""})
+    assert read_curriculum_meta(tmp_path)["obs_version"] == 1
+
+
+def test_stored_obs_version_cases(tmp_path):
+    from rl.curriculum import stored_obs_version
+
+    assert stored_obs_version(tmp_path) is None  # no meta files: unknown
+    _write_meta(tmp_path / "meta.json", {"unlock_ids": ""})  # legacy: no key
+    assert stored_obs_version(tmp_path) == 0
+    _write_meta(tmp_path / "meta.json", {"obs_version": 1})
+    assert stored_obs_version(tmp_path) == 1
+    assert stored_obs_version(None, {"obs_version": 0}) == 0
+    assert stored_obs_version(None, {"unlock_ids": "x"}) == 0  # legacy meta
+    assert stored_obs_version(None) is None
+    assert stored_obs_version(None, {}) is None
+
+
+def test_check_obs_version_compat():
+    from rl.curriculum import check_obs_version_compat
+
+    check_obs_version_compat(1, 1, ckpt_path="m.pt")  # match: silent
+    check_obs_version_compat(None, 1, ckpt_path="m.pt")  # unknown: silent
+    with pytest.raises(RuntimeError,
+                       match=r"obs v0.*246.*obs v1.*287.*--obs-version 0"):
+        check_obs_version_compat(0, 1, ckpt_path="m.pt")
+    with pytest.raises(RuntimeError,
+                       match=r"obs v1.*287.*obs v0.*246.*--obs-version 1"):
+        check_obs_version_compat(1, 0, ckpt_path="m.pt")
+
+
+def test_check_policy_obs_compat():
+    from rl.curriculum import check_policy_obs_compat
+
+    check_policy_obs_compat(287, 287, ckpt_path="m.pt")
+    with pytest.raises(RuntimeError,
+                       match=r"expects a 246-dim.*serves 287.*--obs-version 0"):
+        check_policy_obs_compat(246, 287, ckpt_path="m.pt")
+    with pytest.raises(RuntimeError, match=r"expects a 203-dim"):
+        check_policy_obs_compat(203, 287, ckpt_path="m.pt")  # no hint
+
+
+def test_ckpt_flat_width():
+    from types import SimpleNamespace
+
+    from rl.curriculum import ckpt_flat_width
+
+    assert ckpt_flat_width(
+        {"trunk.0.weight": SimpleNamespace(shape=(64, 246))}) == 246
+    assert ckpt_flat_width(
+        {"flat_trunk.0.weight": SimpleNamespace(shape=(64, 287))}) == 287
+    assert ckpt_flat_width(
+        {"cnn.0.weight": SimpleNamespace(shape=(16, 8, 3, 3))}) is None
+    assert ckpt_flat_width({}) is None
+
+
+def test_resolve_state_obs_version_explicit_only(tmp_path):
+    # A stored v0 must NOT silently rebuild the eval env — explicit wins.
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 0, "obs_version": 0})
+    assert resolve_state(tmp_path).obs_version == 1
+    assert resolve_state(tmp_path, obs_version=0).obs_version == 0

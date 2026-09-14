@@ -217,6 +217,9 @@ def main():
                         help="Resource priority set (CSV) from the «Курикулум» tab. "
                              "If not set, reads curriculum_resources from the model "
                              "meta. Pass \"\" to explicitly use all resources.")
+    parser.add_argument("--obs-version", type=int, default=1, choices=[0, 1],
+                        help="Obs layout: 0 = legacy 246-dim (for v0 checkpoints), "
+                             "1 = 287-dim frame (default).")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
     parser.add_argument("--allow-stale-pyd", action="store_true",
@@ -347,6 +350,7 @@ def main():
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
         resources=args.curriculum_resources,
+        obs_version=args.obs_version,
     )
     stage = int(resolved["curriculum_stage"])
     manual_csv = str(resolved["unlock_ids"])
@@ -357,6 +361,23 @@ def main():
         reward_config=reward_cfg,
         curriculum=st,
     )
+    # PR 5: obs-layout compatibility (same rule as eval: the version is
+    # explicit, a stored mismatch errors out instead of misaligning).
+    from rl.curriculum import (
+        check_obs_version_compat,
+        check_policy_obs_compat,
+        stored_obs_version,
+    )
+    check_obs_version_compat(
+        stored_obs_version(model_dir), st.obs_version,
+        ckpt_path=str(model_path),
+    )
+    _flat_dim = getattr(policy, "obs_size", None)
+    if _flat_dim is not None:  # CNN-only policies have no flat input
+        check_policy_obs_compat(
+            int(_flat_dim), int(env.observation_space.shape[0]),
+            ckpt_path=str(model_path),
+        )
     # Match the env's minimap grid to the policy's (see train_ui/evaluator.py).
     # Without this, watching a hybrid/minimap model trained with
     # minimap_radius != 14 dies with a shape mismatch on the first step.

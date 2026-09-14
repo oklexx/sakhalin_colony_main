@@ -436,6 +436,131 @@ int main() {
               "dump_obs shows pr=water");
     }
 
+    // ── PR 5: obs v1 — the «frame» (resource weights + build_allowed bits) ──
+    {
+        ColonyEnvCpp e0(bd, ed, 7, 280);  // default Curriculum(): obs_version=0
+        e0.reset(7);
+        check(e0.obs_size() == 246, "v0 obs_size is 246");
+        check((int)e0.obs().size() == 246, "v0 obs() has 246 floats");
+
+        Curriculum c1;
+        c1.obs_version = 1;
+        ColonyEnvCpp e1(bd, ed, 7, 280, c1);
+        e1.reset(7);
+        check(e1.obs_size() == 287, "v1 obs_size is 287");
+        auto o1 = e1.obs();
+        check((int)o1.size() == 287, "v1 obs() has 287 floats");
+
+        // v0 is a strict prefix of v1 (same seed, no steps yet).
+        auto o0 = e0.obs();
+        bool prefix = true;
+        for (int i = 0; i < 246; i++)
+            if (o0[i] != o1[i]) { prefix = false; break; }
+        check(prefix, "v0 obs is a strict prefix of v1 obs");
+
+        // Unrestricted tail: nine 1.0 weights + 32 1.0 bits.
+        bool tail = true;
+        for (int i = 246; i < 287; i++)
+            if (o1[i] != 1.0f) { tail = false; break; }
+        check(tail, "v1 unrestricted tail is all ones (9 weights + 32 bits)");
+
+        // Restricted frame: weights + bits reflect the curriculum, not terrain.
+        Curriculum cr;
+        cr.all_builds = false;
+        cr.allowed_builds.insert(first_id);
+        cr.all_resources = false;
+        auto w = only(6);  // water only
+        for (int j = 0; j < 9; j++) cr.resource_weights[j] = w[j];
+        cr.obs_version = 1;
+        ColonyEnvCpp er(bd, ed, 7, 280, cr);
+        er.reset(7);
+        auto obv = er.obs();
+        bool weights_ok = obv[246 + 6] == 1.0f;
+        for (int j = 0; j < 9; j++)
+            if (j != 6 && obv[246 + j] != 0.0f) weights_ok = false;
+        check(weights_ok, "v1 tail shows water-only weights");
+        int fi = find_id(er, first_id);
+        bool bits_ok = (fi >= 0 && obv[255 + fi] == 1.0f);
+        for (int i = 0; i < er.n_build(); i++)
+            if (i != fi && obv[255 + i] != 0.0f) bits_ok = false;
+        check(bits_ok, "v1 tail shows build_allowed bits (only the allowed id)");
+
+        // all_resources=true renders nine 1.0s no matter what the array holds.
+        Curriculum ca;
+        ca.obs_version = 1;
+        for (int j = 0; j < 9; j++) ca.resource_weights[j] = 0.0;  // ignored
+        ColonyEnvCpp ea(bd, ed, 7, 280, ca);
+        ea.reset(7);
+        auto oa = ea.obs();
+        bool eff = true;
+        for (int j = 0; j < 9; j++)
+            if (oa[246 + j] != 1.0f) eff = false;
+        check(eff, "all_resources renders effective weights (nine 1.0s)");
+
+        // Version switch mid-run is refused; same-version set works.
+        bool threw = false;
+        try {
+            e0.set_curriculum(c1);
+        } catch (const std::runtime_error&) { threw = true; }
+        check(threw, "set_curriculum refuses an obs_version change");
+        bool same_ok = true;
+        try {
+            Curriculum same = cr;
+            same.allowed_builds.insert(er.build_ids()[0]);
+            e1.set_curriculum(same);  // schedule-style update under v1
+        } catch (const std::exception&) { same_ok = false; }
+        check(same_ok && e1.curriculum().obs_version == 1,
+              "set_curriculum accepts same-version updates (schedules work)");
+
+        // obs_mask_locked_catalog: default off (catalog ignores gating).
+        Curriculum cz;  // v0 default
+        cz.all_builds = false;
+        cz.allowed_builds.insert(first_id);
+        ColonyEnvCpp eu(bd, ed, 7, 280);      // unrestricted twin
+        eu.reset(7);
+        ColonyEnvCpp ez(bd, ed, 7, 280, cz);  // restricted, flag off
+        ez.reset(7);
+        auto ou = eu.obs();
+        auto oz = ez.obs();
+        bool cat_same = true;
+        for (int i = 75; i < 75 + 4 * eu.n_build(); i++)
+            if (ou[i] != oz[i]) { cat_same = false; break; }
+        check(cat_same, "flag off: restricted catalog block == unrestricted");
+        bool locked_nonzero = false;
+        for (int i = 0; i < eu.n_build(); i++)
+            if (i != find_id(eu, first_id) && oz[75 + i * 4 + 1] != 0.0f) {
+                locked_nonzero = true;
+                break;
+            }
+        check(locked_nonzero, "flag off: locked catalog rows carry real prices");
+
+        RewardConfig rc_mask;
+        rc_mask.obs_mask_locked_catalog = true;
+        ColonyEnvCpp em(bd, ed, 7, 280, cz, rc_mask);  // restricted, flag on
+        em.reset(7);
+        auto om = em.obs();
+        int fui = find_id(em, first_id);
+        bool masked = true, kept = true;
+        for (int i = 0; i < em.n_build(); i++) {
+            for (int k = 0; k < 4; k++) {
+                float v = om[75 + i * 4 + k];
+                if (i == fui) {
+                    if (v != ou[75 + i * 4 + k]) kept = false;
+                } else if (v != 0.0f) {
+                    masked = false;
+                }
+            }
+        }
+        check(masked, "flag on: all 31 locked catalog rows are zero");
+        check(kept, "flag on: the allowed row is preserved");
+
+        // from_json transport.
+        Curriculum fj = Curriculum::from_json("{\"obs_version\": 1}");
+        check(fj.obs_version == 1, "from_json reads obs_version");
+        Curriculum fj0 = Curriculum::from_json("{}");
+        check(fj0.obs_version == 0, "from_json defaults obs_version to 0");
+    }
+
     printf("\n%s (%d failure(s))\n",
            failures == 0 ? "ALL CHECKS PASSED" : "CHECKS FAILED", failures);
     return failures == 0 ? 0 : 1;
