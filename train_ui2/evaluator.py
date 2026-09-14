@@ -152,6 +152,7 @@ def run_eval(
     curriculum_stage: int | None = None,
     unlock_ids: str | None = None,
     use_curriculum_tab: bool | None = None,
+    allow_stale_pyd: bool | None = None,
 ) -> Dict[str, float]:
     """Run the trained policy in the colony env and return mean stats.
 
@@ -173,6 +174,11 @@ def run_eval(
     model_path = Path(model_path)
     if not model_path.exists():
         raise FileNotFoundError(f"model not found: {model_path}")
+
+    # PR 3: fail fast on a stale colony_cpp binary (python/ is on sys.path via
+    # the module header above). None = honour COLONY_ALLOW_STALE_PYD env var.
+    from colony_cpp_api import require_colony
+    require_colony(allow_stale=bool(allow_stale_pyd))
 
     dev = torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
     policy = _load_policy(model_path, dev, mode=mode, minimap_radius=minimap_radius)

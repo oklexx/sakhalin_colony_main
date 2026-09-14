@@ -22,3 +22,12 @@ Thumbs.db
 *.log
 *.tmp
 *.vcxproj
+# PR3: compiled artifacts must never be committed — a stale binary in git
+# silently shadows fixed C++ sources (see python/colony_cpp_api.py).
+*.pyd
+*.so
+*.exp
+*.lib
+!raylib/**/*.lib
+*.exe
+python/Release/

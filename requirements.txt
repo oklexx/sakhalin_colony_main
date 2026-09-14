@@ -4,6 +4,7 @@ tensorboard>=2.14.0
 gymnasium>=0.29.0
 pybind11>=2.12.0
 stable-baselines3>=2.1.0
+cmake>=3.20  # build_pyext.bat uses `python -m cmake` to build colony_cpp.pyd
 
 # UI Improvements (NEW)
 PySide6>=6.6.0

@@ -35,13 +35,51 @@ else()
     target_compile_options(colony_cpp PRIVATE -O2 -Wall)
 endif()
 
-# выходной файл .pyd кладём в python/ (рядом с обёрткой)
+# Git SHA вшивается в расширение, чтобы handshake (python/colony_cpp_api.py)
+# мог показать, из каких исходников собран бинарь. Вне git-дерева — "unknown".
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE COLONY_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT COLONY_GIT_SHA)
+    set(COLONY_GIT_SHA "unknown")
+endif()
+target_compile_definitions(colony_cpp PRIVATE "COLONY_GIT_SHA=\"${COLONY_GIT_SHA}\"")
+
+# выходной файл .pyd кладём в python/ (рядом с обёрткой).
+# Мультиконфиг-генераторы (Visual Studio) дописывают подкаталог $(Configuration)
+# к ОБЩЕМУ свойству — поэтому задаём и per-config варианты: тогда выход всегда
+# один (python/colony_cpp.pyd), каталога python/Release/ не возникает, и
+# build_pyext.bat нечего копировать.
 set_target_properties(colony_cpp PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/python"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/python"
 )
+foreach(_cfg DEBUG RELEASE MINSIZEREL RELWITHDEBINFO)
+    set_target_properties(colony_cpp PROPERTIES
+        "LIBRARY_OUTPUT_DIRECTORY_${_cfg}" "${CMAKE_SOURCE_DIR}/python"
+        "RUNTIME_OUTPUT_DIRECTORY_${_cfg}" "${CMAKE_SOURCE_DIR}/python"
+    )
+endforeach()
 
 # на Windows pybind11-модуль должен иметь расширение .pyd
 if(WIN32)
     set_target_properties(colony_cpp PROPERTIES SUFFIX ".pyd")
+else()
+    # На Linux/macOS MODULE по умолчанию даёт libcolony_cpp.so, который
+    # `import colony_cpp` не находит. Убираем префикс и ставим суффикс
+    # интерпретатора: colony_cpp.cpython-3XX-....so — имя импортируемое.
+    execute_process(
+        COMMAND python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))"
+        OUTPUT_VARIABLE PYTHON_EXT_SUFFIX
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(PYTHON_EXT_SUFFIX)
+        set_target_properties(colony_cpp PROPERTIES PREFIX "" SUFFIX "${PYTHON_EXT_SUFFIX}")
+    else()
+        set_target_properties(colony_cpp PROPERTIES PREFIX "")
+    endif()
 endif()

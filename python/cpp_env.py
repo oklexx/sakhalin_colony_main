@@ -3,6 +3,7 @@ import gymnasium as gym
 import numpy as np
 from typing import Optional, Dict, Any, Tuple
 import colony_cpp
+from colony_cpp_api import require_colony, stale_allowed, StaleExtensionError
 from pathlib import Path
 
 # Project root is parent of this file's directory
@@ -106,7 +107,9 @@ class CppColonyEnv(gym.Env):
         difficulty: str = "normal",
     ):
         super().__init__()
-        
+        # PR 3: fail fast on a stale binary (escape: COLONY_ALLOW_STALE_PYD=1).
+        require_colony()
+
         # Load static data
         self.base_data = colony_cpp.load_base_data(str(PROJECT_ROOT / "configs" / "bases.json"))
         self.events_data = colony_cpp.load_events(str(PROJECT_ROOT / "configs" / "events.json"))
@@ -127,8 +130,16 @@ class CppColonyEnv(gym.Env):
                     continue
                 setattr(rc, key, value)
         if _missing:
-            print(f"[CppColonyEnv] WARNING: colony_cpp.pyd stale — keys "
-                  f"{_missing} not settable; rebuild.", flush=True)
+            # The handshake above already rejected stale binaries, so unknown
+            # keys here mean a typo in the reward config (or a config newer
+            # than the extension) — fail loudly instead of silently ignoring.
+            _msg = (f"unknown RewardConfig keys {_missing} — typo in reward "
+                    f"config or stale colony_cpp binary; rebuild with "
+                    f"build_pyext.bat (or set COLONY_ALLOW_STALE_PYD=1 to ignore)")
+            if stale_allowed():
+                print(f"[CppColonyEnv] WARNING: {_msg}", flush=True)
+            else:
+                raise StaleExtensionError(f"[CppColonyEnv] {_msg}")
         # CLI flags override only if explicitly True (keep JSON value otherwise)
         if disable_net_worth:
             rc.disable_net_worth = True

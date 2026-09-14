@@ -13,11 +13,11 @@
 pip install -r requirements.txt        # torch, numpy, tensorboard, gymnasium, pybind11, stable-baselines3, PySide6, pyqtgraph
 
 # 2. Сборка C++-среды (нужны CMake 3.20+ и компилятор C++17; на Windows — MSVC)
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release   # -> python/colony_cpp.pyd
+build_pyext.bat                        # Windows: -> python/colony_cpp.pyd
+# или вручную: cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --config Release
 
-# 3. Проверка
-python -c "import sys; sys.path.insert(0,'python'); import colony_cpp; print('OK')"
+# 3. Проверка (расширение обязано отвечать на handshake)
+python -c "import sys; sys.path.insert(0,'python'); import colony_cpp; print(colony_cpp.extension_info())"
 
 # 4. Обучение (flat-режим, стабильные параметры)
 python train.py --steps 2000000 --envs 8 --n-epochs 4 --ent-coef 0.015 \
@@ -62,7 +62,7 @@ sakhalin_colony_main/
 │   ├── cpp_vecenv.py         #   CppVecEnv: батч из N сред, маски, terminated, нормализация, сиды
 │   ├── cpp_env.py            #   CppColonyEnv: одиночная gym-среда (для eval/UI) + Normalizer
 │   ├── minimap.py            #   MinimapVecEnvWrapper / MinimapSingleEnvWrapper (8×29×29)
-│   └── colony_cpp.pyd        #   Собранный C++-модуль (результат cmake)
+│   └── colony_cpp.pyd        #   Собранный C++-модуль (результат cmake; НЕ в git — см. build_pyext.bat)
 │
 ├── src/                      # ★ C++-ядро (namespace colony)
 │   ├── env.cpp / env.h       #   ColonyEnvCpp (одна среда): obs, step, награды, маски, curriculum

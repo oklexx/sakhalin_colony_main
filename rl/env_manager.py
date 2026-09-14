@@ -166,6 +166,10 @@ class EnvManager:
         self.device = device
 
         _ensure_python_path()
+        from colony_cpp_api import require_colony  # lazy import after path fix
+        # PR 3: fail fast on a stale colony_cpp binary, before any env exists.
+        # Escape hatch: train.py --allow-stale-pyd / COLONY_ALLOW_STALE_PYD=1.
+        require_colony()
         self.vec_env = _make_vec_env(cfg)
 
         # expose commonly accessed attributes for backward compat
@@ -336,12 +340,14 @@ class EnvManager:
             return
         setter = getattr(venv, "set_unlock_ids", None)
         if not callable(setter):
-            if not getattr(self, "_warned_stale_pyd", False):
-                self._warned_stale_pyd = True
-                print("[EnvManager] WARNING: colony_cpp.pyd is stale (no set_unlock_ids) — "
-                      "manual unlock_ids may be dropped on curriculum stage switch; "
-                      "rebuild with build_pyext.bat.", flush=True)
-            return
+            # Unreachable after the __init__ handshake (set_unlock_ids is a
+            # required feature), but fail loudly if it ever happens: silently
+            # dropping the manual set was the stale-binary bug.
+            from colony_cpp_api import StaleExtensionError
+            raise StaleExtensionError(
+                "[EnvManager] colony_cpp binary has no set_unlock_ids — manual "
+                "unlock_ids would be dropped on curriculum stage switch; "
+                "rebuild with build_pyext.bat.")
         try:
             setter([bid for bid in manual.split(",") if bid])
         except Exception:

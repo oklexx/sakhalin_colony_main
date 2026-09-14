@@ -5,6 +5,7 @@ import numpy as np
 from typing import Optional, Dict, Any, Tuple, List
 from stable_baselines3.common.vec_env import VecEnv
 import colony_cpp
+from colony_cpp_api import require_colony, stale_allowed, StaleExtensionError
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +40,8 @@ class CppVecEnv(VecEnv):
         render_mode: Optional[str] = None,
         difficulty: str = "normal",
     ):
+        # PR 3: fail fast on a stale binary (escape: COLONY_ALLOW_STALE_PYD=1).
+        require_colony()
         self._seed = seed
         self.difficulty = difficulty
         self.render_mode = render_mode
@@ -69,9 +72,16 @@ class CppVecEnv(VecEnv):
                     continue
                 setattr(rc, key, value)
         if _missing:
-            print(f"[CppVecEnv] WARNING: colony_cpp.pyd is stale — keys "
-                  f"{_missing} not settable; rebuild with build_pyext.bat.",
-                  flush=True)
+            # The handshake above already rejected stale binaries, so unknown
+            # keys here mean a typo in the reward config (or a config newer
+            # than the extension) — fail loudly instead of silently ignoring.
+            _msg = (f"unknown RewardConfig keys {_missing} — typo in reward "
+                    f"config or stale colony_cpp binary; rebuild with "
+                    f"build_pyext.bat (or set COLONY_ALLOW_STALE_PYD=1 to ignore)")
+            if stale_allowed():
+                print(f"[CppVecEnv] WARNING: {_msg}", flush=True)
+            else:
+                raise StaleExtensionError(f"[CppVecEnv] {_msg}")
         # Apply CLI flags only if explicitly provided (None = use JSON/reward_config value)
         if disable_net_worth is not None:
             rc.disable_net_worth = disable_net_worth

@@ -1,8 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
 
-set "ROOT=C:\Users\oklex\OneDrive\Documentos\sakhalin_colony_main"
-set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+rem Project root = folder of this script (was hardcoded to one user's path).
+set "ROOT=%~dp0"
+if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
+rem VCVARS may be overridden from the environment (cf. build_gui.bat probing).
+if not defined VCVARS set "VCVARS=C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
 set "OBJDIR=%ROOT%\build\obj"
 
 call "%VCVARS%" x64

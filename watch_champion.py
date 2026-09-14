@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
+from colony_cpp_api import require_colony
 from cpp_env import CppColonyEnv
 from train_ui2.evaluator import _load_policy
 
@@ -230,7 +231,13 @@ def main():
                              "model meta. Pass \"\" to explicitly allow all buildings.")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
+    parser.add_argument("--allow-stale-pyd", action="store_true",
+                        help="Debugging only: run even if the colony_cpp binary is stale "
+                             "(same as COLONY_ALLOW_STALE_PYD=1). Expect wrong behaviour.")
     args = parser.parse_args()
+
+    # PR 3: fail fast on a stale colony_cpp binary, before loading the model.
+    require_colony(allow_stale=args.allow_stale_pyd)
 
     if args.log_file:
         log_f = open(args.log_file, "w", encoding="utf-8")

@@ -19,6 +19,16 @@
 namespace py = pybind11;
 using namespace colony;
 
+// PR 3 (handshake): расширение сообщает свою версию, чтобы Python мог отклонить
+// протухший бинарь вместо молчаливого старого поведения.
+// COLONY_GIT_SHA подставляет CMake; для ручных сборок — "unknown".
+#ifndef COLONY_GIT_SHA
+#define COLONY_GIT_SHA "unknown"
+#endif
+#ifndef COLONY_EXTENSION_VERSION
+#define COLONY_EXTENSION_VERSION 1
+#endif
+
 namespace {
 
 py::dict day_result_to_dict(const DayResult& r) {
@@ -91,6 +101,22 @@ py::dict env_step_to_dict(const ColonyEnvCpp::StepOut& s) {
 
 PYBIND11_MODULE(colony_cpp, m) {
     m.doc() = "C++ ядро «Сахалинская колония» (бит-в-бит порт)";
+
+    // ---------------- handshake (PR 3) ----------------
+    // Python вызывает extension_info() при старте (см. python/colony_cpp_api.py)
+    // и отказывается работать с бинарём без нужных фич. При добавлении фич,
+    // от которых зависит Python, — расширить список и поднять версию.
+    m.def("extension_info", [] {
+        py::dict d;
+        d["version"] = COLONY_EXTENSION_VERSION;
+        d["features"] = std::vector<std::string>{
+            "set_unlock_ids",      // ColonyEnvCpp/ColonyVecEnvCpp.set_unlock_ids + unlock_ids
+            "minimap",             // minimap()/minimap_batch()/set_minimap_radius()
+            "action_masks_batch",  // ColonyVecEnvCpp.action_masks_batch()
+        };
+        d["src_sha"] = COLONY_GIT_SHA;
+        return d;
+    });
 
     // ---------------- RNG ----------------
     py::class_<MtRandom>(m, "MtRandom")

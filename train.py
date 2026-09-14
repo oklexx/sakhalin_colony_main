@@ -8,6 +8,7 @@ Usage:
   python train.py --compile --amp bfloat16
 """
 import argparse
+import os
 import sys
 import time
 import json
@@ -94,11 +95,20 @@ def parse_args():
                         "on stage 0 it is the ONLY allowed set.")
     p.add_argument("--use-curriculum-tab", action="store_true",
                    help="Apply --unlock-ids (default: enabled automatically when --unlock-ids is given)")
+    p.add_argument("--allow-stale-pyd", action="store_true",
+                   help="Debugging only: run even if the colony_cpp binary is stale "
+                        "(same as COLONY_ALLOW_STALE_PYD=1). Expect wrong behaviour.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+
+    # PR 3: stale-binary escape hatch — EnvManager.require_colony() picks it up.
+    if args.allow_stale_pyd:
+        os.environ["COLONY_ALLOW_STALE_PYD"] = "1"
+        print("[Config] WARNING: --allow-stale-pyd active, a stale colony_cpp "
+              "binary will NOT be rejected", flush=True)
 
     use_amp = args.amp != "off"
     amp_dtype = args.amp if use_amp else "bfloat16"
