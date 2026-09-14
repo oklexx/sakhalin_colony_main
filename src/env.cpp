@@ -54,6 +54,7 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
     compute_catalog();
     // RL-среда не использует undo — отключаем для производительности
     game_.set_enable_undo(false);
+    seat_build_gate();  // PR 2: гейт на уровне игры
 }
 
 // Разобрать транспортный JSON курикулума (см. Curriculum в env.h).
@@ -84,6 +85,7 @@ Curriculum Curriculum::from_json(const std::string& text) {
 
 void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
     curriculum_ = c;
+    seat_build_gate();  // тот же this, но гейт дешёвый — пересадить явно
     compute_catalog();
     std::cout << "[C++ ColonyEnvCpp] set_curriculum: all_builds=" << curriculum_.all_builds
               << " allowed=" << curriculum_.allowed_builds.size()
@@ -163,6 +165,7 @@ void ColonyEnvCpp::set_step_log(const std::string& path) {
 
 void ColonyEnvCpp::reset(int64_t seed) {
     game_ = Game(base_data_, events_data_, seed, map_size_, difficulty_, no_city_game_over_, no_people_days_);
+    seat_build_gate();  // PR 2: свежий Game без гейта — вернуть его сразу
     game_.reset_milestones();
     net_worth_valid_ = false;
     cached_net_worth_ = 0.0;
@@ -708,14 +711,14 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     } else if (action >= A_BUILD0 && action < A_BUILD0 + n_build_) {
         const BaseData* d = build_data_[action - A_BUILD0];
         action_name = "BUILD:" + d->id;
-        std::optional<std::pair<int, int>> cell;
-        if (!build_allowed(d->id)) {
-            rew += cfg_.error_penalty; c_error += cfg_.error_penalty;
-        } else {
-            cell = find_lot(d->need_earth, d->no_near_base);
-        }
+        // PR 2: гейт теперь в Game::build; здесь — только ранний выход через
+        // nullopt, чтобы закрытое действие вело себя ровно как любая другая
+        // неудачная постройка (ОДИН error_penalty в ветке !built ниже).
+        bool gated = !build_allowed(d->id);
+        auto cell = gated ? std::nullopt
+                          : find_lot(d->need_earth, d->no_near_base);
         bool built = false;
-        std::string build_error;
+        std::string build_error = gated ? "Постройка закрыта курикулумом." : "";
         if (cell) {
             auto build_result = g.build(d->id, cell->first, cell->second);
             built = build_result.first;
@@ -727,7 +730,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                 step_log_ << "  BUILD FAILED: " << d->id;
                 step_log_ << " | has_cell=" << (cell ? "yes" : "NO");
                 if (!cell) {
-                    step_log_ << " | REASON: find_lot returned null (no suitable cell)";
+                    step_log_ << " | REASON: " << (gated ? build_error : "find_lot returned null (no suitable cell)");
                 } else {
                     step_log_ << " | REASON: " << build_error;
                     step_log_ << " | cell=(" << cell->first << "," << cell->second << ")";

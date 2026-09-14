@@ -126,6 +126,11 @@ public:
     std::optional<GameOverInfo> game_over() const;
 
     // ---- действия ----
+    // Жёсткий гейт построек (PR 2): ставит ColonyEnvCpp (ctor + set_curriculum +
+    // reset) на себя; Game::build отказывает закрытым id до любых других проверок.
+    // По умолчанию nullptr — песочница (colony_cpp.Game напрямую) строит что хочет.
+    using BuildGate = bool (*)(const void* ctx, const std::string& id);
+    void set_build_gate(BuildGate fn, const void* ctx) { gate_ = fn; gate_ctx_ = ctx; }
     std::pair<bool, std::string> build(const std::string& data_id, int x, int y);
     struct RestoreOut { bool ok; std::string msg; int64_t price, days; };
     RestoreOut restore(int x, int y);
@@ -180,6 +185,10 @@ private:
     int64_t next_uid_ = 1;
     std::unique_ptr<Game> undo_;
     bool enable_undo_ = true;
+    // Гейт курикулума (PR 2): ctx — owning ColonyEnvCpp, переживает undo/snapshot,
+    // т.к. копируется вместе с игрой, а env живёт дольше (см. copy ctor/operator=).
+    BuildGate gate_ = nullptr;
+    const void* gate_ctx_ = nullptr;
     std::vector<int32_t> base_index_map_;  // [y * map_size_ + x], -1 = нет базы
     std::unordered_map<std::string, size_t> data_id_to_idx_;
 

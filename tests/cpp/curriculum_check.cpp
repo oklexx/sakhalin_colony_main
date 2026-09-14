@@ -165,6 +165,94 @@ int main() {
               "locked Goldmine action is refused by the env (nothing built)");
     }
 
+    // ── PR 2: hard gate at the Game level ──
+    // Direct g.build() on a gated env refuses a locked id with the gate message.
+    ColonyEnvCpp e(bd, ed, 7, 280);
+    e.reset(7);
+    e.set_curriculum(restricted({"WaterChannel"}));
+    {
+        Game& g = e.game();
+        int n0 = (int)g.bases.size();  // 1: the Depot
+        int bx = g.bases[0].x, by = g.bases[0].y;
+        const int dx[4] = {1, -1, 0, 0}, dy[4] = {0, 0, 1, -1};
+        int fx = -1, fy = -1;
+        for (int k = 0; k < 4; k++) {
+            int nx = bx + dx[k], ny = by + dy[k];
+            if (!g.base_in_box(nx, ny)) { fx = nx; fy = ny; break; }
+        }
+        check(fx >= 0, "free neighbour cell next to the Depot");
+        g.money = 0;  // broke AND locked: the gate message must win (gate is first)
+        auto r = g.build("House", fx, fy);
+        check(!r.first && r.second == "Постройка закрыта курикулумом.",
+              "direct g.build(House) refused by the gate, before the money check");
+        check((int)g.bases.size() == n0, "refused direct build adds no base");
+        // …while an allowed id goes through (selective, not a blanket refuse)
+        g.money = 5'000'000;
+        auto r2 = g.build("WaterChannel", fx, fy);
+        check(r2.first, "direct g.build(WaterChannel) passes the gate");
+        check((int)g.bases.size() == n0 + 1, "allowed direct build adds a base");
+    }
+
+    // reset() recreates the Game — the gate must survive it (re-seated)
+    e.reset(99);
+    {
+        Game& g = e.game();
+        int bx = g.bases[0].x, by = g.bases[0].y;
+        int fx = bx + 1, fy = by;
+        if (g.base_in_box(fx, fy)) { fx = bx - 1; }
+        auto r = g.build("House", fx, fy);
+        check(!r.first && r.second == "Постройка закрыта курикулумом.",
+              "gate still enforced after reset()");
+    }
+
+    // opening the curriculum re-opens direct builds too (one gate, one state)
+    {
+        Curriculum all;
+        all.all_builds = true;
+        e.set_curriculum(all);
+        Game& g = e.game();
+        g.money = 5'000'000;
+        int bx = g.bases[0].x, by = g.bases[0].y;
+        int fx = bx + 1, fy = by;
+        if (g.base_in_box(fx, fy)) { fx = bx - 1; }
+        int n0 = (int)g.bases.size();
+        auto r = g.build("House", fx, fy);
+        check(r.first && (int)g.bases.size() == n0 + 1,
+              "unrestricted state lets direct g.build(House) through");
+    }
+
+    // a raw Game without a gate builds anything (sandbox untouched)
+    {
+        Game sandbox(bd, ed, 7, 280);
+        int bx = sandbox.bases[0].x, by = sandbox.bases[0].y;
+        int fx = bx + 1, fy = by;
+        if (sandbox.base_in_box(fx, fy)) { fx = bx - 1; }
+        sandbox.money = 5'000'000;
+        int n0 = (int)sandbox.bases.size();
+        auto r = sandbox.build("House", fx, fy);
+        check(r.first && (int)sandbox.bases.size() == n0 + 1,
+              "sandbox Game (no gate) builds House: bases grow");
+    }
+
+    // ── PR 2 §3.3: a gated step costs exactly ONE error_penalty ──
+    // Twin envs, identical states: the gated one fails on the curriculum, the
+    // open one on money. Every other reward component cancels out.
+    {
+        ColonyEnvCpp t1(bd, ed, 11, 280), t2(bd, ed, 11, 280);
+        t1.reset(11);
+        t2.reset(11);
+        t1.set_curriculum(restricted({"WaterChannel"}));
+        t1.game().money = 0;
+        t2.game().money = 0;
+        int house = find_id(t1, "House");
+        auto o1 = t1.step(A_BUILD0 + house);  // gated
+        auto o2 = t2.step(A_BUILD0 + house);  // ordinary money failure
+        check(o1.rew == o2.rew && o1.rew != 0.0,
+              "gated step reward == ordinary failed-build reward (single penalty)");
+        check(o1.n_bases == 1 && o2.n_bases == 1,
+              "neither twin builds anything");
+    }
+
     printf("\n%s (%d failure(s))\n",
            failures == 0 ? "ALL CHECKS PASSED" : "CHECKS FAILED", failures);
     return failures == 0 ? 0 : 1;

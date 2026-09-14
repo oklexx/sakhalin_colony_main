@@ -56,10 +56,11 @@ static void print_menu(const ColonyEnvCpp& env) {
     for (int i = 0; i < env.n_build(); i++) {
         int key = i + 3;
         const BaseData& d = *env.build_data()[i];
-        bool locked = false;
+        bool locked = !env.build_allowed(d.id);  // PR 2
         std::cout << "  [" << key << "]  " << d.caption << " (" << d.id << ")"
                   << "  $" << thousands(d.price)
                   << "  workers=" << d.need_workers;
+        if (locked) std::cout << "  [locked]";
         if (d.live_years)
             std::cout << "  life=" << d.live_years << "y";
         std::cout << "\n";

@@ -232,6 +232,7 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
     }
     // Build: always add cells adjacent to already-built to the frontier
     int built = 0, skipped = 0;
+    std::string fail_reason;  // PR 2: первая ошибка — гейт виден как гейт
     while (!frontier.empty()) {
         Cell c = frontier[0];
         frontier.erase(frontier.begin());
@@ -248,13 +249,19 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
             }
         } else {
             skipped++;
+            if (fail_reason.empty()) fail_reason = r.second;
             status = r.second;
             break;
         }
     }
-    if (built > 0 && skipped > 0)
-        status = TextFormat("Построено: %d, не хватило денег на %d", built, skipped);
-    else if (built > 0)
+    if (built > 0 && skipped > 0) {
+        // PR 2: «не хватило денег» — только когда ошибка и правда денежная,
+        // иначе (гейт курикулума) показываем её текст как есть.
+        if (fail_reason == "Недостаточно денег.")
+            status = TextFormat("Построено: %d, не хватило денег на %d", built, skipped);
+        else
+            status = TextFormat("Построено: %d; %s", built, fail_reason.c_str());
+    } else if (built > 0)
         status = TextFormat("Построено: %d", built);
 }
 static void load_assets() {
@@ -1155,12 +1162,18 @@ int main(int argc, char* argv[]) {
                 int ix = col * BSTEP, iy = PAL_Y0 + row * BSTEP;
                 if (mpos.x >= ix && mpos.x < ix + BS && mpos.y >= iy && mpos.y < iy + BS) {
                     if (pressed) {
-                        sel_action = A_BUILD0 + i;
-                        status = env.build_data()[i]->caption;
-                        if (has_sel) {
-                            do_build_area(env, gm, A_BUILD0 + i, true,
-                                          sel_x0, sel_y0, sel_x1, sel_y1, prc_x, prc_y, status);
-                            has_sel = false;
+                        // PR 2: закрытое курикулумом здание нельзя даже выбрать —
+                        // иначе клик давал пустой status и вывод «ограничение не работает».
+                        if (!env.build_allowed(env.build_data()[i]->id)) {
+                            status = "Постройка закрыта курикулумом.";
+                        } else {
+                            sel_action = A_BUILD0 + i;
+                            status = env.build_data()[i]->caption;
+                            if (has_sel) {
+                                do_build_area(env, gm, A_BUILD0 + i, true,
+                                              sel_x0, sel_y0, sel_x1, sel_y1, prc_x, prc_y, status);
+                                has_sel = false;
+                            }
                         }
                     }
                 }
@@ -1250,10 +1263,15 @@ int main(int argc, char* argv[]) {
                     int cc = lx / pcell; if (cc >= pcols) cc = pcols - 1;
                     int ci = (ly / pcell) * pcols + cc;
                     if (ci >= 0 && ci < nb) {
-                        do_build_area(env, gm, A_BUILD0 + ci, has_sel,
-                                      sel_x0, sel_y0, sel_x1, sel_y1, prc_x, prc_y, status);
-                        sel_action = A_BUILD0 + ci;
-                        has_sel = false;
+                        // PR 2: как в палитре — закрытое нельзя выбрать.
+                        if (!env.build_allowed(env.build_data()[ci]->id)) {
+                            status = "Постройка закрыта курикулумом.";
+                        } else {
+                            do_build_area(env, gm, A_BUILD0 + ci, has_sel,
+                                          sel_x0, sel_y0, sel_x1, sel_y1, prc_x, prc_y, status);
+                            sel_action = A_BUILD0 + ci;
+                            has_sel = false;
+                        }
                     }
                     popup_open = false;
                 } else {
@@ -1367,6 +1385,9 @@ int main(int argc, char* argv[]) {
                 draw_build_pixel(ix, iy, BS, env.build_data()[i]->id, false);
                 if (mpos.x >= ix && mpos.x < ix + BS && mpos.y >= iy && mpos.y < iy + BS)
                     draw_tex(selEarthTex[hf], ix, iy, BS);
+                // PR 2: закрытые курикулумом иконки затемнены (поверх ховера).
+                if (!env.build_allowed(env.build_data()[i]->id))
+                    DrawRectangle(ix, iy, BS, BS, {0, 0, 0, 140});
             }
         }
         // ─── Tool buttons ───
@@ -1612,6 +1633,9 @@ int main(int argc, char* argv[]) {
                 int hx = (int)mpos.x - ix, hy = (int)mpos.y - iy;
                 if (hx >= 0 && hy >= 0 && hx < pcell && hy < pcell)
                     draw_tex(selEarthTex[hf], ix, iy, pcell);
+                // PR 2: закрытые курикулумом иконки затемнены (поверх ховера).
+                if (!env.build_allowed(env.build_data()[i]->id))
+                    DrawRectangle(ix, iy, pcell, pcell, {0, 0, 0, 140});
             }
         }
 

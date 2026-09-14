@@ -51,6 +51,13 @@ public:
     bool build_allowed(const std::string& id) const {
         return curriculum_.all_builds || curriculum_.allowed_builds.count(id) > 0;
     }
+    // PR 2: Game::build — последний рубеж (туда же ходит GUI напрямую).
+    // Пересаживается в ctor/set_curriculum/reset: reset() пересоздаёт game_
+    // из свежего Game с gate_==nullptr, без пересадки гейт бы молча исчезал.
+    static bool curriculum_gate_fn(const void* ctx, const std::string& id) {
+        return static_cast<const ColonyEnvCpp*>(ctx)->build_allowed(id);
+    }
+    void seat_build_gate() { game_.set_build_gate(&curriculum_gate_fn, this); }
     void set_rewards(const RewardConfig& cfg) {
         std::lock_guard lock(*cfg_mutex_);
         cfg_ = cfg;

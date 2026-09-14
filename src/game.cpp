@@ -125,7 +125,9 @@ Game::Game(const Game& other)
       tax_main_paid_(other.tax_main_paid_),
       tax_postponed_(other.tax_postponed_),
       next_uid_(other.next_uid_),
-      enable_undo_(other.enable_undo_) {
+      enable_undo_(other.enable_undo_),
+      gate_(other.gate_),
+      gate_ctx_(other.gate_ctx_) {
     data_id_to_idx_ = other.data_id_to_idx_;
     depot_ = find_data(DEPOT_ID);
     if (other.undo_) undo_ = std::make_unique<Game>(*other.undo_);
@@ -159,6 +161,8 @@ Game& Game::operator=(const Game& other) {
     tax_postponed_ = other.tax_postponed_;
     next_uid_ = other.next_uid_;
     enable_undo_ = other.enable_undo_;
+    gate_ = other.gate_;
+    gate_ctx_ = other.gate_ctx_;
     data_id_to_idx_ = other.data_id_to_idx_;
     depot_ = find_data(DEPOT_ID);
     undo_ = other.undo_ ? std::make_unique<Game>(*other.undo_) : nullptr;
@@ -511,6 +515,9 @@ std::optional<Game::GameOverInfo> Game::game_over() const {
 
 // ---------------------------------------------------------------- действия
 std::pair<bool, std::string> Game::build(const std::string& data_id, int x, int y) {
+    // PR 2: гейт — первой строкой, до любых других проверок.
+    if (gate_ && !gate_(gate_ctx_, data_id))
+        return {false, "Постройка закрыта курикулумом."};
     if (!earth.in_bounds(x, y)) return {false, "Вне карты."};
     if (base_in_box(x, y)) return {false, "Это место занято."};
     const BaseData* d = find_data(data_id);
