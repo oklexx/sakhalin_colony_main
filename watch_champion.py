@@ -40,24 +40,6 @@ class TeeWriter:
         self.file.flush()
 
 
-def apply_curriculum_stage(env, stage, unlock_ids=None):
-    """Apply curriculum stage (and manual set) to the env.
-
-    None stage = skip, 0 = all buildings, 1-3 = stage presets.
-
-    NOTE: C++ ``set_curriculum_stage()`` rebuilds the stage preset from scratch.
-    Builds whose pyd predates the fix also dropped the manual set there, so when
-    a manual set is requested we re-apply it explicitly via ``set_unlock_ids``
-    (present in current builds; older ones are simply skipped).
-    """
-    if stage is not None:
-        env.cpp_env.set_curriculum_stage(stage)
-        manual = [bid for bid in str(unlock_ids or "").split(",") if bid]
-        setter = getattr(env.cpp_env, "set_unlock_ids", None)
-        if manual and callable(setter):
-            setter(manual)
-
-
 def read_curriculum_from_meta(model_dir):
     """Read stage + manual set + checkbox flag from the model meta files."""
     from rl.curriculum import read_curriculum_meta
@@ -165,12 +147,12 @@ def launch_visual_watch(
     state_file: Path,
     seed: int,
     map_size: int,
-    curriculum_stage: int | None = None,
-    unlock_ids: str | None = None,
+    curriculum=None,  # CurriculumState | dict | None (None = explicitly unrestricted)
     reward_config_path: str | None = None,
     minimap_radius: int | None = None,
 ) -> "subprocess.Popen":
     """Launch the GUI exe in headless-ai mode."""
+    import json as _json
     import subprocess
     args = [
         exe_path,
@@ -180,12 +162,14 @@ def launch_visual_watch(
         "--seed", str(seed),
         "--map-size", str(map_size),
     ]
-    if curriculum_stage is not None:
-        args.extend(["--stage", str(curriculum_stage)])
-    if unlock_ids:
-        # The GUI env must be restricted too, otherwise its action_mask re-enables
-        # every building and the watched policy picks e.g. прииск again.
-        args.extend(["--unlock-ids", str(unlock_ids)])
+    # PR 1: the GUI env takes the same computed state over --curriculum JSON —
+    # the flag is never skipped, so its action_mask can't silently re-enable
+    # buildings (the watched policy would pick e.g. прииск again).
+    if curriculum is None:
+        args.extend(["--curriculum-all"])
+    else:
+        payload = curriculum.to_dict() if hasattr(curriculum, "to_dict") else curriculum
+        args.extend(["--curriculum", _json.dumps(payload)])
     if reward_config_path:
         args.extend(["--reward-config", reward_config_path])
     if minimap_radius is not None:
@@ -344,9 +328,16 @@ def main():
     # training. Previously the manual set from the «Курикулум» tab was lost here
     # and stage 0 unlocked every building — the champion then built Goldmine
     # (прииск) even though only WaterChannel was allowed during training.
-    from rl.curriculum import resolve_curriculum
+    from rl.curriculum import resolve_curriculum, resolve_state
 
     resolved = resolve_curriculum(
+        model_dir,
+        curriculum_stage=args.curriculum_stage,
+        unlock_ids=args.unlock_ids,
+    )
+    # PR 1: the env takes ONE computed state; the resolved dict stays for
+    # logging and the GUI safety-net mask.
+    st = resolve_state(
         model_dir,
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
@@ -358,8 +349,7 @@ def main():
     env = CppColonyEnv(
         map_size=args.map_size,
         reward_config=reward_cfg,
-        curriculum_stage=stage,
-        unlock_ids=manual_csv or None,
+        curriculum=st,
     )
     # Match the env's minimap grid to the policy's (see train_ui/evaluator.py).
     # Without this, watching a hybrid/minimap model trained with
@@ -386,8 +376,7 @@ def main():
         print(f"WARNING: no normalization found in {model_dir}, using raw observations")
         print(f"  Available files: {[f.name for f in model_dir.iterdir() if f.suffix in ('.json', '.pt')]}")
 
-    # (stage/unlock ids were already applied at construction above — calling
-    # set_curriculum_stage() here would drop the manual set on older pyd builds)
+    # (the curriculum state was already applied at construction above)
     stored = read_curriculum_from_meta(model_dir)
     if stored["curriculum_stage"] is not None or stored["unlock_ids"] is not None:
         print(f"Curriculum (from model meta): stage={stage}"
@@ -534,8 +523,7 @@ def main():
             state_file=state_file,
             seed=args.seed,
             map_size=args.map_size,
-            curriculum_stage=stage,
-            unlock_ids=manual_csv,
+            curriculum=st,
             reward_config_path=reward_cfg_path,
             minimap_radius=resolved_minimap_radius,
         )
@@ -563,8 +551,7 @@ def main():
                 state_file=state_file,
                 seed=args.seed,
                 map_size=args.map_size,
-                curriculum_stage=stage,
-                unlock_ids=manual_csv,
+                curriculum=st,
                 reward_config_path=reward_cfg_path,
                 minimap_radius=resolved_minimap_radius,
             )

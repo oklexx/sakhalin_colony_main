@@ -21,7 +21,7 @@ def make_env(seed: int = 42):
     bd = colony_cpp.load_base_data(str(PROJECT_ROOT / "configs" / "bases.json"))
     ed = colony_cpp.load_events(str(PROJECT_ROOT / "configs" / "events.json"))
     return colony_cpp.ColonyEnvCpp(bd, ed, seed=seed, map_size=280,
-                                   curriculum_stage=0, unlock_ids=[],
+                                   curriculum={},  # PR 1: {} = unrestricted
                                    reward=colony_cpp.RewardConfig())
 
 

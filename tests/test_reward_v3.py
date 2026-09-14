@@ -57,7 +57,7 @@ def zero_config(**overrides):
 
 
 def make_env(rc, seed=SEED):
-    env = colony_cpp.ColonyEnvCpp(_base_data(), _events(), seed, 280, 0, [], rc, "normal")
+    env = colony_cpp.ColonyEnvCpp(_base_data(), _events(), seed, 280, {}, rc, "normal")  # PR 1: {} = unrestricted
     env.reset(seed)
     return env
 

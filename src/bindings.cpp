@@ -26,7 +26,7 @@ using namespace colony;
 #define COLONY_GIT_SHA "unknown"
 #endif
 #ifndef COLONY_EXTENSION_VERSION
-#define COLONY_EXTENSION_VERSION 1
+#define COLONY_EXTENSION_VERSION 2
 #endif
 
 namespace {
@@ -78,6 +78,30 @@ py::dict base_to_dict(const Base& b) {
     return d;
 }
 
+// PR 1: транспортный dict курикулума Python <-> C++:
+//   {"all_builds": bool, "allowed_builds": [str], "stage": int}
+// Неизвестные ключи игнорируются (forward compat для PR 4/5).
+Curriculum curriculum_from_dict(const py::dict& d) {
+    Curriculum c;
+    if (d.contains("all_builds")) c.all_builds = d["all_builds"].cast<bool>();
+    if (d.contains("allowed_builds")) {
+        c.allowed_builds.clear();
+        for (const auto& v : d["allowed_builds"]) c.allowed_builds.insert(v.cast<std::string>());
+    }
+    if (d.contains("stage")) c.stage_report = d["stage"].cast<int>();
+    return c;
+}
+
+py::dict curriculum_to_dict(const Curriculum& c) {
+    py::dict d;
+    d["all_builds"] = c.all_builds;
+    std::vector<std::string> ids(c.allowed_builds.begin(), c.allowed_builds.end());
+    std::sort(ids.begin(), ids.end());
+    d["allowed_builds"] = ids;
+    d["stage"] = c.stage_report;
+    return d;
+}
+
 py::dict env_step_to_dict(const ColonyEnvCpp::StepOut& s) {
     py::dict d;
     d["obs"] = s.obs;
@@ -110,7 +134,8 @@ PYBIND11_MODULE(colony_cpp, m) {
         py::dict d;
         d["version"] = COLONY_EXTENSION_VERSION;
         d["features"] = std::vector<std::string>{
-            "set_unlock_ids",      // ColonyEnvCpp/ColonyVecEnvCpp.set_unlock_ids + unlock_ids
+            "set_curriculum",      // set_curriculum() + curriculum() обеих сред (PR 1)
+            "curriculum",
             "minimap",             // minimap()/minimap_batch()/set_minimap_radius()
             "action_masks_batch",  // ColonyVecEnvCpp.action_masks_batch()
         };
@@ -397,12 +422,17 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readonly("population_peak", &ColonyEnvCpp::EpisodeMetrics::population_peak);
 
     py::class_<ColonyEnvCpp>(m, "ColonyEnvCpp")
-        .def(py::init<const std::vector<BaseData>&, const std::vector<BaseEvent>&,
-                      int64_t, int, int, const std::vector<std::string>&,
-                      const RewardConfig&, const std::string&, bool, int64_t>(),
+        .def(py::init([](const std::vector<BaseData>& base_data,
+                         const std::vector<BaseEvent>& events_data,
+                         int64_t seed, int map_size, const py::dict& curriculum,
+                         const RewardConfig& reward, const std::string& difficulty,
+                         bool no_city_game_over, int64_t no_people_days) {
+                 return new ColonyEnvCpp(base_data, events_data, seed, map_size,
+                                         curriculum_from_dict(curriculum), reward,
+                                         difficulty, no_city_game_over, no_people_days);
+             }),
              py::arg("base_data"), py::arg("events_data"), py::arg("seed"),
-             py::arg("map_size") = 280, py::arg("curriculum_stage") = 0,
-             py::arg("unlock_ids") = std::vector<std::string>(),
+             py::arg("map_size") = 280, py::arg("curriculum") = py::dict(),
              py::arg("reward") = RewardConfig(),
              py::arg("difficulty") = "normal",
              py::arg("no_city_game_over") = false,
@@ -462,9 +492,11 @@ PYBIND11_MODULE(colony_cpp, m) {
             d["money"] = s.money;
             return d;
         })
-        .def("set_curriculum_stage", &ColonyEnvCpp::set_curriculum_stage, py::arg("stage"))
-        .def("set_unlock_ids", &ColonyEnvCpp::set_unlock_ids, py::arg("ids"))
-        .def("unlock_ids", &ColonyEnvCpp::unlock_ids)
+        .def("set_curriculum", [](ColonyEnvCpp& env, const py::dict& d) {
+            env.set_curriculum(curriculum_from_dict(d));
+        }, py::arg("curriculum"))
+        .def("curriculum", [](const ColonyEnvCpp& env) { return curriculum_to_dict(env.curriculum()); })
+        .def("build_allowed", &ColonyEnvCpp::build_allowed, py::arg("id"))
         .def("set_rewards", &ColonyEnvCpp::set_rewards, py::arg("cfg"))
         .def("reward_config", &ColonyEnvCpp::reward_config);
 
@@ -500,14 +532,19 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readonly("infos", &StepBatchResult::infos);
 
     py::class_<ColonyVecEnvCpp>(m, "ColonyVecEnvCpp")
-        .def(py::init<const std::vector<BaseData>&, const std::vector<BaseEvent>&,
-                      int, int64_t, int, int, const std::vector<std::string>&,
-                      const RewardConfig&, int, const std::string&>(),
+        .def(py::init([](const std::vector<BaseData>& base_data,
+                         const std::vector<BaseEvent>& events_data,
+                         int n_envs, int64_t base_seed, int map_size,
+                         const py::dict& curriculum, const RewardConfig& reward,
+                         int n_threads, const std::string& difficulty) {
+                 return new ColonyVecEnvCpp(base_data, events_data, n_envs, base_seed,
+                                            map_size, curriculum_from_dict(curriculum),
+                                            reward, n_threads, difficulty);
+             }),
              py::arg("base_data"), py::arg("events_data"),
              py::arg("n_envs"), py::arg("base_seed"),
              py::arg("map_size") = 280,
-             py::arg("curriculum_stage") = 0,
-             py::arg("unlock_ids") = std::vector<std::string>(),
+             py::arg("curriculum") = py::dict(),
              py::arg("reward") = RewardConfig(),
              py::arg("n_threads") = 0,
              py::arg("difficulty") = "normal")
@@ -531,9 +568,10 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("total_daily_value", &ColonyVecEnvCpp::total_daily_value)
         .def("total_chain_daily", &ColonyVecEnvCpp::total_chain_daily)
         .def("mean_net_worth", &ColonyVecEnvCpp::mean_net_worth)
-        .def("set_curriculum_stage", &ColonyVecEnvCpp::set_curriculum_stage, py::arg("stage"))
-        .def("set_unlock_ids", &ColonyVecEnvCpp::set_unlock_ids, py::arg("ids"))
-        .def("unlock_ids", &ColonyVecEnvCpp::unlock_ids)
+        .def("set_curriculum", [](ColonyVecEnvCpp& v, const py::dict& d) {
+            v.set_curriculum(curriculum_from_dict(d));
+        }, py::arg("curriculum"))
+        .def("curriculum", [](const ColonyVecEnvCpp& v) { return curriculum_to_dict(v.curriculum()); })
         .def("set_rewards", &ColonyVecEnvCpp::set_rewards, py::arg("cfg"))
         .def("set_step_log", &ColonyVecEnvCpp::set_step_log, py::arg("env_idx"), py::arg("path"))
         .def("clear_step_log", &ColonyVecEnvCpp::clear_step_log, py::arg("env_idx"))

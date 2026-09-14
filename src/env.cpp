@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 
 #include <json.hpp>
 
@@ -18,25 +19,11 @@ namespace {
 
 const char* SEASON_NAMES_ENV[4] = {"spring", "summer", "autumn", "winter"};
 
-// Стили курикулума (аналог CURRICULUM_STAGES в rl/env.py)
-const char* CURRICULUM_STAGE_1[] = {
-    "House", "SmallHouse", "Farm", "Garden", "Mushroom", "WaterChannel",
-    "Refinery", "Fish", "HuntingLand", "CowFarm", "Apiary", "Hothouse",
-    "Puerperal", "Road"};
-const char* CURRICULUM_STAGE_2[] = {
-    "Sawmill", "Coalmine", "CoalCut", "Ironmine", "PowerStation",
-    "HydroStation", "AirStation", "Torchlight", "Goldmine", "BigHouse",
-    "BigFarm"};
-const char* CURRICULUM_STAGE_3[] = {
-    "BigSawmill", "BigRefinary", "BigIronmine", "WaterMill",
-    "SmallAtomStation", "AtomStation", "SuperHouse"};
-
 }  // namespace
 
 ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
                            const std::vector<BaseEvent>& events_data,
-                           int64_t seed, int map_size, int curriculum_stage,
-                           const std::vector<std::string>& unlock_ids,
+                           int64_t seed, int map_size, const Curriculum& curriculum,
                            const RewardConfig& cfg,
                            const std::string& difficulty,
                            bool no_city_game_over,
@@ -45,12 +32,10 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
       events_data_(std::make_shared<const std::vector<BaseEvent>>(events_data)),
       cfg_(cfg),
       map_size_(map_size),
-      curriculum_stage_(curriculum_stage),
+      curriculum_(curriculum),
       difficulty_(difficulty),
       no_city_game_over_(no_city_game_over),
       no_people_days_(no_people_days),
-      manual_unlock_ids_(unlock_ids),
-      has_unlocked_(false),
       game_(*base_data_, *events_data_, seed, map_size, difficulty, no_city_game_over, no_people_days) {
     // пул построек
     std::unordered_set<std::string> subset;
@@ -65,57 +50,51 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
     for (int i = 0; i < n_build_; i++) build_id_to_idx_[build_ids_[i]] = i;
     manager_base_ = A_BUILD0 + n_build_;
 
-    // курикулум (этап + ручной набор)
-    rebuild_unlocked();
-
+    // курикулум уже лежит в curriculum_ (см. set_curriculum); каталог зависит от него
     compute_catalog();
     // RL-среда не использует undo — отключаем для производительности
     game_.set_enable_undo(false);
 }
 
-// Разрешённый набор = пресет этапа (1..3) ∪ ручной набор из вкладки «Курикулум».
-// Пусто и там и там (этап 0, ручного набора нет) = разрешено всё (has_unlocked_ = false).
-void ColonyEnvCpp::rebuild_unlocked() {
-    unlocked_.clear();
-    has_unlocked_ = false;
-    if (curriculum_stage_ > 0) {
-        for (int s = 1; s <= curriculum_stage_ && s <= 3; s++) {
-            const char* const* list = nullptr;
-            int n = 0;
-            if (s == 1) { list = CURRICULUM_STAGE_1; n = (int)(sizeof(CURRICULUM_STAGE_1) / sizeof(char*)); }
-            if (s == 2) { list = CURRICULUM_STAGE_2; n = (int)(sizeof(CURRICULUM_STAGE_2) / sizeof(char*)); }
-            if (s == 3) { list = CURRICULUM_STAGE_3; n = (int)(sizeof(CURRICULUM_STAGE_3) / sizeof(char*)); }
-            for (int i = 0; i < n; i++) unlocked_.insert(list[i]);
+// Разобрать транспортный JSON курикулума (см. Curriculum в env.h).
+Curriculum Curriculum::from_json(const std::string& text) {
+    Curriculum c;
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(text);
+    } catch (const std::exception& e) {
+        throw std::runtime_error(std::string("bad --curriculum JSON: ") + e.what());
+    }
+    if (!j.is_object())
+        throw std::runtime_error("bad --curriculum JSON: expected an object");
+    c.all_builds = j.value("all_builds", true);
+    c.stage_report = j.value("stage", 0);
+    if (j.contains("allowed_builds")) {
+        if (!j["allowed_builds"].is_array())
+            throw std::runtime_error("bad --curriculum JSON: allowed_builds must be an array");
+        c.allowed_builds.clear();
+        for (const auto& v : j["allowed_builds"]) {
+            if (!v.is_string())
+                throw std::runtime_error("bad --curriculum JSON: allowed_builds must be strings");
+            c.allowed_builds.insert(v.get<std::string>());
         }
-        has_unlocked_ = true;
     }
-    // Ручной набор применяется и на этапе 0 — иначе «поставил только водоканал»
-    // снова открывало все 32 здания.
-    for (const std::string& id : manual_unlock_ids_) {
-        if (id.empty()) continue;
-        unlocked_.insert(id);
-        has_unlocked_ = true;
+    return c;
+}
+
+void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
+    curriculum_ = c;
+    compute_catalog();
+    std::cout << "[C++ ColonyEnvCpp] set_curriculum: all_builds=" << curriculum_.all_builds
+              << " allowed=" << curriculum_.allowed_builds.size()
+              << " stage_report=" << curriculum_.stage_report;
+    if (!curriculum_.all_builds) {
+        std::cout << ":";
+        std::vector<std::string> ids(curriculum_.allowed_builds.begin(), curriculum_.allowed_builds.end());
+        std::sort(ids.begin(), ids.end());
+        for (const auto& id : ids) std::cout << " " << id;
     }
-    std::cout << "[C++ ColonyEnvCpp] rebuild_unlocked: stage=" << curriculum_stage_ 
-              << " manual_count=" << manual_unlock_ids_.size() 
-              << " has_unlocked=" << has_unlocked_ 
-              << " total_unlocked=" << unlocked_.size() << ":";
-    for (const auto& id : unlocked_) std::cout << " " << id;
     std::cout << std::endl;
-}
-
-void ColonyEnvCpp::set_curriculum_stage(int stage) {
-    curriculum_stage_ = stage;
-    // Раньше здесь unlocked_ просто очищался: смена этапа (расписание /
-    // «сбросить курикулум») молча теряла ручной набор. Теперь он сохраняется.
-    rebuild_unlocked();
-    compute_catalog();
-}
-
-void ColonyEnvCpp::set_unlock_ids(const std::vector<std::string>& ids) {
-    manual_unlock_ids_ = ids;
-    rebuild_unlocked();
-    compute_catalog();
 }
 
 void ColonyEnvCpp::set_step_log(const std::string& path) {
@@ -485,7 +464,7 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
     push((float)((double)g.annual_tax_amount() / 2e4));
     push((float)((double)g.main_tax_amount() / 5e5));
     push((float)((double)g.days_alive / 3650.0));
-    push((float)((double)curriculum_stage_ / 3.0));
+    push((float)((double)curriculum_.stage_report / 3.0));
     for (float c : counts) push((float)((double)c / 10.0));
     push((float)(sum_live / 5000.0));
     push((float)min_live);
@@ -560,7 +539,7 @@ std::vector<float> ColonyEnvCpp::action_mask() {
         const BaseData* d = build_data_[i];
 
         // Curriculum unlock check
-        if (has_unlocked_ && !unlocked_.count(d->id))
+        if (!build_allowed(d->id))
             continue;
 
 
@@ -623,7 +602,7 @@ std::string ColonyEnvCpp::dump_obs() const {
        << " tax_amount=" << g.annual_tax_amount()
        << " main_tax_amount=" << g.main_tax_amount()
        << " days_alive=" << g.days_alive
-       << " stage=" << curriculum_stage_;
+       << " stage=" << curriculum_.stage_report;
     for (int r = 0; r < SUNDUK_SIZE; r++)
         os << " res" << r << "=" << (int)g.sunduk[r];
     for (int i = 0; i < n_build_; i++) {
@@ -730,7 +709,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         const BaseData* d = build_data_[action - A_BUILD0];
         action_name = "BUILD:" + d->id;
         std::optional<std::pair<int, int>> cell;
-        if (has_unlocked_ && !unlocked_.count(d->id)) {
+        if (!build_allowed(d->id)) {
             rew += cfg_.error_penalty; c_error += cfg_.error_penalty;
         } else {
             cell = find_lot(d->need_earth, d->no_near_base);
@@ -1182,7 +1161,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         bool any_build_available = false;
         for (int i = 0; i < n_build_; ++i) {
             const BaseData* d = build_data_[i];
-            if (has_unlocked_ && !unlocked_.count(d->id)) continue;
+            if (!build_allowed(d->id)) continue;
             if (g.money < d->price) continue;
             any_build_available = true;
             break;
@@ -1273,8 +1252,7 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
     const std::vector<BaseData>& base_data,
     const std::vector<BaseEvent>& events_data,
     int n_envs, int64_t base_seed, int map_size,
-    int curriculum_stage,
-    const std::vector<std::string>& unlock_ids,
+    const Curriculum& curriculum,
     const RewardConfig& cfg,
     int n_threads,
     const std::string& difficulty)
@@ -1282,8 +1260,7 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
       events_data_(std::make_shared<std::vector<BaseEvent>>(events_data)),
       cfg_(cfg),
       map_size_(map_size),
-      curriculum_stage_(curriculum_stage),
-      unlock_ids_(unlock_ids),
+      curriculum_(curriculum),
       n_envs_(n_envs),
       base_seed_(base_seed),
       pool_([n_threads, n_envs]() -> size_t {
@@ -1296,7 +1273,7 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
     envs_.reserve(n_envs);
     for (int i = 0; i < n_envs; ++i) {
         envs_.emplace_back(*base_data_, *events_data_, base_seed + i * 10000,
-                           map_size, curriculum_stage, unlock_ids, cfg, difficulty);
+                           map_size, curriculum, cfg, difficulty);
     }
     obs_size_ = envs_[0].obs_size();
     n_actions_ = envs_[0].n_actions();

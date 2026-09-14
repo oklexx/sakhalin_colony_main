@@ -26,8 +26,7 @@ class CppVecEnv(VecEnv):
         self,
         n_envs: int,
         map_size: int = 280,
-        curriculum_stage: int = 0,
-        unlock_ids: Optional[str] = None,
+        curriculum=None,  # CurriculumState | dict | None (None = unrestricted)
         disable_net_worth: Optional[bool] = None,
         disable_daily_income: Optional[bool] = None,
         reward_config: Optional[Dict[str, float]] = None,
@@ -98,11 +97,19 @@ class CppVecEnv(VecEnv):
             print(f"  rc.disable_daily_income   = {rc.disable_daily_income}", flush=True)
             print("=" * 60, flush=True)
 
-        # Parse unlock_ids
-        unlock_list = []
-        if unlock_ids:
-            unlock_list = [s.strip() for s in unlock_ids.split(",") if s.strip()]
-        print(f"[CppVecEnv] init: n_envs={n_envs}, curriculum_stage={curriculum_stage}, unlock_ids='{unlock_ids}', unlock_list={unlock_list}", flush=True)
+        # PR 1: single curriculum contract (duck-typed — no rl import here, so
+        # this module stays importable without torch: rl depends on python/, not vice versa).
+        if curriculum is None:
+            curr_dict = {"all_builds": True, "allowed_builds": [], "stage": 0}
+            self.curriculum_state = None
+        elif isinstance(curriculum, dict):
+            curr_dict = curriculum
+            self.curriculum_state = None
+        else:
+            curr_dict = curriculum.to_dict()
+            self.curriculum_state = curriculum
+        print(f"[CppVecEnv] init: n_envs={n_envs}, curriculum_all={curr_dict.get('all_builds', True)}, "
+              f"allowed_builds={len(curr_dict.get('allowed_builds', []))}", flush=True)
 
         # Create C++ batched environment
         self.cpp_vec = colony_cpp.ColonyVecEnvCpp(
@@ -110,8 +117,7 @@ class CppVecEnv(VecEnv):
             n_envs=n_envs,
             base_seed=seed,
             map_size=map_size,
-            curriculum_stage=curriculum_stage,
-            unlock_ids=unlock_list,
+            curriculum=curr_dict,
             reward=rc,
             n_threads=n_threads,
             difficulty=difficulty,
@@ -270,8 +276,7 @@ class CppVecEnv(VecEnv):
 def make_cpp_vec_env(
     n_envs: int = 8,
     map_size: int = 280,
-    curriculum_stage: int = 0,
-    unlock_ids: Optional[str] = None,
+    curriculum=None,
     disable_net_worth: bool = False,
     disable_daily_income: bool = False,
     reward_config: Optional[Dict[str, float]] = None,
@@ -284,8 +289,7 @@ def make_cpp_vec_env(
     return CppVecEnv(
         n_envs=n_envs,
         map_size=map_size,
-        curriculum_stage=curriculum_stage,
-        unlock_ids=unlock_ids,
+        curriculum=curriculum,
         disable_net_worth=disable_net_worth,
         disable_daily_income=disable_daily_income,
         reward_config=reward_config,

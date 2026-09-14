@@ -18,12 +18,11 @@ from __future__ import annotations
 import os
 
 #: Extension API version Python expects.
-EXTENSION_MIN_VERSION = 1
+EXTENSION_MIN_VERSION = 2
 
 #: Capability flags (see `colony_cpp.extension_info()["features"]`) that must
-#: be present. `set_unlock_ids` is the exact capability whose absence caused
-#: silent curriculum breakage with stale binaries.
-REQUIRED_FEATURES = ("set_unlock_ids",)
+#: be present. PR 1 replaced the (stage, unlock_ids) pair with set_curriculum().
+REQUIRED_FEATURES = ("set_curriculum",)
 
 #: Env var escape hatch (same effect as --allow-stale-pyd).
 STALE_ENV_VAR = "COLONY_ALLOW_STALE_PYD"

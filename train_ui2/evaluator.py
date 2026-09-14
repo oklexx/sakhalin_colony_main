@@ -169,7 +169,7 @@ def run_eval(
     import torch
     from cpp_env import CppColonyEnv
     from minimap import MinimapSingleEnvWrapper
-    from rl.curriculum import resolve_curriculum
+    from rl.curriculum import resolve_curriculum, resolve_state
 
     model_path = Path(model_path)
     if not model_path.exists():
@@ -208,7 +208,16 @@ def run_eval(
                 pass
 
     # Explicit args win; otherwise restore the scenario stored next to the model.
+    # PR 1: the env takes ONE computed state (resolve_state); the resolved dict
+    # stays for logging (stage/manual/count as before).
     resolved = resolve_curriculum(
+        model_dir,
+        meta=meta,
+        curriculum_stage=curriculum_stage,
+        unlock_ids=unlock_ids,
+        use_curriculum_tab=use_curriculum_tab,
+    )
+    st = resolve_state(
         model_dir,
         meta=meta,
         curriculum_stage=curriculum_stage,
@@ -217,14 +226,13 @@ def run_eval(
     )
     cur_stage = int(resolved["curriculum_stage"])  # type: ignore[arg-type]
     manual_csv = str(resolved["unlock_ids"])
-    eval_allowed = list(resolved["allowed"])  # type: ignore[arg-type]
+    eval_allowed = list(st.allowed_builds)
 
     env = CppColonyEnv(
         map_size=map_size,
         reward_config=reward_cfg,
         difficulty=difficulty,
-        curriculum_stage=cur_stage,
-        unlock_ids=manual_csv or None,
+        curriculum=st,
     )
     print(f"[Eval] curriculum: stage={cur_stage}, "
           f"manual={manual_csv or '—'}, allowed={len(eval_allowed)} buildings",

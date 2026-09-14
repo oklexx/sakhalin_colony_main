@@ -343,6 +343,17 @@ class Config:
 
         return manual_ids_csv(self.unlock_ids, self.use_curriculum_tab)
 
+    def curriculum_state(self) -> CurriculumState:
+        """Computed curriculum for every env instance (PR 1 single contract)."""
+        from rl.curriculum import build_state
+
+        return build_state(
+            self.curriculum_stage,
+            self.unlock_ids,
+            self.use_curriculum_tab,
+            self.curriculum_resources,
+        )
+
     def curriculum_meta(self) -> Dict[str, Any]:
         """Curriculum fields to persist next to a checkpoint (meta.json)."""
         return {

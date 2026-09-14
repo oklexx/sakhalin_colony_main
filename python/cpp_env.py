@@ -99,8 +99,7 @@ class CppColonyEnv(gym.Env):
     def __init__(
         self,
         map_size: int = 280,
-        curriculum_stage: int = 0,
-        unlock_ids: Optional[str] = None,
+        curriculum=None,  # CurriculumState | dict | None (None = unrestricted)
         disable_net_worth: bool = False,
         disable_daily_income: bool = False,
         reward_config: Optional[Dict[str, float]] = None,
@@ -156,10 +155,17 @@ class CppColonyEnv(gym.Env):
             print(f"  rc.disable_daily_income   = {rc.disable_daily_income}", flush=True)
             print("=" * 60, flush=True)
         
-        # Parse unlock_ids
-        unlock_list = []
-        if unlock_ids:
-            unlock_list = [s.strip() for s in unlock_ids.split(",") if s.strip()]
+        # PR 1: single curriculum contract (duck-typed — no rl import here, so
+        # this module stays importable without torch: rl depends on python/, not vice versa).
+        if curriculum is None:
+            curr_dict = {"all_builds": True, "allowed_builds": [], "stage": 0}
+            self.curriculum_state = None
+        elif isinstance(curriculum, dict):
+            curr_dict = curriculum
+            self.curriculum_state = None
+        else:
+            curr_dict = curriculum.to_dict()
+            self.curriculum_state = curriculum
         
         # Create C++ environment
         self.cpp_env = colony_cpp.ColonyEnvCpp(
@@ -167,8 +173,7 @@ class CppColonyEnv(gym.Env):
             self.events_data,
             seed=0,  # will be set in reset
             map_size=map_size,
-            curriculum_stage=curriculum_stage,
-            unlock_ids=unlock_list,
+            curriculum=curr_dict,
             reward=rc,
             difficulty=difficulty,
         )
@@ -247,8 +252,7 @@ class CppColonyEnv(gym.Env):
 
 def make_env(
     map_size: int = 280,
-    curriculum_stage: int = 0,
-    unlock_ids: Optional[str] = None,
+    curriculum=None,
     disable_net_worth: bool = False,
     disable_daily_income: bool = False,
     reward_config: Optional[Dict[str, float]] = None,
@@ -259,8 +263,7 @@ def make_env(
     def _init():
         env = CppColonyEnv(
             map_size=map_size,
-            curriculum_stage=curriculum_stage,
-            unlock_ids=unlock_ids,
+            curriculum=curriculum,
             disable_net_worth=disable_net_worth,
             disable_daily_income=disable_daily_income,
             reward_config=reward_config,

@@ -1,0 +1,235 @@
+"""PR 1: the unified curriculum contract (pure Python, no extension needed).
+
+`build_state()` is the only function that turns (stage, manual set, checkbox)
+into a CurriculumState; every env creator (train/eval/watch/GUI) must use it.
+"""
+import json
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from rl.curriculum import (  # noqa: E402
+    ALL_IDS,
+    BUILD_ALIASES,
+    STAGE_MAP,
+    CurriculumState,
+    allowed_ids,
+    build_state,
+    parse_unlock_ids,
+    resolve_state,
+)
+
+
+# ── build_state matrix ───────────────────────────────────────────────────
+
+def test_stage_zero_without_manual_is_unrestricted():
+    for tab in (True, False):
+        for manual in (None, "", []):
+            st = build_state(0, manual, tab)
+            assert st.all_builds is True, f"stage=0 manual={manual!r} tab={tab}"
+            assert st.stage_report == 0
+
+
+def test_manual_set_at_stage_zero_restricts():
+    st = build_state(0, "WaterChannel", True)
+    assert st.all_builds is False
+    assert st.allowed_builds == ("WaterChannel",)
+
+
+def test_checkbox_off_ignores_manual_set():
+    st = build_state(0, "WaterChannel", False)
+    assert st.all_builds is True
+    st = build_state(1, "Goldmine", False)
+    assert st.all_builds is False
+    assert set(st.allowed_builds) == set(STAGE_MAP[1])
+    assert "Goldmine" not in st.allowed_builds
+
+
+def test_stage_preset_without_manual():
+    st = build_state(1, None, False)
+    assert set(st.allowed_builds) == set(STAGE_MAP[1])
+    st = build_state(2, "", False)
+    assert set(st.allowed_builds) == set(STAGE_MAP[1]) | set(STAGE_MAP[2])
+    assert len(st.allowed_builds) == 25
+
+
+def test_manual_merges_with_stage_preset():
+    st = build_state(1, "Goldmine", True)
+    assert "WaterChannel" in st.allowed_builds  # stage-1 preset
+    assert "Goldmine" in st.allowed_builds      # manual
+    assert "Sawmill" not in st.allowed_builds   # stage 2 still locked
+    assert len(st.allowed_builds) == 15
+
+
+def test_full_set_normalises_to_unrestricted():
+    """All 32 checkboxes ticked == no restriction (explicit all_builds)."""
+    st = build_state(0, ",".join(ALL_IDS), True)
+    assert st.all_builds is True
+    st = build_state(3, None, False)  # presets 1..3 cover everything
+    assert st.all_builds is True
+    assert len(st.allowed_builds) == 32
+
+
+def test_stage_report_echoes_stage():
+    assert build_state(2, None, False).stage_report == 2
+    assert build_state(0, "WaterChannel", True).stage_report == 0
+
+
+def test_build_state_matches_allowed_ids():
+    """build_state and the legacy allowed_ids() must agree on every combo."""
+    cases = [
+        (0, None, True), (0, "", True), (0, "WaterChannel", True),
+        (0, "WaterChannel", False), (1, None, False), (1, "Goldmine", True),
+        (2, "Road", True), (2, None, False), (3, None, True),
+    ]
+    for stage, manual, tab in cases:
+        st = build_state(stage, manual, tab)
+        legacy = allowed_ids(stage, manual, tab)
+        assert set(st.allowed_builds) == set(legacy), f"{stage} {manual} {tab}"
+        assert st.all_builds == (len(legacy) == len(ALL_IDS))
+
+
+# ── aliases & validation ─────────────────────────────────────────────────
+
+def test_aliases_fold_to_canon():
+    assert parse_unlock_ids("BigRefinery") == ["BigRefinary"]
+    assert parse_unlock_ids("Water_Channel") == ["WaterChannel"]
+    st = build_state(0, "BigRefinery, Water_Channel", True)
+    assert set(st.allowed_builds) == {"BigRefinary", "WaterChannel"}
+
+
+def test_alias_targets_are_canonical():
+    assert set(BUILD_ALIASES.values()) <= set(ALL_IDS)
+
+
+def test_unknown_id_raises():
+    with pytest.raises(ValueError, match="unknown building"):
+        parse_unlock_ids("NoSuchBuilding")
+    with pytest.raises(ValueError, match="NoSuchBuilding"):
+        parse_unlock_ids("WaterChannel, NoSuchBuilding")
+    with pytest.raises(ValueError, match="unknown building"):
+        build_state(0, "House, TypoHouse", True)
+
+
+# ── resolve_state ────────────────────────────────────────────────────────
+
+def _write_meta(path: Path, payload: dict):
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_resolve_state_from_meta(tmp_path):
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 0, "unlock_ids": "WaterChannel",
+        "use_curriculum_tab": True})
+    st = resolve_state(tmp_path)
+    assert st.all_builds is False
+    assert st.allowed_builds == ("WaterChannel",)
+
+
+def test_resolve_state_explicit_wins(tmp_path):
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 3, "unlock_ids": "Goldmine",
+        "use_curriculum_tab": True})
+    st = resolve_state(tmp_path, curriculum_stage=0, unlock_ids="WaterChannel",
+                       use_curriculum_tab=True)
+    assert st.allowed_builds == ("WaterChannel",)
+
+
+def test_resolve_state_without_meta_is_unrestricted(tmp_path):
+    st = resolve_state(tmp_path)
+    assert st.all_builds is True
+
+
+def test_resolve_state_unchecked_tab_is_unrestricted(tmp_path):
+    """Stored-but-unchecked manual set must not restrict (tab=False)."""
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 0, "unlock_ids": "WaterChannel",
+        "use_curriculum_tab": False})
+    st = resolve_state(tmp_path)
+    assert st.all_builds is True
+
+
+def test_resolve_state_missing_tab_honours_manual(tmp_path):
+    """Legacy meta without use_curriculum_tab: a stored manual set applies.
+
+    This is the «not stored» vs «stored as empty» distinction: a missing tab
+    (None) defaults to honouring the manual set, while an explicit False
+    ignores it (see the test above).
+    """
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 0, "unlock_ids": "WaterChannel"})
+    st = resolve_state(tmp_path)
+    assert st.all_builds is False
+    assert st.allowed_builds == ("WaterChannel",)
+
+
+# ── transport form ───────────────────────────────────────────────────────
+
+def test_state_round_trips_through_dict():
+    st = build_state(1, "Goldmine", True)
+    blob = json.dumps(st.to_dict())  # must be JSON-serialisable (GUI transport)
+    back = CurriculumState.from_dict(json.loads(blob))
+    assert back == st
+
+
+def test_state_round_trips_unrestricted():
+    st = build_state(0, None, True)
+    assert CurriculumState.from_dict(st.to_dict()) == st
+
+
+def test_from_dict_defaults_to_unrestricted():
+    st = CurriculumState.from_dict({})
+    assert st.all_builds is True
+    assert st.stage_report == 0
+
+
+def test_transport_keys_match_cpp_schema():
+    """Keys must match C++ curriculum_from_dict/from_json (bindings.cpp, env.cpp)."""
+    d = build_state(0, "WaterChannel", True).to_dict()
+    assert d["all_builds"] is False
+    assert d["allowed_builds"] == ["WaterChannel"]
+    assert d["stage"] == 0
+    assert d["all_resources"] is True
+    assert d["resource_weights"] == [1.0] * 9
+
+
+# ── cross-language set parity ────────────────────────────────────────────
+
+def _build_subset_from_header() -> set:
+    text = (ROOT / "include" / "colony" / "constants.h").read_text(encoding="utf-8")
+    m = re.search(r"BUILD_SUBSET\[32\] = \{(.*?)\};", text, re.S)
+    assert m, "BUILD_SUBSET not found in constants.h"
+    return set(re.findall(r"\"([^\"]+)\"", m.group(1)))
+
+
+def test_all_ids_match_cpp_build_subset():
+    """Python ALL_IDS and C++ BUILD_SUBSET must be the same 32 ids.
+
+    The parity assert in EnvManager compares these sets — a drift would fail
+    loudly at startup; this test fails even earlier (no extension needed).
+    """
+    assert set(ALL_IDS) == _build_subset_from_header()
+
+
+def test_stage_presets_cover_all_ids():
+    union = {bid for s in (1, 2, 3) for bid in STAGE_MAP[s]}
+    assert union == set(ALL_IDS)
+
+
+# ── Config integration ───────────────────────────────────────────────────
+
+def test_config_curriculum_state():
+    from rl.config import Config
+
+    cfg = Config(curriculum_stage=0, unlock_ids="WaterChannel", use_curriculum_tab=True)
+    st = cfg.curriculum_state()
+    assert isinstance(st, CurriculumState)
+    assert st.allowed_builds == ("WaterChannel",)
+
+    default = Config().curriculum_state()
+    assert default.all_builds is True

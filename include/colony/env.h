@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <memory>
@@ -18,23 +19,38 @@
 
 namespace colony {
 
+// Единый контракт курикулума (PR 1): Python считает, C++ хранит и применяет.
+// «Нет ограничения» — явное all_builds = true, а не побочный эффект пустого
+// списка (раньше пустой manual_unlock_ids_ при этапе 0 молча открывал всё).
+struct Curriculum {
+    bool all_builds = true;                    // false => restricted
+    std::unordered_set<std::string> allowed_builds;
+    bool all_resources = true;                 // PR 4: веса ресурсов (пока всегда true)
+    std::array<float, SUNDUK_SIZE> resource_weights{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    int stage_report = 0;                      // только для obs-фичи и дампов
+    int obs_version = 0;                       // PR 5
+    // Разобрать JSON вида {"all_builds":bool,"allowed_builds":[...],"stage":int}
+    // (транспорт watch_champion -> GUI/main). Бросает std::runtime_error.
+    static Curriculum from_json(const std::string& text);
+};
+
 // RL-среда: точная копия ColonyEnv из rl/env.py (награды и наблюдения).
 class ColonyEnvCpp {
 public:
     ColonyEnvCpp(const std::vector<BaseData>& base_data,
                  const std::vector<BaseEvent>& events_data, int64_t seed,
-                 int map_size = 280, int curriculum_stage = 0,
-                 const std::vector<std::string>& unlock_ids = {},
+                 int map_size = 280, const Curriculum& curriculum = Curriculum(),
                  const RewardConfig& cfg = RewardConfig(),
                  const std::string& difficulty = "normal",
                  bool no_city_game_over = false,
                  int64_t no_people_days = GAME_OVER_NO_PEOPLE_DAYS);
 
-    void set_curriculum_stage(int stage);
-    // Ручной набор зданий из вкладки «Курикулум» (unlock_ids). Хранится в среде,
-    // чтобы смена этапа не теряла его (см. set_curriculum_stage).
-    void set_unlock_ids(const std::vector<std::string>& ids);
-    const std::vector<std::string>& unlock_ids() const { return manual_unlock_ids_; }
+    // Единственная точка входа курикулума: идемпотентна, пересчитывает каталог.
+    void set_curriculum(const Curriculum& c);
+    Curriculum curriculum() const { return curriculum_; }
+    bool build_allowed(const std::string& id) const {
+        return curriculum_.all_builds || curriculum_.allowed_builds.count(id) > 0;
+    }
     void set_rewards(const RewardConfig& cfg) {
         std::lock_guard lock(*cfg_mutex_);
         cfg_ = cfg;
@@ -133,8 +149,6 @@ private:
     int road_count() const;
     std::vector<Season> step_seasons(int y, int m, int d, int n_days) const;
     void compute_catalog();
-    // Перестроить unlocked_ из этапа + ручного набора
-    void rebuild_unlocked();
 
     struct PairHash {
         size_t operator()(const std::pair<int, int>& p) const {
@@ -153,14 +167,10 @@ private:
     mutable std::shared_ptr<std::mutex> cfg_mutex_ = std::make_shared<std::mutex>();
     RewardConfig cfg_;
     int map_size_;
-    int curriculum_stage_;
+    Curriculum curriculum_;
     std::string difficulty_;
     bool no_city_game_over_;
     int64_t no_people_days_;
-    std::unordered_set<std::string> unlocked_;
-    // Ручной набор (unlock_ids): сохраняется между сменами этапа курикулума
-    std::vector<std::string> manual_unlock_ids_;
-    bool has_unlocked_;
 
     std::vector<std::string> build_ids_;
     std::vector<const BaseData*> build_data_;
@@ -226,8 +236,7 @@ public:
     ColonyVecEnvCpp(const std::vector<BaseData>& base_data,
                     const std::vector<BaseEvent>& events_data,
                     int n_envs, int64_t base_seed, int map_size = 280,
-                    int curriculum_stage = 0,
-                    const std::vector<std::string>& unlock_ids = {},
+                    const Curriculum& curriculum = Curriculum(),
                     const RewardConfig& cfg = RewardConfig(),
                     int n_threads = 0,
                     const std::string& difficulty = "normal");
@@ -258,15 +267,11 @@ public:
     double mean_net_worth() const { double t = 0; for (const auto& e : envs_) t += e.debug_net_worth(); return t / (double)n_envs_; }
     const float* obs_buffer() const { return obs_buffer_.data(); }
 
-    void set_curriculum_stage(int stage) {
-        curriculum_stage_ = stage;
-        for (auto& env : envs_) env.set_curriculum_stage(stage);
+    void set_curriculum(const Curriculum& c) {
+        curriculum_ = c;
+        for (auto& env : envs_) env.set_curriculum(c);
     }
-    void set_unlock_ids(const std::vector<std::string>& ids) {
-        unlock_ids_ = ids;
-        for (auto& env : envs_) env.set_unlock_ids(ids);
-    }
-    const std::vector<std::string>& unlock_ids() const { return unlock_ids_; }
+    Curriculum curriculum() const { return curriculum_; }
     void set_rewards(const RewardConfig& cfg) {
         cfg_ = cfg;
         for (auto& env : envs_) env.set_rewards(cfg);
@@ -292,8 +297,7 @@ private:
     std::shared_ptr<std::vector<BaseEvent>> events_data_;
     RewardConfig cfg_;
     int map_size_;
-    int curriculum_stage_;
-    std::vector<std::string> unlock_ids_;
+    Curriculum curriculum_;
     int n_envs_;
     int obs_size_;
     int n_actions_;

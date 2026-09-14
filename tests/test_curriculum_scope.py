@@ -235,8 +235,14 @@ def test_run_eval_builds_env_with_restored_curriculum(tmp_path, monkeypatch):
 
     ev.run_eval(model_path, episodes=1, max_days=2, seed=1, normalization_path=None)
 
-    assert created["curriculum_stage"] == 0
-    assert created["unlock_ids"] == "WaterChannel"
+    # PR 1: the env takes ONE computed state, not (stage, unlock_ids).
+    from rl.curriculum import CurriculumState
+
+    st = created["curriculum"]
+    assert isinstance(st, CurriculumState)
+    assert st.all_builds is False
+    assert st.allowed_builds == ("WaterChannel",)
+    assert st.stage_report == 0
 
 
 def test_run_eval_explicit_curriculum_overrides_meta(tmp_path, monkeypatch):
@@ -301,8 +307,14 @@ def test_run_eval_explicit_curriculum_overrides_meta(tmp_path, monkeypatch):
     ev.run_eval(model_path, episodes=1, max_days=2, seed=1, normalization_path=None,
                 curriculum_stage=0, unlock_ids="WaterChannel", use_curriculum_tab=True)
 
-    assert created["curriculum_stage"] == 0
-    assert created["unlock_ids"] == "WaterChannel"
+    # PR 1: the env takes ONE computed state, not (stage, unlock_ids).
+    from rl.curriculum import CurriculumState
+
+    st = created["curriculum"]
+    assert isinstance(st, CurriculumState)
+    assert st.all_builds is False
+    assert st.allowed_builds == ("WaterChannel",)
+    assert st.stage_report == 0
 
 
 def test_trainer_passes_curriculum_to_eval():

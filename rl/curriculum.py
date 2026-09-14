@@ -1,10 +1,13 @@
 """Curriculum definitions — single source of truth.
 
-Both C++ (env.cpp) and Python (EnvManager, UI) should mirror this.
-Keeping it here ensures UI presets and env allowed lists stay in sync.
+PR 1 contract: Python COMPUTES the allowed set, C++ stores and applies it.
+`build_state()` is the only function that turns (stage, manual set, checkbox)
+into a `CurriculumState`; the C++ side never interprets stages or lists again
+(no more «empty list means all» fail-open, no more stage wiping the manual set).
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, List
 
 # Stage → building ids (as in configs/bases.json without City)
@@ -19,7 +22,7 @@ STAGE_MAP: Dict[int, List[str]] = {
         "SmallAtomStation", "AtomStation", "SuperHouse"],
 }
 
-# All 32 buildable ids in canonical order
+# All 32 buildable ids in canonical order (same SET as C++ BUILD_SUBSET)
 ALL_IDS: List[str] = [
     "Farm", "Garden", "WaterChannel", "Sawmill", "Coalmine", "Ironmine", "Refinery", "Goldmine",
     "PowerStation", "HydroStation", "Road", "House", "SmallHouse", "Fish", "CoalCut",
@@ -27,9 +30,73 @@ ALL_IDS: List[str] = [
     "SuperHouse", "BigSawmill", "WaterMill", "BigRefinary", "Puerperal", "BigIronmine",
     "AirStation", "SmallAtomStation", "AtomStation",
 ]
+_ALL_IDS_SET = frozenset(ALL_IDS)
+
+# Канон — configs/bases.json: BigRefinary (не BigRefinery!), WaterChannel
+# (не Water_Channel). Частые опечатки нормализуются, остальное — ошибка.
+BUILD_ALIASES: Dict[str, str] = {
+    "BigRefinery": "BigRefinary",
+    "Water_Channel": "WaterChannel",
+}
+
+_FULL_WEIGHTS = (1.0,) * 9  # PR 4: neutral resource weights (all resources)
+
+
+@dataclass(frozen=True)
+class CurriculumState:
+    """Computed curriculum: the single object every env creator passes to C++.
+
+    `all_builds=True` means «no building restriction» explicitly; in that case
+    `allowed_builds` is informational only (conventionally ALL_IDS) and the C++
+    gate ignores it. `stage_report` is report-only (obs feature, dumps).
+    `all_resources` / `resource_weights` are the PR 4 payload (always neutral
+    until the resource curriculum lands).
+    """
+
+    all_builds: bool
+    allowed_builds: tuple[str, ...] = ()
+    all_resources: bool = True
+    resource_weights: tuple[float, ...] = _FULL_WEIGHTS
+    stage_report: int = 0
+
+    @classmethod
+    def all(cls, stage_report: int = 0) -> "CurriculumState":
+        """Unrestricted state (conventionally carries ALL_IDS for logging)."""
+        return cls(True, tuple(ALL_IDS), True, _FULL_WEIGHTS, stage_report)
+
+    def to_dict(self) -> dict:
+        """Transport form for C++ set_curriculum() and the GUI --curriculum JSON."""
+        return {
+            "all_builds": bool(self.all_builds),
+            "allowed_builds": list(self.allowed_builds),
+            "all_resources": bool(self.all_resources),
+            "resource_weights": [float(w) for w in self.resource_weights],
+            "stage": int(self.stage_report),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CurriculumState":
+        """Tolerant read of the transport form (unknown keys ignored)."""
+        allowed = d.get("allowed_builds", ())
+        weights = d.get("resource_weights", None)
+        return cls(
+            all_builds=bool(d.get("all_builds", True)),
+            allowed_builds=tuple(str(b) for b in (allowed or ())),
+            all_resources=bool(d.get("all_resources", True)),
+            resource_weights=tuple(float(w) for w in weights)
+            if weights is not None else _FULL_WEIGHTS,
+            stage_report=int(d.get("stage", d.get("stage_report", 0))),
+        )
+
 
 def parse_unlock_ids(unlock_ids: str | List[str] | None) -> List[str]:
-    """Normalise a manual unlock set (CSV string or list) to an ordered list."""
+    """Normalise a manual unlock set (CSV string or list) to an ordered list.
+
+    Aliases (BigRefinery→BigRefinary, Water_Channel→WaterChannel) are folded to
+    the bases.json canon. Unknown ids RAISE — a typo must fail the run loudly
+    instead of silently locking everything (fail-closed) or, worse, being
+    dropped into an «allow all» state.
+    """
     if not unlock_ids:
         return []
     if isinstance(unlock_ids, str):
@@ -38,11 +105,25 @@ def parse_unlock_ids(unlock_ids: str | List[str] | None) -> List[str]:
         raw = [str(s) for s in unlock_ids]
     out: List[str] = []
     seen: set[str] = set()
+    unknown: List[str] = []
     for item in raw:
         bid = item.strip()
-        if bid and bid not in seen:
+        if not bid:
+            continue
+        bid = BUILD_ALIASES.get(bid, bid)
+        if bid not in _ALL_IDS_SET:
+            if bid not in unknown:
+                unknown.append(bid)
+            continue
+        if bid not in seen:
             seen.add(bid)
             out.append(bid)
+    if unknown:
+        raise ValueError(
+            f"unknown building id(s): {unknown}; "
+            f"check --unlock-ids / the «Курикулум» tab "
+            f"(available: {', '.join(ALL_IDS)})"
+        )
     return out
 
 
@@ -63,8 +144,8 @@ def manual_ids_csv(
 def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List[str]:
     """Cumulative ids up to stage (0 = all), plus explicit manual `unlock_ids`.
 
-    Mirrors C++ `ColonyEnvCpp` logic: если задан непустой ручной набор,
-    он объединяется с набором этапа и становится единственным разрешённым
+    Mirrors the C++ `ColonyEnvCpp` logic it replaced: если задан непустой ручной
+    набор, он объединяется с набором этапа и становится единственным разрешённым
     списком (даже на этапе 0, где иначе доступны все здания).
     """
     manual = parse_unlock_ids(unlock_ids)
@@ -83,6 +164,34 @@ def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List
             seen.add(bid)
             uniq.append(bid)
     return uniq
+
+
+def build_state(
+    stage: int,
+    unlock_ids: str | List[str] | None = None,
+    use_curriculum_tab: bool = True,
+    resources: str | List[str] | None = None,
+) -> CurriculumState:
+    """Compute the CurriculumState from (stage, manual set, checkbox).
+
+    THE function every env instance must use (training, eval, watch) so a
+    curriculum never depends on which code path created the environment. A full
+    32-id set normalises to `all_builds=True` (same behaviour, explicit form).
+
+    `resources`: reserved for the PR 4 resource curriculum; currently ignored.
+    """
+    _ = resources  # PR 4 wires this; the setting is dead until then (as before)
+    stage_i = max(0, int(stage))
+    manual = parse_unlock_ids(unlock_ids)
+    if use_curriculum_tab:
+        ids = ids_for_stage(stage_i, manual)
+    elif stage_i == 0:
+        ids = list(ALL_IDS)
+    else:
+        ids = ids_for_stage(stage_i, None)
+    if set(ids) == _ALL_IDS_SET:
+        return CurriculumState.all(stage_i)
+    return CurriculumState(False, tuple(ids), True, _FULL_WEIGHTS, stage_i)
 
 
 def allowed_ids(
@@ -199,6 +308,36 @@ def resolve_curriculum(
         "use_curriculum_tab": tab,
         "allowed": allowed_ids(stage_i, manual_csv, True),
     }
+
+
+def resolve_state(
+    model_dir,
+    meta: Dict[str, object] | None = None,
+    curriculum_stage: int | None = None,
+    unlock_ids: str | List[str] | None = None,
+    use_curriculum_tab: bool | None = None,
+    resources: str | List[str] | None = None,
+) -> CurriculumState:
+    """resolve_curriculum + build_state in one call (eval/watch paths).
+
+    Returns the CurriculumState to hand to the env constructor — «not stored»
+    and «stored as empty» both resolve through the same code as training, so
+    the eval/watch scenario can never silently differ from training.
+    """
+    resolved = resolve_curriculum(
+        model_dir,
+        meta=meta,
+        curriculum_stage=curriculum_stage,
+        unlock_ids=unlock_ids,
+        use_curriculum_tab=use_curriculum_tab,
+    )
+    # manual_csv is already checkbox-filtered, so the tab is trivially True here.
+    return build_state(
+        int(resolved["curriculum_stage"]),  # type: ignore[arg-type]
+        str(resolved["unlock_ids"]),
+        True,
+        resources,
+    )
 
 
 def allowed_buildings_for_stage(stage: int) -> List[str]:

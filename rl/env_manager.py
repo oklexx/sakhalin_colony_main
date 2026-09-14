@@ -34,10 +34,8 @@ def _make_vec_env(cfg: Config):
     common = dict(
         n_envs=cfg.n_envs,
         map_size=cfg.map_size,
-        curriculum_stage=cfg.curriculum_stage,
-        # ручной набор зданий применяется только при включённом чекбоксе
-        # (единая точка правды — Config.effective_unlock_ids / rl.curriculum)
-        unlock_ids=cfg.effective_unlock_ids(),
+        # PR 1: один вычисленный контракт вместо (stage, unlock_ids)
+        curriculum=cfg.curriculum_state(),
         reward_config=reward_cfg,
         seed=cfg.seed,
         difficulty=cfg.difficulty,
@@ -171,6 +169,9 @@ class EnvManager:
         # Escape hatch: train.py --allow-stale-pyd / COLONY_ALLOW_STALE_PYD=1.
         require_colony()
         self.vec_env = _make_vec_env(cfg)
+        # PR 1 parity: the env must report back exactly the curriculum Python
+        # computed — silent «not applied» is the bug class this contract kills.
+        self._assert_curriculum_parity(cfg.curriculum_state())
 
         # expose commonly accessed attributes for backward compat
         self.n_envs: int = self.vec_env.num_envs
@@ -301,6 +302,22 @@ class EnvManager:
 
     # ── curriculum ──
 
+    def _assert_curriculum_parity(self, st) -> None:
+        """EnvManager-side parity check: env.curriculum() == computed state."""
+        try:
+            got = self.vec_env.venv.curriculum()  # type: ignore[attr-defined]
+        except AttributeError:
+            return  # exotic wrapper without .venv — nothing to check against
+        if st.all_builds:
+            assert got.get("all_builds", False), (
+                f"курикулум не применён: expected unrestricted, env={got}")
+            return
+        want = set(st.allowed_builds)
+        have = set(got.get("allowed_builds", []))
+        assert want == have, (
+            f"курикулум не применён: env={sorted(have)[:5]}…({len(have)}) "
+            f"expected={sorted(want)[:5]}…({len(want)})")
+
     def get_allowed_buildings(self) -> List[str]:
         """Return ids allowed by current curriculum stage + manual set."""
         return self.get_allowed_buildings_for_stage(self.cfg.curriculum_stage)
@@ -324,34 +341,21 @@ class EnvManager:
 
     def set_curriculum_stage(self, stage: int) -> None:
         self.cfg.curriculum_stage = stage
-        # vec env may need to be recreated or notified
-        venv = None
+        # PR 1: recompute ONE state (stage preset + manual set) and apply it in
+        # a single call — the «stage switch wipes the manual set» bug is dead
+        # by construction (C++ holds no separate stage/manual anymore).
+        from rl.curriculum import build_state
+        st = build_state(
+            stage,
+            self.cfg.unlock_ids,
+            self.cfg.use_curriculum_tab,
+            self.cfg.curriculum_resources,
+        )
         try:
             venv = self.vec_env.venv  # type: ignore[attr-defined]
-            venv.set_curriculum_stage(stage)
         except AttributeError:
             return
-        # C++ set_curriculum_stage() rebuilds the stage preset from scratch; older
-        # builds also dropped the manual set, so re-apply it explicitly. Without
-        # this, a stage switch (schedule / «сбросить курикулум») silently
-        # unlocked every building — including ones the user never ticked.
-        manual = self.cfg.effective_unlock_ids()
-        if not manual:
-            return
-        setter = getattr(venv, "set_unlock_ids", None)
-        if not callable(setter):
-            # Unreachable after the __init__ handshake (set_unlock_ids is a
-            # required feature), but fail loudly if it ever happens: silently
-            # dropping the manual set was the stale-binary bug.
-            from colony_cpp_api import StaleExtensionError
-            raise StaleExtensionError(
-                "[EnvManager] colony_cpp binary has no set_unlock_ids — manual "
-                "unlock_ids would be dropped on curriculum stage switch; "
-                "rebuild with build_pyext.bat.")
-        try:
-            setter([bid for bid in manual.split(",") if bid])
-        except Exception:
-            pass
+        venv.set_curriculum(st.to_dict())
 
     def close(self) -> None:
         try:

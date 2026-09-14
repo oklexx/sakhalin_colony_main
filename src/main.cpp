@@ -111,16 +111,26 @@ static void print_bases(const ColonyEnvCpp& env) {
 int main(int argc, char* argv[]) {
     int64_t seed = 42;
     int map_size = 280;
-    int curriculum_stage = 0;
+    Curriculum curriculum;  // default: everything allowed
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--seed" && i + 1 < argc) seed = std::stoll(argv[++i]);
         else if (arg == "--map-size" && i + 1 < argc) map_size = std::stoi(argv[++i]);
-        else if (arg == "--stage" && i + 1 < argc) curriculum_stage = std::stoi(argv[++i]);
+        else if (arg == "--curriculum" && i + 1 < argc) {
+            try {
+                curriculum = Curriculum::from_json(argv[++i]);
+            } catch (const std::exception& e) {
+                std::cerr << "ERROR: " << e.what() << "\n";
+                return 1;
+            }
+        }
+        else if (arg == "--curriculum-all") curriculum = Curriculum();
         else if (arg == "--help" || arg == "-h") {
             std::cout << "Sakhalin Colony\n"
-                      << "Usage: sakhalin_colony.exe [--seed N] [--map-size N] [--stage N]\n";
+                      << "Usage: sakhalin_colony.exe [--seed N] [--map-size N]\n"
+                      << "                           [--curriculum JSON | --curriculum-all]\n"
+                      << "  JSON: {\"all_builds\":bool,\"allowed_builds\":[...],\"stage\":int}\n";
             return 0;
         }
     }
@@ -138,7 +148,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  bases: " << bases_data.size() << " types\n";
     std::cout << "  events: " << events_data.size() << " types\n";
 
-    ColonyEnvCpp env(bases_data, events_data, seed, map_size, curriculum_stage);
+    ColonyEnvCpp env(bases_data, events_data, seed, map_size, curriculum);
 
     std::cout << "  env created: obs_size=" << env.obs_size()
               << " n_actions=" << env.n_actions()

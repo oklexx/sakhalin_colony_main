@@ -78,10 +78,10 @@ def test_unimportable_extension_raises(monkeypatch):
 def test_custom_required_subset_checked(fake_colony):
     fake_colony(extension_info=lambda: {
         "version": EXTENSION_MIN_VERSION,
-        "features": ["set_unlock_ids"], "src_sha": "abc1234"})
+        "features": ["set_curriculum"], "src_sha": "abc1234"})
     # caller may demand more than the default set
     with pytest.raises(StaleExtensionError, match="nope"):
-        require_colony(required=("set_unlock_ids", "nope"))
+        require_colony(required=("set_curriculum", "nope"))
 
 
 # ── happy path ───────────────────────────────────────────────────────────
@@ -89,18 +89,17 @@ def test_custom_required_subset_checked(fake_colony):
 def test_fresh_binary_returns_info(fake_colony):
     fake_colony(extension_info=lambda: {
         "version": EXTENSION_MIN_VERSION,
-        "features": ["set_unlock_ids", "minimap"],
+        "features": ["set_curriculum", "curriculum", "minimap"],
         "src_sha": "deadbee"})
     info = require_colony()
     assert info["version"] == EXTENSION_MIN_VERSION
     assert info["src_sha"] == "deadbee"
-    assert "set_unlock_ids" in info["features"]
+    assert "set_curriculum" in info["features"]
 
 
 def test_required_features_contract():
-    # set_unlock_ids is THE capability whose absence broke the curriculum
-    # silently with stale binaries — it must stay required.
-    assert "set_unlock_ids" in REQUIRED_FEATURES
+    # set_curriculum is THE entry point of the PR 1 contract — it must stay required.
+    assert "set_curriculum" in REQUIRED_FEATURES
     assert EXTENSION_MIN_VERSION >= 1
 
 
