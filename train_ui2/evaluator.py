@@ -152,6 +152,7 @@ def run_eval(
     curriculum_stage: int | None = None,
     unlock_ids: str | None = None,
     use_curriculum_tab: bool | None = None,
+    curriculum_resources: str | None = None,
     allow_stale_pyd: bool | None = None,
 ) -> Dict[str, float]:
     """Run the trained policy in the colony env and return mean stats.
@@ -216,6 +217,7 @@ def run_eval(
         curriculum_stage=curriculum_stage,
         unlock_ids=unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
+        resources=curriculum_resources,
     )
     st = resolve_state(
         model_dir,
@@ -223,6 +225,7 @@ def run_eval(
         curriculum_stage=curriculum_stage,
         unlock_ids=unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
+        resources=curriculum_resources,
     )
     cur_stage = int(resolved["curriculum_stage"])  # type: ignore[arg-type]
     manual_csv = str(resolved["unlock_ids"])

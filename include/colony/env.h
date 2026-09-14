@@ -26,7 +26,7 @@ struct Curriculum {
     bool all_builds = true;                    // false => restricted
     std::unordered_set<std::string> allowed_builds;
     bool all_resources = true;                 // PR 4: веса ресурсов (пока всегда true)
-    std::array<float, SUNDUK_SIZE> resource_weights{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<double, SUNDUK_SIZE> resource_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     int stage_report = 0;                      // только для obs-фичи и дампов
     int obs_version = 0;                       // PR 5
     // Разобрать JSON вида {"all_builds":bool,"allowed_builds":[...],"stage":int}
@@ -97,6 +97,7 @@ public:
         int64_t chains_activated = 0;
         int64_t max_chain_depth = 0;
         int64_t reached_resources = 0;
+        int64_t priority_reached = 0;  // PR 4: из них — с весом курикулума > 0
         int64_t deaths = 0;
         int64_t births = 0;
         int64_t base_count_peak = 0;
@@ -159,6 +160,8 @@ private:
     int road_count() const;
     std::vector<Season> step_seasons(int y, int m, int d, int n_days) const;
     void compute_catalog();
+    // PR 4: |extracted_ ∩ {w>0}| — сколько приоритетных ресурсов уже открыто.
+    int64_t count_priority_reached() const;
 
     struct PairHash {
         size_t operator()(const std::pair<int, int>& p) const {

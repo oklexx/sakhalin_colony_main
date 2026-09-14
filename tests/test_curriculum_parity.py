@@ -199,3 +199,70 @@ def test_no_degenerate_warning_when_healthy(capfd):
         assert "вырожденный сценарий" not in out
     finally:
         env.close()
+
+
+# ── PR 4: resource weights through the stack ──────────────────────────────
+
+def test_env_manager_resource_parity():
+    """EnvManager accepts matching weights and rejects mismatched ones."""
+    pytest.importorskip("torch")
+    import torch
+
+    from rl.config import Config
+    from rl.curriculum import ALL_IDS, CurriculumState
+    from rl.env_manager import EnvManager
+
+    cfg = Config(n_envs=2, map_size=_MAP, curriculum_stage=0,
+                 unlock_ids="", use_curriculum_tab=False,
+                 curriculum_resources="water,wood")
+    em = EnvManager(cfg, torch.device("cpu"))
+    try:
+        bad = CurriculumState(True, tuple(ALL_IDS), False,
+                              (0.0,) * 8 + (1.0,), 0)  # energy-only ≠ water,wood
+        with pytest.raises(AssertionError, match="курикулум не применён"):
+            em._assert_curriculum_parity(bad)
+    finally:
+        em.close()
+
+
+def test_resource_weights_transport_round_trip():
+    """to_dict → C++ → curriculum(): weights survive exactly (doubles)."""
+    st = build_state(0, None, False, "water,wood")
+    env = _single_env(st)
+    try:
+        env.reset(seed=11)
+        got = env.cpp_env.curriculum()
+        assert got["all_resources"] is False
+        assert list(got["resource_weights"]) == [0.0] * 6 + [1.0, 1.0, 0.0]
+        # live re-apply mid-episode (the schedule path) works too
+        env.cpp_env.set_curriculum(build_state(0, None, False, "energy").to_dict())
+        got2 = env.cpp_env.curriculum()
+        assert got2["resource_weights"][8] == 1.0
+        assert sum(got2["resource_weights"]) == 1.0
+    finally:
+        env.close()
+
+
+def _autumn_metrics(st, seed=21, days=250):
+    """Run AirStation into autumn; return (reached, priority) via raw dicts."""
+    env = _single_env(st)
+    try:
+        env.reset(seed=seed)
+        air = 2 + list(env.cpp_env.build_ids()).index("AirStation")
+        env.cpp_env.step(air)
+        res = {}
+        for _ in range(days):
+            res = env.cpp_env.step(0)  # DAY (raw: skip obs normalization)
+        m = res["metrics"]
+        return int(m.reached_resources), int(m.priority_reached)
+    finally:
+        env.close()
+
+
+def test_priority_metrics_end_to_end():
+    """reached counts every extracted resource; priority only w>0 ones."""
+    reached, prio = _autumn_metrics(build_state(0, None, False, "water"))
+    assert reached > 0, "energy must be extracted by autumn"
+    assert prio == 0, "energy at weight 0 is reached but not priority"
+    reached_e, prio_e = _autumn_metrics(build_state(0, None, False, "energy"))
+    assert prio_e == reached_e > 0, "energy at weight 1 is priority"

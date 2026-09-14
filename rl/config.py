@@ -360,6 +360,7 @@ class Config:
             "curriculum_stage_at_best": int(self.curriculum_stage),
             "unlock_ids": self.effective_unlock_ids(),
             "use_curriculum_tab": bool(self.use_curriculum_tab),
+            "curriculum_resources": str(self.curriculum_resources or ""),
         }
 
     # ── convenience ──

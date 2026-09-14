@@ -89,6 +89,15 @@ Curriculum curriculum_from_dict(const py::dict& d) {
         for (const auto& v : d["allowed_builds"]) c.allowed_builds.insert(v.cast<std::string>());
     }
     if (d.contains("stage")) c.stage_report = d["stage"].cast<int>();
+    // PR 4: ресурсные веса (ровно SUNDUK_SIZE чисел, иначе fail-fast).
+    if (d.contains("all_resources")) c.all_resources = d["all_resources"].cast<bool>();
+    if (d.contains("resource_weights")) {
+        std::vector<double> w;
+        for (const auto& v : d["resource_weights"]) w.push_back(v.cast<double>());
+        if ((int)w.size() != SUNDUK_SIZE)
+            throw std::runtime_error("curriculum dict: resource_weights must hold 9 numbers");
+        for (int j = 0; j < SUNDUK_SIZE; j++) c.resource_weights[(size_t)j] = w[(size_t)j];
+    }
     return c;
 }
 
@@ -99,6 +108,9 @@ py::dict curriculum_to_dict(const Curriculum& c) {
     std::sort(ids.begin(), ids.end());
     d["allowed_builds"] = ids;
     d["stage"] = c.stage_report;
+    d["all_resources"] = c.all_resources;
+    std::vector<double> w(c.resource_weights.begin(), c.resource_weights.end());
+    d["resource_weights"] = w;
     return d;
 }
 
@@ -136,6 +148,7 @@ PYBIND11_MODULE(colony_cpp, m) {
         d["features"] = std::vector<std::string>{
             "set_curriculum",      // set_curriculum() + curriculum() обеих сред (PR 1)
             "curriculum",
+            "resource_curriculum", // веса ресурсов + priority_reached (PR 4)
             "minimap",             // minimap()/minimap_batch()/set_minimap_radius()
             "action_masks_batch",  // ColonyVecEnvCpp.action_masks_batch()
         };
@@ -395,6 +408,7 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readwrite("disable_net_worth", &RewardConfig::disable_net_worth)
         .def_readwrite("disable_daily_income", &RewardConfig::disable_daily_income)
         .def_readwrite("disable_provider_bonus", &RewardConfig::disable_provider_bonus)
+        .def_readwrite("priority_count_over_allowed", &RewardConfig::priority_count_over_allowed)
         // formerly-hardcoded weights (env.cpp) — exposed so Python/UI can tune them
         .def_readwrite("tax_fail_penalty", &RewardConfig::tax_fail_penalty)
         .def_readwrite("death_penalty", &RewardConfig::death_penalty)
@@ -415,6 +429,7 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readonly("chains_activated", &ColonyEnvCpp::EpisodeMetrics::chains_activated)
         .def_readonly("max_chain_depth", &ColonyEnvCpp::EpisodeMetrics::max_chain_depth)
         .def_readonly("reached_resources", &ColonyEnvCpp::EpisodeMetrics::reached_resources)
+        .def_readonly("priority_reached", &ColonyEnvCpp::EpisodeMetrics::priority_reached)
         .def_readonly("deaths", &ColonyEnvCpp::EpisodeMetrics::deaths)
         .def_readonly("births", &ColonyEnvCpp::EpisodeMetrics::births)
         .def_readonly("base_count_peak", &ColonyEnvCpp::EpisodeMetrics::base_count_peak)

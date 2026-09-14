@@ -89,7 +89,7 @@ def test_custom_required_subset_checked(fake_colony):
 def test_fresh_binary_returns_info(fake_colony):
     fake_colony(extension_info=lambda: {
         "version": EXTENSION_MIN_VERSION,
-        "features": ["set_curriculum", "curriculum", "minimap"],
+        "features": ["set_curriculum", "curriculum", "resource_curriculum", "minimap"],
         "src_sha": "deadbee"})
     info = require_colony()
     assert info["version"] == EXTENSION_MIN_VERSION
@@ -100,6 +100,8 @@ def test_fresh_binary_returns_info(fake_colony):
 def test_required_features_contract():
     # set_curriculum is THE entry point of the PR 1 contract — it must stay required.
     assert "set_curriculum" in REQUIRED_FEATURES
+    # resource_curriculum (PR 4): a binary that ignores weights must fail loudly.
+    assert "resource_curriculum" in REQUIRED_FEATURES
     assert EXTENSION_MIN_VERSION >= 1
 
 

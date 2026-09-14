@@ -16,8 +16,10 @@ sys.path.insert(0, str(ROOT))
 from rl.curriculum import (  # noqa: E402
     ALL_IDS,
     BUILD_ALIASES,
+    RESOURCE_NAMES,
     STAGE_MAP,
     CurriculumState,
+    parse_resources,
     allowed_ids,
     build_state,
     parse_unlock_ids,
@@ -256,3 +258,81 @@ def test_mask_fill_value_all_masked():
     probs = torch.softmax(blocked_big, dim=-1)
     assert torch.isfinite(probs).all()
     assert torch.allclose(probs, torch.full((n,), 1.0 / n))
+
+
+# ── PR 4: resource priorities ────────────────────────────────────────────
+
+def test_parse_resources_none_and_empty_is_all():
+    assert parse_resources(None) is None
+    assert parse_resources("") is None
+    assert parse_resources([]) is None
+    assert parse_resources("  ") is None
+
+
+def test_parse_resources_weights():
+    assert parse_resources("water") == [0.0] * 6 + [1.0] + [0.0] * 2
+    assert parse_resources(["wood", "water"]) == [0.0] * 6 + [1.0, 1.0, 0.0]
+    # case/whitespace/dupes tolerated
+    assert parse_resources("WATER, Water ,wood") == [0.0] * 6 + [1.0, 1.0, 0.0]
+
+
+def test_parse_resources_unknown_raises():
+    with pytest.raises(ValueError, match="неизвестные ресурсы"):
+        parse_resources("unobtanium")
+    with pytest.raises(ValueError, match="unobtanium"):
+        parse_resources("water,unobtanium")
+
+
+def test_build_state_resources():
+    st = build_state(0, None, False, "water,wood")
+    assert st.all_builds is True
+    assert st.all_resources is False
+    assert st.resource_weights == (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0)
+    default = build_state(0, None, False)
+    assert default.all_resources is True
+    assert default.resource_weights == (1.0,) * 9
+
+
+def test_build_state_full_nine_normalises_to_all():
+    st = build_state(0, None, False, ",".join(RESOURCE_NAMES))
+    assert st.all_resources is True
+    assert st.resource_weights == (1.0,) * 9
+
+
+def test_curriculum_meta_carries_resources():
+    from rl.config import Config
+
+    m = Config(
+        curriculum_stage=0, unlock_ids="WaterChannel", use_curriculum_tab=True,
+        curriculum_resources="water,wood").curriculum_meta()
+    assert m["curriculum_resources"] == "water,wood"
+    assert Config().curriculum_meta()["curriculum_resources"] == ""
+
+
+def test_resolve_state_restores_resources(tmp_path):
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 0, "unlock_ids": "WaterChannel",
+        "use_curriculum_tab": True, "curriculum_resources": "water"})
+    st = resolve_state(tmp_path)
+    assert st.all_resources is False
+    assert st.resource_weights == (0.0,) * 6 + (1.0, 0.0, 0.0)
+
+
+def test_resolve_state_resources_explicit_wins(tmp_path):
+    _write_meta(tmp_path / "best_model.meta.json", {
+        "curriculum_stage_at_best": 0, "unlock_ids": "",
+        "use_curriculum_tab": False, "curriculum_resources": "water"})
+    st = resolve_state(tmp_path, resources="wood")
+    assert st.resource_weights == (0.0,) * 7 + (1.0, 0.0)
+
+
+def test_resource_names_match_cpp_and_ui():
+    """The sunduk order must never diverge across the three owners."""
+    from train_ui2.constants import RESOURCE_IDS
+
+    assert list(RESOURCE_NAMES) == list(RESOURCE_IDS)
+    src = (ROOT / "src" / "resources.cpp").read_text(encoding="utf-8")
+    m = re.search(r"names\[SUNDUK_SIZE\] = \{(.*?)\};", src, re.S)
+    assert m, "C++ names array not found"
+    cpp_names = re.findall(r'"(\w+)"', m.group(1))
+    assert cpp_names == list(RESOURCE_NAMES)

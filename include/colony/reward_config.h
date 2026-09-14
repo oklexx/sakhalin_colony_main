@@ -56,6 +56,10 @@ struct RewardConfig {
     bool disable_net_worth = false;
     bool disable_daily_income = false;
     bool disable_provider_bonus = false;
+    // PR 4: считать потребителей ресурсов (n_consumers в compute_catalog) только
+    // по разрешённым постройкам. false = как раньше (по всем 32), старые прогоны
+    // не меняются.
+    bool priority_count_over_allowed = false;
 
     // formerly hardcoded C++ weights — must be exported or C++ keeps defaults
     double tax_fail_penalty = 5.0;

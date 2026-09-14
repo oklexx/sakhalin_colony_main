@@ -213,6 +213,10 @@ def main():
                         help="Comma-separated building ids from the «Курикулум» tab "
                              "(manual set). If not set, reads unlock_ids from the "
                              "model meta. Pass \"\" to explicitly allow all buildings.")
+    parser.add_argument("--curriculum-resources", type=str, default=None,
+                        help="Resource priority set (CSV) from the «Курикулум» tab. "
+                             "If not set, reads curriculum_resources from the model "
+                             "meta. Pass \"\" to explicitly use all resources.")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
     parser.add_argument("--allow-stale-pyd", action="store_true",
@@ -334,6 +338,7 @@ def main():
         model_dir,
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
+        resources=args.curriculum_resources,
     )
     # PR 1: the env takes ONE computed state; the resolved dict stays for
     # logging and the GUI safety-net mask.
@@ -341,6 +346,7 @@ def main():
         model_dir,
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
+        resources=args.curriculum_resources,
     )
     stage = int(resolved["curriculum_stage"])
     manual_csv = str(resolved["unlock_ids"])

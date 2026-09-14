@@ -70,6 +70,7 @@ Curriculum Curriculum::from_json(const std::string& text) {
         throw std::runtime_error("bad --curriculum JSON: expected an object");
     c.all_builds = j.value("all_builds", true);
     c.stage_report = j.value("stage", 0);
+    c.all_resources = j.value("all_resources", true);
     if (j.contains("allowed_builds")) {
         if (!j["allowed_builds"].is_array())
             throw std::runtime_error("bad --curriculum JSON: allowed_builds must be an array");
@@ -79,6 +80,13 @@ Curriculum Curriculum::from_json(const std::string& text) {
                 throw std::runtime_error("bad --curriculum JSON: allowed_builds must be strings");
             c.allowed_builds.insert(v.get<std::string>());
         }
+    }
+    // PR 4: ресурсные веса (ровно 9 чисел).
+    if (j.contains("resource_weights")) {
+        if (!j["resource_weights"].is_array() || (int)j["resource_weights"].size() != SUNDUK_SIZE)
+            throw std::runtime_error("bad --curriculum JSON: resource_weights must be 9 numbers");
+        for (int k = 0; k < SUNDUK_SIZE; k++)
+            c.resource_weights[(size_t)k] = j["resource_weights"][(size_t)k].get<double>();
     }
     return c;
 }
@@ -154,13 +162,33 @@ void ColonyEnvCpp::set_step_log(const std::string& path) {
         }
 
         std::vector<int> n_consumers(SUNDUK_SIZE, 0);
-        for (int i = 0; i < n_build_; i++)
+        for (int i = 0; i < n_build_; i++) {
+            // PR 4 (флаг): «приоритет воды» не зависит от потребителей, которых
+            // агенту строить запрещено. По умолчанию — как раньше, по всем 32.
+            if (cfg_.priority_count_over_allowed && !build_allowed(build_data_[i]->id))
+                continue;
             for (int j = 0; j < SUNDUK_SIZE; j++)
                 if (build_data_[i]->consume[j] > 0)
                     n_consumers[j]++;
+        }
         extract_weight_.resize(SUNDUK_SIZE);
         for (int j = 0; j < SUNDUK_SIZE; j++)
             extract_weight_[j] = std::min(1.0, 0.25 * (double)n_consumers[j]);
+        // PR 4: мягкий ресурсный курикулум — один множитель. all_resources=true
+        // (по умолчанию) ничего не меняет: старое поведение бит-в-бит.
+        // compute_catalog() зовётся и из set_curriculum(), поэтому смена
+        // приоритетов на ходу (по расписанию) сама пересчитывает награду.
+        for (int j = 0; j < SUNDUK_SIZE; j++)
+            extract_weight_[j] *= curriculum_.all_resources ? 1.0 : curriculum_.resource_weights[j];
+    }
+
+    int64_t ColonyEnvCpp::count_priority_reached() const {
+        int64_t n = 0;
+        for (int r : extracted_) {
+            double w = curriculum_.all_resources ? 1.0 : curriculum_.resource_weights[(size_t)r];
+            if (w > 0.0) n++;
+        }
+        return n;
     }
 
 void ColonyEnvCpp::reset(int64_t seed) {
@@ -641,6 +669,20 @@ std::string ColonyEnvCpp::dump_obs() const {
        << " main_tax_amount=" << g.main_tax_amount()
        << " days_alive=" << g.days_alive
        << " stage=" << curriculum_.stage_report;
+    // PR 4: приоритеты ресурсов в step-логе (pr=all либо pr=water,wood,...)
+    if (curriculum_.all_resources) {
+        os << " pr=all";
+    } else {
+        os << " pr=";
+        bool first = true;
+        for (int r = 0; r < SUNDUK_SIZE; r++) {
+            if (curriculum_.resource_weights[(size_t)r] <= 0.0) continue;
+            if (!first) os << ",";
+            first = false;
+            os << Sunduk::resource_name(r);
+        }
+        if (first) os << "none";
+    }
     for (int r = 0; r < SUNDUK_SIZE; r++)
         os << " res" << r << "=" << (int)g.sunduk[r];
     for (int i = 0; i < n_build_; i++) {
@@ -769,6 +811,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             rew = std::clamp(rew, cfg_.clip_reward_min, cfg_.clip_reward_max);
             episode_metrics_.total_reward = ep_return_;
             episode_metrics_.reached_resources = (int64_t)extracted_.size();
+            episode_metrics_.priority_reached = count_priority_reached();
             episode_metrics_.days_survived = g.days_alive;
             episode_metrics_.net_worth = net_worth();
             StepOut out;
@@ -1149,10 +1192,13 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     if (cfg_.first_extraction_bonus > 0.0 || cfg_.extraction_daily > 0.0) {
         for (int r = 0; r < SUNDUK_SIZE; r++) {
+            // PR 4: трекинг добычи — всегда (reached_resources = ВСЕ достигнутые),
+            // а бонусы — только при w > 0 (приоритетные ресурсы).
+            bool newly = ever_produced[r] && !extracted_.count(r);
+            if (newly) extracted_.insert(r);
             double w = extract_weight_[r];
             if (w <= 0.0) continue;
-            if (ever_produced[r] && !extracted_.count(r)) {
-                extracted_.insert(r);
+            if (newly) {
                 double b = cfg_.first_extraction_bonus * w;
                 rew += b; c_extract += b;
             }
@@ -1286,6 +1332,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     // Fill episode metrics
     episode_metrics_.total_reward = ep_return_;
     episode_metrics_.reached_resources = (int64_t)extracted_.size();
+    episode_metrics_.priority_reached = count_priority_reached();
     episode_metrics_.days_survived = g.days_alive;
     episode_metrics_.net_worth = net_worth();
     if (g.people > episode_metrics_.population_peak)

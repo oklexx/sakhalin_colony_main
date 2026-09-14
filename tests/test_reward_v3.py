@@ -204,7 +204,12 @@ def test_food_extraction_not_rewarded():
         assert out["reward"] == 0.0
     # еда в складе — но «добыча» наград не даёт
     assert g.sunduk[1] > 0, "теплица должна производить еду"
-    assert out["metrics"].reached_resources == 0
+    # PR 4 §5.5: reached = ВСЕ достигнутые (еда добыта — трекинг есть);
+    # priority смотрит на вес КУРИКУЛУМА (здесь all_resources — всё по 1.0),
+    # а отсутствие бонуса — заслуга потребительского множителя w_food = 0
+    # (пинится ассёртами reward == 0.0 выше).
+    assert out["metrics"].reached_resources == 1
+    assert out["metrics"].priority_reached == 1
 
 
 @pytest.mark.skipif(not ENV_OK, reason="colony_cpp not available")

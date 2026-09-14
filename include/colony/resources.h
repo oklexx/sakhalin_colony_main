@@ -75,6 +75,11 @@ public:
     }
     bool operator==(const Sunduk& o) const { return items_ == o.items_; }
 
+    // PR 4: каноническое имя ресурса по индексу сундука (0..8).
+    // Порядок обязан совпадать с rl/curriculum.py RESOURCE_NAMES и
+    // train_ui2/constants.py RESOURCE_IDS (регресс-тест в Python).
+    static const char* resource_name(int idx);
+
 private:
     std::array<int64_t, SUNDUK_SIZE> items_;
 };

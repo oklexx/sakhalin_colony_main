@@ -308,15 +308,28 @@ class EnvManager:
             got = self.vec_env.venv.curriculum()  # type: ignore[attr-defined]
         except AttributeError:
             return  # exotic wrapper without .venv — nothing to check against
+        # Buildings and resources are independent axes (open buildings +
+        # weighted resources is valid) — both are always checked, no early out.
         if st.all_builds:
             assert got.get("all_builds", False), (
                 f"курикулум не применён: expected unrestricted, env={got}")
-            return
-        want = set(st.allowed_builds)
-        have = set(got.get("allowed_builds", []))
-        assert want == have, (
-            f"курикулум не применён: env={sorted(have)[:5]}…({len(have)}) "
-            f"expected={sorted(want)[:5]}…({len(want)})")
+        else:
+            want = set(st.allowed_builds)
+            have = set(got.get("allowed_builds", []))
+            assert want == have, (
+                f"курикулум не применён: env={sorted(have)[:5]}…({len(have)}) "
+                f"expected={sorted(want)[:5]}…({len(want)})")
+        # PR 4: resource weights ride the same transport — same parity rule.
+        # Exact compare: doubles end-to-end (C++ stores double since PR 4).
+        if st.all_resources:
+            assert got.get("all_resources", False), (
+                f"курикулум не применён: expected all_resources, env={got}")
+        else:
+            want_w = [float(w) for w in st.resource_weights]
+            have_w = [float(w) for w in got.get("resource_weights", [])]
+            assert want_w == have_w, (
+                f"курикулум не применён: resource_weights env={have_w} "
+                f"expected={want_w}")
 
     def get_allowed_buildings(self) -> List[str]:
         """Return ids allowed by current curriculum stage + manual set."""

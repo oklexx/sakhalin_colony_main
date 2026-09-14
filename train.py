@@ -95,6 +95,10 @@ def parse_args():
                         "on stage 0 it is the ONLY allowed set.")
     p.add_argument("--use-curriculum-tab", action="store_true",
                    help="Apply --unlock-ids (default: enabled automatically when --unlock-ids is given)")
+    p.add_argument("--curriculum-resources", type=str, default=_d.curriculum_resources,
+                   help="Resource priority set (CSV), same as the UI «Курикулум» tab: "
+                        "--curriculum-resources water,wood. Only listed resources grant "
+                        "extraction bonuses; empty = all (legacy behaviour).")
     p.add_argument("--allow-stale-pyd", action="store_true",
                    help="Debugging only: run even if the colony_cpp binary is stale "
                         "(same as COLONY_ALLOW_STALE_PYD=1). Expect wrong behaviour.")
@@ -148,6 +152,7 @@ def main():
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
+        curriculum_resources=args.curriculum_resources,
         eval_seeds=args.eval_seeds if args.eval_seeds is not None else [42],
         eval_use_median=not args.eval_use_mean,
         early_stopping_patience=args.early_stopping_patience,

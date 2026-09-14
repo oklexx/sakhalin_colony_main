@@ -56,6 +56,37 @@ static int find_id(ColonyEnvCpp& env, const std::string& id) {
     return -1;
 }
 
+static Curriculum res_weights(std::vector<double> w) {
+    Curriculum c;  // all_builds=true default: buildings open, resources weighted
+    c.all_resources = false;
+    for (size_t j = 0; j < w.size() && j < 9; j++) c.resource_weights[j] = w[j];
+    return c;
+}
+
+static std::vector<double> only(int idx) {
+    std::vector<double> w(9, 0.0);
+    w[idx] = 1.0;
+    return w;
+}
+
+// Build `build1` on day 1 (or nothing), then 250 DAYs into autumn; returns
+// (total reward, last step). Twins run the identical script — rewards differ
+// only through the curriculum weights.
+static std::pair<double, ColonyEnvCpp::StepOut> run_autumn(
+    const std::vector<BaseData>& bd, const std::vector<BaseEvent>& ed,
+    const Curriculum& cur, const RewardConfig& rc, const char* build1) {
+    ColonyEnvCpp e(bd, ed, 21, 280);
+    e.reset(21);
+    e.game().money = 5'000'000;
+    e.set_rewards(rc);
+    e.set_curriculum(cur);
+    if (build1) e.step(A_BUILD0 + find_id(e, build1));
+    double ep = 0.0;
+    ColonyEnvCpp::StepOut last;
+    for (int d = 0; d < 250; d++) { last = e.step(0); ep += last.rew; }
+    return {ep, last};
+}
+
 static Curriculum restricted(std::vector<std::string> ids, int stage_report = 0) {
     Curriculum c;
     c.all_builds = false;
@@ -290,6 +321,119 @@ int main() {
         check(rep7.find("WaterChannel") != std::string::npos &&
                   rep7.find("лота") != std::string::npos,
               "seed-7 WaterChannel-only: lot reason reported");
+    }
+
+    // ── PR 4 §5.6: soft resource weights ──
+    // NOTE (plan-vs-reality): the plan's water/gold twins are economy-blocked,
+    // not weight-blocked — WaterChannel/WaterMill need a connected water lot
+    // (unplaceable on fresh maps; seeds 1..30 probed) and Goldmine needs water
+    // 200 + 30 workers. The mechanism is resource-agnostic, so the twins use
+    // AirStation/energy (placeable everywhere, producing from day 184).
+    // Food would NOT work either: zero building-consumers ⇒ w_food = 0 always.
+    {
+        RewardConfig iso;  // isolate first_extraction from the other terms
+        iso.need_fill_bonus = 0.0;
+        iso.extraction_daily = 0.0;
+        double feb = iso.first_extraction_bonus;
+        // manual w_energy from bases.json (documented formula, no C++ reuse):
+        int ncons = 0;
+        for (const auto& d : bd) if (d.consume[ENERGY] > 0) ncons++;
+        double w_energy = std::min(1.0, 0.25 * (double)ncons);
+        printf("manual w_energy: n_consumers=%d w=%.2f feb=%.1f\n", ncons, w_energy, feb);
+
+        Curriculum c_all;  // all_builds + all_resources (legacy behaviour)
+        c_all.all_builds = true;
+        auto [ep_all, last_all] = run_autumn(bd, ed, c_all, iso, "AirStation");
+        auto [ep_nrg, last_nrg] = run_autumn(bd, ed, res_weights(only(ENERGY)), iso, "AirStation");
+        auto [ep_wo, last_wo] = run_autumn(bd, ed, res_weights(only(WATER)), iso, "AirStation");
+        check(ep_nrg == ep_all,
+              "energy-only twin keeps every bonus (priority intact, bit-identical)");
+        double delta = ep_all - ep_wo;
+        check(delta > 0.0, "water-only twin loses the energy bonus (strictly less)");
+        check(std::abs(delta - feb * w_energy) < 1e-9,
+              "lost bonus equals first_extraction*w_energy (manual calc)");
+        check(last_all.metrics.reached_resources > 0,
+              "sanity: energy was actually produced");
+        check(last_wo.metrics.reached_resources > 0,
+              "tracking: energy reached even at weight 0");
+        check(last_wo.metrics.priority_reached == 0,
+              "priority: nothing reached at weight 0");
+        check(last_all.metrics.priority_reached == last_all.metrics.reached_resources,
+              "all-1: every reached resource is priority");
+        (void)last_nrg;
+
+        // depot-only control: with no production, weights change nothing
+        auto [ep_d_all, last_d_all] = run_autumn(bd, ed, c_all, iso, nullptr);
+        auto [ep_d_wo, last_d_wo] = run_autumn(bd, ed, res_weights(only(WATER)), iso, nullptr);
+        check(ep_d_all == ep_d_wo, "depot-only twins identical (no production)");
+        (void)last_d_all; (void)last_d_wo;
+
+        // flag on/off with nothing locked: identical (default changes nothing)
+        {
+            ColonyEnvCpp f1(bd, ed, 21, 280), f2(bd, ed, 21, 280);
+            f1.reset(21); f2.reset(21);
+            f1.game().money = 5'000'000; f2.game().money = 5'000'000;
+            RewardConfig rcf = f1.reward_config();
+            rcf.priority_count_over_allowed = true;
+            f2.set_rewards(rcf);
+            int g = find_id(f1, "Goldmine");
+            auto o1 = f1.step(A_BUILD0 + g);
+            auto o2 = f2.step(A_BUILD0 + g);
+            check(o1.rew == o2.rew, "flag on/off identical when nothing is locked");
+        }
+        // flag on + allowed={AirStation}: locked consumers stop inflating
+        // weights — the station consumes nothing, so energy weight drops to 0
+        {
+            Curriculum cf;
+            cf.all_builds = false;
+            cf.allowed_builds = {"AirStation"};
+            auto runf = [&](bool flag) {
+                ColonyEnvCpp e(bd, ed, 21, 280);
+                e.reset(21);
+                e.game().money = 5'000'000;
+                RewardConfig rc = iso;
+                rc.priority_count_over_allowed = flag;
+                e.set_rewards(rc);
+                e.set_curriculum(cf);
+                e.step(A_BUILD0 + find_id(e, "AirStation"));
+                double ep = 0.0;
+                for (int d = 0; d < 250; d++) ep += e.step(0).rew;
+                return ep;
+            };
+            double ep_off = runf(false), ep_on = runf(true);
+            check(ep_off > ep_on, "flag on: energy bonus gone (no allowed consumers)");
+            check(std::abs((ep_off - ep_on) - feb * w_energy) < 1e-9,
+                  "flag delta matches the manual calc");
+        }
+    }
+
+    // ── PR 4 transport + observability ──
+    {
+        Curriculum fj = Curriculum::from_json(
+            "{\"all_builds\": true, \"allowed_builds\": [], \"stage\": 0,"
+            " \"all_resources\": false, \"resource_weights\": [0,0,0,0,0,0,1,0,0]}");
+        check(!fj.all_resources && fj.resource_weights[6] == 1.0 &&
+                  fj.resource_weights[0] == 0.0,
+              "from_json parses resource weights");
+        bool threw_w = false;
+        try {
+            Curriculum::from_json("{\"resource_weights\": [1,1,1]}");
+        } catch (const std::exception&) {
+            threw_w = true;
+        }
+        check(threw_w, "from_json rejects short resource_weights");
+        check(std::string(Sunduk::resource_name(0)) == "gold" &&
+                  std::string(Sunduk::resource_name(6)) == "water" &&
+                  std::string(Sunduk::resource_name(99)) == "?",
+              "resource_name canonical (gold/water/?)");
+
+        ColonyEnvCpp p1(bd, ed, 21, 280);
+        p1.reset(21);
+        check(p1.dump_obs().find("pr=all") != std::string::npos,
+              "dump_obs shows pr=all by default");
+        p1.set_curriculum(res_weights(only(6)));
+        check(p1.dump_obs().find("pr=water") != std::string::npos,
+              "dump_obs shows pr=water");
     }
 
     printf("\n%s (%d failure(s))\n",

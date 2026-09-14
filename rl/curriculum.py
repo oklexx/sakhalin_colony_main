@@ -41,6 +41,11 @@ BUILD_ALIASES: Dict[str, str] = {
 
 _FULL_WEIGHTS = (1.0,) * 9  # PR 4: neutral resource weights (all resources)
 
+# Канон порядка сундука: обязан совпадать с Sunduk::resource_name
+# (src/resources.cpp) и train_ui2/constants.py RESOURCE_IDS (регресс-тест).
+RESOURCE_NAMES = ("gold", "food", "coal", "iron", "oil", "stone", "water", "wood", "energy")
+_RESOURCE_SET = frozenset(RESOURCE_NAMES)
+
 
 @dataclass(frozen=True)
 class CurriculumState:
@@ -49,8 +54,8 @@ class CurriculumState:
     `all_builds=True` means «no building restriction» explicitly; in that case
     `allowed_builds` is informational only (conventionally ALL_IDS) and the C++
     gate ignores it. `stage_report` is report-only (obs feature, dumps).
-    `all_resources` / `resource_weights` are the PR 4 payload (always neutral
-    until the resource curriculum lands).
+    `all_resources` / `resource_weights` are the PR 4 soft priority weights
+    (neutral = all 1.0, i.e. legacy behaviour bit-for-bit).
     """
 
     all_builds: bool
@@ -141,6 +146,31 @@ def manual_ids_csv(
     return ",".join(parse_unlock_ids(unlock_ids))
 
 
+def parse_resources(csv_or_list: str | List[str] | None) -> List[float] | None:
+    """Normalise a resource-priority set to 9 soft weights (PR 4).
+
+    ``None``/``""`` ⇒ ``None`` (all_resources: full legacy behaviour). Otherwise
+    the listed ids get 1.0, the rest 0.0 (no extraction bonuses for them).
+    Unknown names RAISE — same fail-loud rule as parse_unlock_ids.
+    """
+    if csv_or_list is None:
+        return None
+    if isinstance(csv_or_list, str):
+        raw = csv_or_list.split(",")
+    else:
+        raw = [str(x) for x in csv_or_list]
+    ids = [x.strip().lower() for x in raw if x.strip()]
+    if not ids:
+        return None
+    unknown = sorted({x for x in ids if x not in _RESOURCE_SET})
+    if unknown:
+        raise ValueError(
+            f"неизвестные ресурсы: {unknown}; доступны {list(RESOURCE_NAMES)}"
+        )
+    picked = set(ids)
+    return [1.0 if r in picked else 0.0 for r in RESOURCE_NAMES]
+
+
 def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List[str]:
     """Cumulative ids up to stage (0 = all), plus explicit manual `unlock_ids`.
 
@@ -178,9 +208,10 @@ def build_state(
     curriculum never depends on which code path created the environment. A full
     32-id set normalises to `all_builds=True` (same behaviour, explicit form).
 
-    `resources`: reserved for the PR 4 resource curriculum; currently ignored.
+    `resources`: PR 4 priority set (CSV/list/None). None/"" ⇒ all_resources
+    (legacy behaviour); otherwise soft weights (1.0 listed, 0.0 rest). A full
+    9-weight set normalises to all_resources, mirroring the building rule.
     """
-    _ = resources  # PR 4 wires this; the setting is dead until then (as before)
     stage_i = max(0, int(stage))
     manual = parse_unlock_ids(unlock_ids)
     if use_curriculum_tab:
@@ -189,9 +220,12 @@ def build_state(
         ids = list(ALL_IDS)
     else:
         ids = ids_for_stage(stage_i, None)
+    weights = parse_resources(resources)
+    all_res = weights is None or all(w == 1.0 for w in weights)
+    res_tuple = _FULL_WEIGHTS if all_res else tuple(weights)  # type: ignore[arg-type]
     if set(ids) == _ALL_IDS_SET:
-        return CurriculumState.all(stage_i)
-    return CurriculumState(False, tuple(ids), True, _FULL_WEIGHTS, stage_i)
+        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i)
+    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i)
 
 
 def allowed_ids(
@@ -220,7 +254,8 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     "stored as empty".
     """
     if not isinstance(meta, dict):
-        return {"curriculum_stage": None, "unlock_ids": None, "use_curriculum_tab": None}
+        return {"curriculum_stage": None, "unlock_ids": None,
+                "use_curriculum_tab": None, "resources": None}
     nested = meta.get("config")
     if not isinstance(nested, dict):
         nested = {}
@@ -235,10 +270,12 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     stage = pick("curriculum_stage_at_best", "curriculum_stage")
     manual = pick("unlock_ids")
     use_tab = pick("use_curriculum_tab")
+    resources = pick("curriculum_resources")
     return {
         "curriculum_stage": int(stage) if stage is not None else None,
         "unlock_ids": None if manual is None else str(manual),
         "use_curriculum_tab": None if use_tab is None else bool(use_tab),
+        "resources": None if resources is None else str(resources),
     }
 
 
@@ -260,6 +297,7 @@ def read_curriculum_meta(model_dir) -> Dict[str, object]:
         "curriculum_stage": None,
         "unlock_ids": None,
         "use_curriculum_tab": None,
+        "resources": None,
     }
     model_dir = Path(model_dir)
     for meta_name in _META_NAMES:
@@ -283,12 +321,14 @@ def resolve_curriculum(
     curriculum_stage: int | None = None,
     unlock_ids: str | List[str] | None = None,
     use_curriculum_tab: bool | None = None,
+    resources: str | List[str] | None = None,
 ) -> Dict[str, object]:
     """Resolve the effective curriculum for a model (explicit args win).
 
     Returns ``{"curriculum_stage", "unlock_ids", "use_curriculum_tab",
-    "allowed"}`` where ``unlock_ids`` is the effective CSV ("" = no manual set)
-    and ``allowed`` is the resulting building-id list.
+    "allowed", "resources"}`` where ``unlock_ids`` is the effective CSV
+    ("" = no manual set), ``allowed`` is the resulting building-id list and
+    ``resources`` is the effective priority set (None = all, legacy).
     """
     stored = read_curriculum_meta(model_dir) if model_dir is not None else {}
     if meta:
@@ -298,6 +338,7 @@ def resolve_curriculum(
 
     stage = curriculum_stage if curriculum_stage is not None else stored.get("curriculum_stage")
     manual_raw = unlock_ids if unlock_ids is not None else stored.get("unlock_ids")
+    res_raw = resources if resources is not None else stored.get("resources")
     tab = use_curriculum_tab if use_curriculum_tab is not None else stored.get("use_curriculum_tab")
 
     stage_i = int(stage or 0)
@@ -307,6 +348,7 @@ def resolve_curriculum(
         "unlock_ids": manual_csv,
         "use_curriculum_tab": tab,
         "allowed": allowed_ids(stage_i, manual_csv, True),
+        "resources": res_raw,
     }
 
 
@@ -330,13 +372,15 @@ def resolve_state(
         curriculum_stage=curriculum_stage,
         unlock_ids=unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
+        resources=resources,
     )
     # manual_csv is already checkbox-filtered, so the tab is trivially True here.
+    # resources fall back to the stored run scenario (explicit args win).
     return build_state(
         int(resolved["curriculum_stage"]),  # type: ignore[arg-type]
         str(resolved["unlock_ids"]),
         True,
-        resources,
+        resolved["resources"],  # type: ignore[arg-type]
     )
 
 

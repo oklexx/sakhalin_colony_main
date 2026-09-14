@@ -88,7 +88,8 @@ def test_curriculum_from_meta_nested_config_layout():
 def test_curriculum_from_meta_missing_is_none():
     cur = curriculum_from_meta({})
 
-    assert cur == {"curriculum_stage": None, "unlock_ids": None, "use_curriculum_tab": None}
+    assert cur == {"curriculum_stage": None, "unlock_ids": None,
+                     "use_curriculum_tab": None, "resources": None}
 
 
 def test_read_curriculum_meta_merges_both_files(tmp_path):
