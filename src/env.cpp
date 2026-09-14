@@ -183,6 +183,41 @@ void ColonyEnvCpp::reset(int64_t seed) {
     chain_done_.clear();
     first_working_.clear();
     extracted_.clear();
+    // PR 6: вырожденный сценарий виден сразу, а не как «курикулум не работает»
+    std::string deg = degenerate_report();
+    if (!deg.empty()) std::cout << deg << std::flush;
+}
+
+std::string ColonyEnvCpp::degenerate_report() {
+    auto mask = action_mask();
+    int buildable = 0;
+    for (int i = 0; i < n_build_; ++i)
+        if (mask[A_BUILD0 + i] != 0.0f) ++buildable;
+    if (buildable > 0) return "";
+    const Game& g = game_;
+    std::ostringstream os;
+    os << "[C++ ColonyEnvCpp] WARNING: вырожденный сценарий — 0 из " << n_build_
+       << " BUILD-действий доступны на старте эпизода (seed=" << g.earth.seed()
+       << ", money=" << g.money << ").\n";
+    if (!curriculum_.all_builds && curriculum_.allowed_builds.empty()) {
+        os << "  причина: разрешённый набор пуст (all_builds=false, allowed_builds=[])"
+           << " — строить нельзя ничего.\n";
+        return os.str();
+    }
+    os << "  причины по разрешённым зданиям:\n";
+    for (int i = 0; i < n_build_; ++i) {
+        const BaseData* d = build_data_[i];
+        if (!build_allowed(d->id)) continue;
+        std::string reason = "неизвестно (маска и отчёт разошлись — баг)";
+        if (g.money < d->price) {
+            reason = "price " + std::to_string(d->price) + " > money " + std::to_string(g.money);
+        } else if (!find_lot(d->need_earth, d->no_near_base)) {
+            reason = "нет подходящего лота (need_earth=" + std::to_string(d->need_earth) +
+                     ", занятость/связность карты)";
+        }
+        os << "    " << d->id << ": " << reason << "\n";
+    }
+    return os.str();
 }
 
 std::vector<Season> ColonyEnvCpp::step_seasons(int y, int m, int d, int n_days) const {
@@ -679,11 +714,18 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     std::unordered_set<int64_t> uids_before;
     for (const Base& b : g.bases) uids_before.insert(b.uid);
 
+    // PR 6: заблокированное курикулумом строительство — отказ, а не «день»:
+    // день не проходит (ранний выход ниже), дневные счётчики не тикают.
+    const bool gated_build =
+        (action >= A_BUILD0 && action < A_BUILD0 + n_build_) &&
+        !build_allowed(build_data_[action - A_BUILD0]->id);
     // Grace period: count days since the player postponed the tax.
-    if (g.tax_postponed_ && (g.annual_tax_due() || g.main_tax_due()))
-        tax_grace_days_ += 1;
-    else
-        tax_grace_days_ = 0;
+    if (!gated_build) {
+        if (g.tax_postponed_ && (g.annual_tax_due() || g.main_tax_due()))
+            tax_grace_days_ += 1;
+        else
+            tax_grace_days_ = 0;
+    }
 
     double net0 = cfg_.disable_net_worth ? 0.0 : net_worth();
     int y0 = g.year, m0 = g.month, d0 = g.day;
@@ -711,14 +753,44 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     } else if (action >= A_BUILD0 && action < A_BUILD0 + n_build_) {
         const BaseData* d = build_data_[action - A_BUILD0];
         action_name = "BUILD:" + d->id;
-        // PR 2: гейт теперь в Game::build; здесь — только ранний выход через
-        // nullopt, чтобы закрытое действие вело себя ровно как любая другая
-        // неудачная постройка (ОДИН error_penalty в ветке !built ниже).
-        bool gated = !build_allowed(d->id);
-        auto cell = gated ? std::nullopt
-                          : find_lot(d->need_earth, d->no_near_base);
+        // PR 6: заблокированное действие — чистый штраф и ранний выход: день не
+        // проходит (без advance_day и дневных/каталожных бонусов), obs — текущий.
+        // Попытка строго убыточна: раньше день проходил и tax_daily_bonus капал.
+        if (gated_build) {
+            rew += cfg_.error_penalty; c_error += cfg_.error_penalty;
+            if (step_log_.is_open()) {
+                step_log_ << "  BUILD FAILED: " << d->id << " | has_cell=NO"
+                          << " | REASON: Постройка закрыта курикулумом.\n";
+            }
+            steps_ += 1;
+            ep_return_ += rew;
+            last_reward_ = rew;
+            if (!std::isfinite(rew)) rew = 0.0;
+            rew = std::clamp(rew, cfg_.clip_reward_min, cfg_.clip_reward_max);
+            episode_metrics_.total_reward = ep_return_;
+            episode_metrics_.reached_resources = (int64_t)extracted_.size();
+            episode_metrics_.days_survived = g.days_alive;
+            episode_metrics_.net_worth = net_worth();
+            StepOut out;
+            out.obs = obs();
+            out.rew = rew;
+            out.terminated = false;
+            out.truncated = (steps_ >= MAX_STEPS);
+            out.days = g.days_alive;
+            out.people = g.people;
+            out.money = g.money;
+            out.n_bases = (int64_t)g.bases.size();
+            out.seed = (int64_t)g.earth.seed();
+            out.tax_due_days = tax_due_days_;
+            out.tax_grace_expired = tax_grace_expired();
+            out.metrics = episode_metrics_;
+            out.ep_return = ep_return_;
+            out.steps = steps_;
+            return out;
+        }
+        auto cell = find_lot(d->need_earth, d->no_near_base);
         bool built = false;
-        std::string build_error = gated ? "Постройка закрыта курикулумом." : "";
+        std::string build_error;
         if (cell) {
             auto build_result = g.build(d->id, cell->first, cell->second);
             built = build_result.first;
@@ -730,7 +802,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                 step_log_ << "  BUILD FAILED: " << d->id;
                 step_log_ << " | has_cell=" << (cell ? "yes" : "NO");
                 if (!cell) {
-                    step_log_ << " | REASON: " << (gated ? build_error : "find_lot returned null (no suitable cell)");
+                    step_log_ << " | REASON: find_lot returned null (no suitable cell)";
                 } else {
                     step_log_ << " | REASON: " << build_error;
                     step_log_ << " | cell=(" << cell->first << "," << cell->second << ")";

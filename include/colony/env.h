@@ -58,6 +58,9 @@ public:
         return static_cast<const ColonyEnvCpp*>(ctx)->build_allowed(id);
     }
     void seat_build_gate() { game_.set_build_gate(&curriculum_gate_fn, this); }
+    // PR 6: отчёт о вырожденном сценарии (0 доступных построек на старте
+    // эпизода) — пусто если всё в порядке, иначе текст для WARNING в reset().
+    std::string degenerate_report();
     void set_rewards(const RewardConfig& cfg) {
         std::lock_guard lock(*cfg_mutex_);
         cfg_ = cfg;

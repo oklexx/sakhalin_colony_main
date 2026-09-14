@@ -141,3 +141,61 @@ def test_env_manager_parity_assert_fires_on_mismatch():
             em._assert_curriculum_parity(bad)
     finally:
         em.close()
+
+
+# ── PR 6: gated step = pure refusal, degenerate warning ────────────────────
+
+def _single_env(st, map_size=_MAP):
+    from cpp_env import CppColonyEnv
+
+    return CppColonyEnv(map_size=map_size, curriculum=st)
+
+
+def test_gated_step_is_pure_refusal():
+    """Locked BUILD: exactly error_penalty, no day passes, nothing built."""
+    st = build_state(0, "WaterChannel", True)
+    assert not st.all_builds and st.allowed_builds == ("WaterChannel",)
+    env = _single_env(st)
+    try:
+        env.reset(seed=11)
+        ep = float(env.cpp_env.reward_config().error_penalty)
+        house = 2 + list(env.cpp_env.build_ids()).index("House")
+        assert not env.action_mask()[house], "House must be masked (locked)"
+
+        _, _, terminated, truncated, info_day = env.step(0)  # DAY passes
+        assert not (terminated or truncated)
+        days_after_day = info_day["days"]
+
+        _, reward, terminated, truncated, info = env.step(house)
+        assert not (terminated or truncated)
+        assert reward == ep, f"gated step must cost exactly {ep}, got {reward}"
+        assert info["days"] == days_after_day, "gated step advances no days"
+        assert info["bases"] == 1, "gated step builds nothing"
+    finally:
+        env.close()
+
+
+def test_degenerate_warning_on_reset(capfd):
+    """Seed 7 + WaterChannel-only (280): reset warns with the lot reason."""
+    st = build_state(0, "WaterChannel", True)
+    env = _single_env(st, map_size=280)
+    try:
+        env.reset(seed=7)
+        out, _ = capfd.readouterr()
+        assert "вырожденный сценарий" in out
+        assert "WaterChannel" in out and "лота" in out
+    finally:
+        env.close()
+
+
+def test_no_degenerate_warning_when_healthy(capfd):
+    """Unrestricted scenario: reset stays silent about degeneracy."""
+    st = build_state(0, None, False)
+    assert st.all_builds
+    env = _single_env(st)
+    try:
+        env.reset(seed=42)
+        out, _ = capfd.readouterr()
+        assert "вырожденный сценарий" not in out
+    finally:
+        env.close()

@@ -233,3 +233,26 @@ def test_config_curriculum_state():
 
     default = Config().curriculum_state()
     assert default.all_builds is True
+
+
+# ── PR 6: unified mask-fill value ──────────────────────────────────────────
+
+def test_mask_fill_value_all_masked():
+    """Rationale for -1e9 (train/eval/watch): finite under a fully-closed mask.
+
+    With float('-inf') a fully-masked softmax is NaN everywhere (it used to
+    leak into eval top-3 logs); with -1e9 it degrades to uniform — argmaxable,
+    differentiable, and NaN-free.
+    """
+    torch = pytest.importorskip("torch")
+    n = 45
+    logits = torch.zeros(n)
+    mask = torch.zeros(n)  # everything blocked (degenerate scenario)
+
+    blocked_inf = logits.masked_fill(mask == 0, float("-inf"))
+    assert torch.isnan(torch.softmax(blocked_inf, dim=-1)).all()
+
+    blocked_big = logits.masked_fill(mask == 0, -1e9)
+    probs = torch.softmax(blocked_big, dim=-1)
+    assert torch.isfinite(probs).all()
+    assert torch.allclose(probs, torch.full((n,), 1.0 / n))

@@ -308,7 +308,9 @@ def run_eval(
                     if hasattr(env, "action_mask"):
                         mask = env.action_mask()
                         mask_t = torch.from_numpy(mask).to(dev).reshape(1, -1)
-                        logits = logits.masked_fill(mask_t == 0, float("-inf"))
+                        # -1e9 like training (rl/ppo.py): robust to a fully-closed
+                        # mask, where -inf would put NaN into the top-3 log below.
+                        logits = logits.masked_fill(mask_t == 0, -1e9)
 
                     action = int(logits.argmax(dim=-1).item())
 

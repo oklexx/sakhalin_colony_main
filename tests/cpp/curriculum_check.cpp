@@ -234,9 +234,10 @@ int main() {
               "sandbox Game (no gate) builds House: bases grow");
     }
 
-    // ── PR 2 §3.3: a gated step costs exactly ONE error_penalty ──
-    // Twin envs, identical states: the gated one fails on the curriculum, the
-    // open one on money. Every other reward component cancels out.
+    // ── PR 6 §1: a gated step is a pure refusal — no day passes ──
+    // Twin envs, identical states: the gated one refuses with exactly
+    // error_penalty; the open one fails on money but the day still passes
+    // (daily bonuses accrue). The PR 2 reward equality is intentionally gone.
     {
         ColonyEnvCpp t1(bd, ed, 11, 280), t2(bd, ed, 11, 280);
         t1.reset(11);
@@ -244,13 +245,51 @@ int main() {
         t1.set_curriculum(restricted({"WaterChannel"}));
         t1.game().money = 0;
         t2.game().money = 0;
+        int64_t d0 = t1.game().days_alive;
+        double ep = t1.reward_config().error_penalty;
         int house = find_id(t1, "House");
-        auto o1 = t1.step(A_BUILD0 + house);  // gated
-        auto o2 = t2.step(A_BUILD0 + house);  // ordinary money failure
-        check(o1.rew == o2.rew && o1.rew != 0.0,
-              "gated step reward == ordinary failed-build reward (single penalty)");
+        auto pre = t1.obs();
+        auto o1 = t1.step(A_BUILD0 + house);  // gated: pure refusal
+        auto o2 = t2.step(A_BUILD0 + house);  // money failure: day passes
+        check(o1.rew == ep, "gated step reward is exactly error_penalty");
+        check(o1.days == d0, "gated step advances no days");
+        check(o1.obs == pre, "gated step returns the current obs unchanged");
+        check(o2.days == d0 + 1, "ordinary failed build still passes the day");
+        check(o1.rew != o2.rew, "gated and money-fail rewards differ by design");
         check(o1.n_bases == 1 && o2.n_bases == 1,
               "neither twin builds anything");
+        check(o1.ep_return == ep, "gated ep_return tracks the pure penalty");
+    }
+
+    // ── PR 6 §3: degenerate-scenario report ──
+    {
+        // broke + WaterChannel-only: degenerate by construction (money reason)
+        ColonyEnvCpp w(bd, ed, 7, 280, restricted({"WaterChannel"}));
+        w.reset(7);
+        w.game().money = 0;
+        std::string rep = w.degenerate_report();
+        check(!rep.empty() && rep.find("WaterChannel") != std::string::npos &&
+                  rep.find("price") != std::string::npos,
+              "degenerate report names the building and the money reason");
+        // healthy control: rich and open
+        ColonyEnvCpp h(bd, ed, 42, 280);
+        h.reset(42);
+        h.game().money = 5'000'000;
+        check(h.degenerate_report().empty(), "healthy scenario reports nothing");
+        // empty allowed set with all_builds=false
+        ColonyEnvCpp z(bd, ed, 42, 280, restricted({}));
+        z.reset(42);
+        check(z.degenerate_report().find("набор пуст") != std::string::npos,
+              "empty allowed set reported");
+        // the measured case (seed 7, fresh money, WaterChannel-only): degenerate
+        // with the lot reason (deterministic: the map is generated from the seed)
+        ColonyEnvCpp w7(bd, ed, 7, 280, restricted({"WaterChannel"}));
+        w7.reset(7);
+        std::string rep7 = w7.degenerate_report();
+        check(!rep7.empty(), "seed-7 WaterChannel-only is degenerate (0/32)");
+        check(rep7.find("WaterChannel") != std::string::npos &&
+                  rep7.find("лота") != std::string::npos,
+              "seed-7 WaterChannel-only: lot reason reported");
     }
 
     printf("\n%s (%d failure(s))\n",

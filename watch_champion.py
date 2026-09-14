@@ -438,7 +438,8 @@ def main():
                         try:
                             mask = np.asarray(env.action_mask(), dtype=np.float32)
                             mask_t = torch.as_tensor(mask, device=dev).reshape(1, -1)
-                            logits = logits.masked_fill(mask_t == 0, float("-inf"))
+                            # -1e9 like training (rl/ppo.py), not -inf: NaN-safe.
+                            logits = logits.masked_fill(mask_t == 0, -1e9)
                         except Exception:
                             pass
                     action = int(logits.argmax(dim=-1).item())
@@ -639,12 +640,14 @@ def main():
                             mask = state.get("action_mask", None)
                             if mask is not None:
                                 mask_t = torch.tensor(mask, dtype=torch.float32, device=dev).reshape(1, -1)
-                                logits = logits.masked_fill(mask_t == 0, float("-inf"))
+                                # -1e9 like training (rl/ppo.py), not -inf: NaN-safe.
+                                logits = logits.masked_fill(mask_t == 0, -1e9)
                             # ...and the curriculum mask (GUI exe may predate
                             # --unlock-ids support and unlock everything)
                             if cur_mask is not None:
                                 cm_t = torch.tensor(cur_mask, dtype=torch.float32, device=dev).reshape(1, -1)
-                                logits = logits.masked_fill(cm_t == 0, float("-inf"))
+                                # -1e9 like training (rl/ppo.py), not -inf: NaN-safe.
+                                logits = logits.masked_fill(cm_t == 0, -1e9)
                             action = int(logits.argmax(dim=-1).item())
                         action_name = action_names[action] if action < len(action_names) else str(action)
                         if step_count <= 10 or step_count % 50 == 0:
