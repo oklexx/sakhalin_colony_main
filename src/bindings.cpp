@@ -582,6 +582,7 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("obs_size", &ColonyVecEnvCpp::obs_size)
         .def("n_actions", &ColonyVecEnvCpp::n_actions)
         .def("n_build", &ColonyVecEnvCpp::n_build)
+        .def("build_ids", &ColonyVecEnvCpp::build_ids)
         .def("n_bases", &ColonyVecEnvCpp::n_bases)
         .def("n_people", &ColonyVecEnvCpp::n_people)
         .def("total_daily_value", &ColonyVecEnvCpp::total_daily_value)

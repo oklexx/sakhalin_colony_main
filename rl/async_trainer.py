@@ -94,17 +94,17 @@ class AsyncTrainer:
         # Action names from C++ env
         self._action_names: List[str] = getattr(env_manager, 'action_names', [])
         if not self._action_names:
-            # Fallback if env doesn't provide action_names
-            self._action_names = [
-                "DAY", "WEEK",
-                "BUILD_HOUSE", "BUILD_FARM", "BUILD_ROAD", "BUILD_GARDEN",
-                "BUILD_SMALL_HOUSE", "BUILD_SAWMILL", "BUILD_WATER_CHANNEL",
-                "BUILD_COALMINE", "BUILD_IRONMINE", "BUILD_REFINERY",
-                "BUILD_GOLDMINE", "BUILD_POWER_STATION", "BUILD_HYDRO_STATION",
-                "IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
-                "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
-                "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX",
-            ]
+            # Fallback if env doesn't provide action_names. Index-aligned
+            # with the standard layout (DAY, WEEK, 32 builds, 11 managers);
+            # build slots stay generic — only the env knows the real order
+            # (a hardcoded guess here once mislabeled Road as GOLDMINE).
+            self._action_names = (
+                ["DAY", "WEEK"]
+                + [f"BUILD_{i}" for i in range(32)]
+                + ["IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
+                   "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
+                   "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX"]
+            )
 
         # Action history for loop detection (safe tracking)
         self._action_history: deque = deque(maxlen=1000)
@@ -205,6 +205,16 @@ class AsyncTrainer:
             except ValueError:
                 pass
         return action_counts
+
+    def _top_actions_dict(self, action_counts, total_actions) -> Dict[str, float]:
+        """Top-15 action shares for monitoring (zero-count actions omitted)."""
+        order = sorted(range(len(action_counts)),
+                       key=lambda i: action_counts[i], reverse=True)[:15]
+        return {
+            self._action_names[i]: round(action_counts[i] / max(total_actions, 1) * 100, 2)
+            for i in order
+            if i < len(self._action_names) and action_counts[i] > 0
+        }
 
     def _process_commands(self, command_queue: Optional[queue.Queue]):
         """Process queued commands from the UI."""
@@ -570,9 +580,7 @@ class AsyncTrainer:
             # Calculate top actions from history
             action_counts = self._calculate_action_distribution()
             total_actions = sum(action_counts)
-            order = sorted(range(len(action_counts)), key=lambda i: action_counts[i], reverse=True)[:15]
-            top_actions = {self._action_names[i]: round(action_counts[i] / max(total_actions, 1) * 100, 2)
-                           for i in order if i < len(self._action_names)}
+            top_actions = self._top_actions_dict(action_counts, total_actions)
 
             # Return statistics
             avg_return = 0.0
@@ -596,10 +604,21 @@ class AsyncTrainer:
                         curriculum_next_at_step = threshold
                         break
 
+            # Always show the effective allowed set (stage preset UNION
+            # manual set — get_allowed_buildings_for_stage is manual-aware),
+            # not just under a schedule: with a fixed manual set the widget
+            # would otherwise stay blank.
             available_actions = ""
-            if schedule:
-                allowed = self.em.get_allowed_buildings_for_stage(self._curriculum_stage)
-                available_actions = " | ".join(allowed[:5])
+            try:
+                get_allowed = getattr(self.em, "get_allowed_buildings_for_stage", None)
+                if get_allowed is not None:
+                    allowed = list(get_allowed(self._curriculum_stage) or [])
+                    if allowed:
+                        available_actions = " | ".join(allowed[:5])
+                        if len(allowed) > 5:
+                            available_actions += f" (+{len(allowed) - 5} more)"
+            except Exception:
+                pass
 
             # Real progress of the current stage for the UI widget (was
             # hardcoded 0.0 before).

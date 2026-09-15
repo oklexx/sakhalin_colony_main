@@ -338,6 +338,23 @@ class EnvManager:
                 f"курикулум не применён: resource_weights env={have_w} "
                 f"expected={want_w}")
 
+    @property
+    def action_names(self) -> List[str]:
+        """Action labels in env order (trainer top_actions, loop detector).
+
+        Sourced from the vec env so monitoring labels can never drift from
+        the real action indices (the trainer's hardcoded fallback did:
+        env action 12 = Road was reported as BUILD_GOLDMINE).
+        """
+        get = getattr(self.vec_env, "action_names", None)
+        if get is None:
+            return []
+        try:
+            names = get() if callable(get) else get
+            return [str(n) for n in names]
+        except Exception:
+            return []
+
     def get_allowed_buildings(self) -> List[str]:
         """Return ids allowed by current curriculum stage + manual set."""
         return self.get_allowed_buildings_for_stage(self.cfg.curriculum_stage)

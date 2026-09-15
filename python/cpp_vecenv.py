@@ -100,7 +100,8 @@ class CppVecEnv(VecEnv):
         # PR 1: single curriculum contract (duck-typed — no rl import here, so
         # this module stays importable without torch: rl depends on python/, not vice versa).
         if curriculum is None:
-            curr_dict = {"all_builds": True, "allowed_builds": [], "stage": 0}
+            curr_dict = {"all_builds": True, "allowed_builds": [], "stage": 0,
+                         "all_resources": True, "obs_version": 1}
             self.curriculum_state = None
         elif isinstance(curriculum, dict):
             curr_dict = curriculum

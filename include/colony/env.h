@@ -278,6 +278,10 @@ public:
     int obs_size() const { return obs_size_; }
     int n_actions() const { return n_actions_; }
     int n_build() const { return envs_.empty() ? 0 : envs_[0].n_build(); }
+    // Build ids in C++ action order (single source for display names).
+    std::vector<std::string> build_ids() const {
+        return envs_.empty() ? std::vector<std::string>{} : envs_[0].build_ids();
+    }
     int n_bases() const { int total = 0; for (const auto& e : envs_) total += e.n_bases(); return total; }
     int64_t n_people() const { int64_t total = 0; for (const auto& e : envs_) total += e.game().people; return total; }
     double total_daily_value() const { double t = 0; for (const auto& e : envs_) t += e.last_daily_value(); return t; }

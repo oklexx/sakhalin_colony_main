@@ -337,3 +337,87 @@ if __name__ == "__main__":
     print("PASS: composite score calculation")
     test_multi_seed_eval(Path(__file__).parent / "tmp")
     print("PASS: multi-seed eval")
+
+
+# ── monitoring labels: real env order, always-on available set ──────────────
+
+def test_trainer_prefers_env_action_names():
+    """getattr branch: env-provided names win over the fallback list."""
+    cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, use_amp=False)
+    em = FakeEnvManager(n_envs=2, n_steps=3)
+    trainer = AsyncTrainer(cfg=cfg, env_manager=em)
+    assert trainer._action_names == em.action_names
+    assert len(trainer._action_names) == 5  # the env list, not the 45 fallback
+
+
+def test_fallback_action_names_index_aligned():
+    """No env names: honest 45-slot fallback (DAY/WEEK/builds/managers)."""
+    from types import SimpleNamespace
+
+    cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, use_amp=False)
+    em = SimpleNamespace(device=torch.device("cpu"))
+    trainer = AsyncTrainer(cfg=cfg, env_manager=em)
+    names = trainer._action_names
+    assert len(names) == 45
+    assert names[0] == "DAY" and names[1] == "WEEK"
+    assert names[2:34] == [f"BUILD_{i}" for i in range(32)]
+    assert names[34:] == ["IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
+                          "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
+                          "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX"]
+
+
+def test_top_actions_dict_omits_zeros_and_maps_names():
+    cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, use_amp=False)
+    em = FakeEnvManager(n_envs=2, n_steps=3)
+    trainer = AsyncTrainer(cfg=cfg, env_manager=em)
+    names = em.action_names  # 5 fake actions
+    trainer._action_history.extend([(0, names[1]), (1, names[1]), (0, names[3])])
+    counts = trainer._calculate_action_distribution()
+    assert counts == [0, 2, 0, 1, 0]
+    d = trainer._top_actions_dict(counts, sum(counts))
+    assert d == {names[1]: round(200 / 3, 2), names[3]: round(100 / 3, 2)}
+
+
+def test_env_manager_action_names_match_env_order():
+    """Real env: BUILD_GOLDMINE sits at its true index (9), not 12."""
+    import pytest
+
+    pytest.importorskip("colony_cpp")
+    pytest.importorskip("stable_baselines3")
+    from rl.env_manager import EnvManager
+
+    cfg = Config(n_envs=2, map_size=64, n_steps=8)
+    em = EnvManager(cfg, torch.device("cpu"))
+    try:
+        names = em.action_names
+        assert len(names) == em.n_actions == 45
+        assert names[0] == "DAY" and names[1] == "WEEK"
+        assert names.index("BUILD_GOLDMINE") == 9
+        assert names.index("BUILD_ROAD") == 12
+        assert names == list(em.vec_env.action_names)
+    finally:
+        em.close()
+
+
+def test_available_actions_without_schedule(tmp_path):
+    """Fixed manual set (no schedule): widget shows it, open set truncates."""
+
+    class ManualFake(FakeEnvManager):
+        def __init__(self, allowed, *a, **k):
+            super().__init__(*a, **k)
+            self._allowed = allowed
+
+        def get_allowed_buildings_for_stage(self, stage):
+            return list(self._allowed)
+
+    cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, save_freq=0,
+                 eval_freq=0, use_amp=False, model_dir=str(tmp_path))
+    trainer = AsyncTrainer(cfg=cfg, env_manager=ManualFake(["Road", "WaterChannel"]))
+    trainer.train(total_timesteps=6)
+    assert trainer.metrics.curriculum_available_actions == "Road | WaterChannel"
+
+    many = [f"B{i}" for i in range(32)]
+    trainer2 = AsyncTrainer(cfg=cfg, env_manager=ManualFake(many))
+    trainer2.train(total_timesteps=6)
+    assert trainer2.metrics.curriculum_available_actions == \
+        "B0 | B1 | B2 | B3 | B4 (+27 more)"
