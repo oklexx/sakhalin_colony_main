@@ -401,22 +401,22 @@ def test_check_obs_version_compat():
     check_obs_version_compat(1, 1, ckpt_path="m.pt")  # match: silent
     check_obs_version_compat(None, 1, ckpt_path="m.pt")  # unknown: silent
     with pytest.raises(RuntimeError,
-                       match=r"obs v0.*246.*obs v1.*287.*--obs-version 0"):
+                       match=r"obs v0.*248.*obs v1.*289.*--obs-version 0"):
         check_obs_version_compat(0, 1, ckpt_path="m.pt")
     with pytest.raises(RuntimeError,
-                       match=r"obs v1.*287.*obs v0.*246.*--obs-version 1"):
+                       match=r"obs v1.*289.*obs v0.*248.*--obs-version 1"):
         check_obs_version_compat(1, 0, ckpt_path="m.pt")
 
 
 def test_check_policy_obs_compat():
     from rl.curriculum import check_policy_obs_compat
 
-    check_policy_obs_compat(287, 287, ckpt_path="m.pt")
+    check_policy_obs_compat(289, 289, ckpt_path="m.pt")
     with pytest.raises(RuntimeError,
-                       match=r"expects a 246-dim.*serves 287.*--obs-version 0"):
-        check_policy_obs_compat(246, 287, ckpt_path="m.pt")
+                       match=r"expects a 248-dim.*serves 289.*--obs-version 0"):
+        check_policy_obs_compat(248, 289, ckpt_path="m.pt")
     with pytest.raises(RuntimeError, match=r"expects a 203-dim"):
-        check_policy_obs_compat(203, 287, ckpt_path="m.pt")  # no hint
+        check_policy_obs_compat(203, 289, ckpt_path="m.pt")  # no hint
 
 
 def test_ckpt_flat_width():
@@ -425,9 +425,9 @@ def test_ckpt_flat_width():
     from rl.curriculum import ckpt_flat_width
 
     assert ckpt_flat_width(
-        {"trunk.0.weight": SimpleNamespace(shape=(64, 246))}) == 246
+        {"trunk.0.weight": SimpleNamespace(shape=(64, 248))}) == 248
     assert ckpt_flat_width(
-        {"flat_trunk.0.weight": SimpleNamespace(shape=(64, 287))}) == 287
+        {"flat_trunk.0.weight": SimpleNamespace(shape=(64, 289))}) == 289
     assert ckpt_flat_width(
         {"cnn.0.weight": SimpleNamespace(shape=(16, 8, 3, 3))}) is None
     assert ckpt_flat_width({}) is None

@@ -440,27 +440,27 @@ int main() {
     {
         ColonyEnvCpp e0(bd, ed, 7, 280);  // default Curriculum(): obs_version=0
         e0.reset(7);
-        check(e0.obs_size() == 246, "v0 obs_size is 246");
-        check((int)e0.obs().size() == 246, "v0 obs() has 246 floats");
+        check(e0.obs_size() == 248, "v0 obs_size is 248");
+        check((int)e0.obs().size() == 248, "v0 obs() has 248 floats");
 
         Curriculum c1;
         c1.obs_version = 1;
         ColonyEnvCpp e1(bd, ed, 7, 280, c1);
         e1.reset(7);
-        check(e1.obs_size() == 287, "v1 obs_size is 287");
+        check(e1.obs_size() == 289, "v1 obs_size is 289");
         auto o1 = e1.obs();
-        check((int)o1.size() == 287, "v1 obs() has 287 floats");
+        check((int)o1.size() == 289, "v1 obs() has 289 floats");
 
         // v0 is a strict prefix of v1 (same seed, no steps yet).
         auto o0 = e0.obs();
         bool prefix = true;
-        for (int i = 0; i < 246; i++)
+        for (int i = 0; i < 248; i++)
             if (o0[i] != o1[i]) { prefix = false; break; }
         check(prefix, "v0 obs is a strict prefix of v1 obs");
 
         // Unrestricted tail: nine 1.0 weights + 32 1.0 bits.
         bool tail = true;
-        for (int i = 246; i < 287; i++)
+        for (int i = 248; i < 289; i++)
             if (o1[i] != 1.0f) { tail = false; break; }
         check(tail, "v1 unrestricted tail is all ones (9 weights + 32 bits)");
 
@@ -475,14 +475,14 @@ int main() {
         ColonyEnvCpp er(bd, ed, 7, 280, cr);
         er.reset(7);
         auto obv = er.obs();
-        bool weights_ok = obv[246 + 6] == 1.0f;
+        bool weights_ok = obv[248 + 6] == 1.0f;
         for (int j = 0; j < 9; j++)
-            if (j != 6 && obv[246 + j] != 0.0f) weights_ok = false;
+            if (j != 6 && obv[248 + j] != 0.0f) weights_ok = false;
         check(weights_ok, "v1 tail shows water-only weights");
         int fi = find_id(er, first_id);
-        bool bits_ok = (fi >= 0 && obv[255 + fi] == 1.0f);
+        bool bits_ok = (fi >= 0 && obv[257 + fi] == 1.0f);
         for (int i = 0; i < er.n_build(); i++)
-            if (i != fi && obv[255 + i] != 0.0f) bits_ok = false;
+            if (i != fi && obv[257 + i] != 0.0f) bits_ok = false;
         check(bits_ok, "v1 tail shows build_allowed bits (only the allowed id)");
 
         // all_resources=true renders nine 1.0s no matter what the array holds.
@@ -494,7 +494,7 @@ int main() {
         auto oa = ea.obs();
         bool eff = true;
         for (int j = 0; j < 9; j++)
-            if (oa[246 + j] != 1.0f) eff = false;
+            if (oa[248 + j] != 1.0f) eff = false;
         check(eff, "all_resources renders effective weights (nine 1.0s)");
 
         // Version switch mid-run is refused; same-version set works.

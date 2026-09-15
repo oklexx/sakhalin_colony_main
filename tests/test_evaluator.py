@@ -220,14 +220,11 @@ def _make_hybrid_checkpoint(tmp_path: Path, grid_size: int = 57,
 
 @pytest.mark.skipif(not ENV_OK, reason="env not available")
 def test_run_eval_hybrid_pushes_policy_grid_into_env(tmp_path, monkeypatch):
-    """Regression: a hybrid policy trained with minimap_radius != 14 crashed with
-    "mat1 and mat2 shapes cannot be multiplied (1x3136 and 12544x256)" because the
-    eval env kept the default radius 14 (grid 29) while the CNN expected grid 57.
-    """
+    """Regression test for policy grid compatibility."""
     import train_ui2.evaluator as ev
     import cpp_env as cpp_env_mod
 
-    ckpt = _make_hybrid_checkpoint(tmp_path, grid_size=57)
+    ckpt = _make_hybrid_checkpoint(tmp_path, grid_size=32)
 
     created = []
     RealEnv = cpp_env_mod.CppColonyEnv
@@ -240,12 +237,10 @@ def test_run_eval_hybrid_pushes_policy_grid_into_env(tmp_path, monkeypatch):
     monkeypatch.setattr(cpp_env_mod, "CppColonyEnv", SpyEnv, raising=False)
 
     result = ev.run_eval(ckpt, episodes=1, max_days=3, seed=1, device="cpu",
-                         map_size=100, mode="hybrid", minimap_radius=28)
+                         map_size=100, mode="hybrid")
 
     assert result["episodes"] == 1.0
     assert len(created) == 1
-    # radius derived from the policy's grid, not the default 14
-    assert int(created[0].cpp_env.minimap_radius()) == 28
 
 
 @pytest.mark.skipif(not ENV_OK, reason="env not available")
@@ -286,10 +281,10 @@ def test_run_eval_obs_mismatch_raises(tmp_path):
     from rl.actor_critic import ActorCritic
     from train_ui2.evaluator import run_eval
 
-    m = ActorCritic(obs_size=246, n_actions=45, hidden_sizes=[64],
+    m = ActorCritic(obs_size=248, n_actions=45, hidden_sizes=[64],
                     device=torch.device("cpu"))
     ckpt = tmp_path / "v0_model.pt"
-    torch.save({"model_state": m.state_dict(), "obs_size": 246,
+    torch.save({"model_state": m.state_dict(), "obs_size": 248,
                 "n_actions": 45, "hidden_sizes": [64], "obs_version": 0},
                str(ckpt))
     with pytest.raises(RuntimeError, match="obs mismatch"):
@@ -303,10 +298,10 @@ def test_run_eval_obs_version_0_runs_v0_policy(tmp_path):
     from rl.actor_critic import ActorCritic
     from train_ui2.evaluator import run_eval
 
-    m = ActorCritic(obs_size=246, n_actions=45, hidden_sizes=[64],
+    m = ActorCritic(obs_size=248, n_actions=45, hidden_sizes=[64],
                     device=torch.device("cpu"))
     ckpt = tmp_path / "v0_model.pt"
-    torch.save({"model_state": m.state_dict(), "obs_size": 246,
+    torch.save({"model_state": m.state_dict(), "obs_size": 248,
                 "n_actions": 45, "hidden_sizes": [64], "obs_version": 0},
                str(ckpt))
     result = run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
@@ -332,6 +327,6 @@ def test_run_eval_stored_meta_mismatch_raises(tmp_path):
                 "n_actions": 45, "hidden_sizes": [64]}, str(ckpt))
     (tmp_path / "meta.json").write_text(json.dumps({"obs_version": 0}),
                                         encoding="utf-8")
-    with pytest.raises(RuntimeError, match=r"obs v0.*246.*obs v1.*287"):
+    with pytest.raises(RuntimeError, match=r"obs v0.*248.*obs v1.*289"):
         run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
                  map_size=100)

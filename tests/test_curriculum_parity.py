@@ -272,7 +272,7 @@ def test_priority_metrics_end_to_end():
 
 # ── PR 5: obs layout on the real env ─────────────────────────────────────
 
-@pytest.mark.parametrize("obs_version,expected", [(1, 287), (0, 246)])
+@pytest.mark.parametrize("obs_version,expected", [(1, 289), (0, 248)])
 def test_obs_layout_sizes(obs_version, expected):
     st = build_state(0, None, True, None, obs_version)
     env = _single_env(st)
@@ -289,14 +289,14 @@ def test_v1_frame_visible_in_obs():
     env = _single_env(st)
     try:
         obs, _ = env.reset(seed=7)
-        assert len(obs) == 287
+        assert len(obs) == 289
         # reset() returns the NORMALIZED obs — read the raw frame from C++.
         raw = list(env.cpp_env.obs())
-        assert len(raw) == 287
-        weights = list(raw[246:255])
+        assert len(raw) == 289
+        weights = list(raw[248:257])
         assert weights[6] == pytest.approx(1.0)
         assert sum(weights) == pytest.approx(1.0)
-        bits = list(raw[255:287])
+        bits = list(raw[257:289])
         assert sum(bits) == pytest.approx(1.0)
         idx = max(range(32), key=lambda i: bits[i])
         assert env.cpp_env.build_ids()[idx] == "WaterChannel"
@@ -323,14 +323,14 @@ def test_set_curriculum_refuses_version_change():
 
 
 def test_env_manager_obs_layout_and_buffer():
-    """EnvManager on v1: 287-dim obs, version in curriculum(), sized buffer."""
+    """EnvManager on v1: 289-dim obs, version in curriculum(), sized buffer."""
     pytest.importorskip("torch")
     import torch
 
     from rl.config import Config
     from rl.env_manager import EnvManager
 
-    for ver, size in ((1, 287), (0, 246)):
+    for ver, size in ((1, 289), (0, 248)):
         cfg = Config(n_envs=2, map_size=_MAP, obs_version=ver)
         em = EnvManager(cfg, torch.device("cpu"))
         try:
@@ -339,3 +339,20 @@ def test_env_manager_obs_layout_and_buffer():
             assert em.buffer.obs.shape[1] == size
         finally:
             em.close()
+
+
+def test_water_relative_coordinates():
+    st = build_state(0, None, True, None, 0)
+    env = _single_env(st)
+    try:
+        env.reset(seed=7)
+        raw = list(env.cpp_env.obs())
+        assert len(raw) == 248
+        dx = raw[246]
+        dy = raw[247]
+        assert isinstance(dx, float)
+        assert isinstance(dy, float)
+        assert -1.0 <= dx <= 1.0
+        assert -1.0 <= dy <= 1.0
+    finally:
+        env.close()

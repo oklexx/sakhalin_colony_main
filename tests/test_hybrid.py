@@ -10,22 +10,22 @@ import pytest
 def hybrid_model():
     from rl.actor_critic_hybrid import ActorCriticHybrid
     return ActorCriticHybrid(
-        obs_size=203, n_channels=8, grid_size=29,
+        obs_size=289, n_channels=8, grid_size=32,
         n_actions=45, hidden_sizes=[256, 256], device="cpu",
     )
 
 
 def test_hybrid_forward_shapes(hybrid_model):
-    flat = torch.randn(4, 203)
-    mm = torch.randn(4, 8, 29, 29)
+    flat = torch.randn(4, 289)
+    mm = torch.randn(4, 8, 32, 32)
     logits, values = hybrid_model(flat, mm)
     assert logits.shape == (4, 45)
     assert values.shape == (4, 1)
 
 
 def test_hybrid_act(hybrid_model):
-    flat = torch.randn(203)
-    mm = torch.randn(8, 29, 29)
+    flat = torch.randn(289)
+    mm = torch.randn(8, 32, 32)
     action, log_prob, value = hybrid_model.act(flat.unsqueeze(0), mm.unsqueeze(0))
     assert action.shape == (1,)
     assert 0 <= int(action.item()) < 45
@@ -33,8 +33,8 @@ def test_hybrid_act(hybrid_model):
 
 
 def test_hybrid_act_deterministic(hybrid_model):
-    flat = torch.randn(203)
-    mm = torch.randn(8, 29, 29)
+    flat = torch.randn(289)
+    mm = torch.randn(8, 32, 32)
     a1, _, _ = hybrid_model.act(flat.unsqueeze(0), mm.unsqueeze(0), deterministic=True)
     a2, _, _ = hybrid_model.act(flat.unsqueeze(0), mm.unsqueeze(0), deterministic=True)
     assert a1.item() == a2.item()
@@ -44,12 +44,12 @@ def test_hybrid_state_dict_roundtrip(hybrid_model):
     sd = hybrid_model.state_dict()
     from rl.actor_critic_hybrid import ActorCriticHybrid
     m2 = ActorCriticHybrid(
-        obs_size=203, n_channels=8, grid_size=29,
+        obs_size=289, n_channels=8, grid_size=32,
         n_actions=45, hidden_sizes=[256, 256], device="cpu",
     )
     m2.load_state_dict(sd)
-    flat = torch.randn(203)
-    mm = torch.randn(8, 29, 29)
+    flat = torch.randn(289)
+    mm = torch.randn(8, 32, 32)
     with torch.no_grad():
         a1, _, _ = hybrid_model.act(flat.unsqueeze(0), mm.unsqueeze(0), deterministic=True)
         a2, _, _ = m2.act(flat.unsqueeze(0), mm.unsqueeze(0), deterministic=True)
@@ -57,15 +57,15 @@ def test_hybrid_state_dict_roundtrip(hybrid_model):
 
 
 def test_hybrid_get_value(hybrid_model):
-    flat = torch.randn(2, 203)
-    mm = torch.randn(2, 8, 29, 29)
+    flat = torch.randn(2, 289)
+    mm = torch.randn(2, 8, 32, 32)
     values = hybrid_model.get_value(flat, mm)
     assert values.shape == (2,)
 
 
 def test_hybrid_get_action_and_value(hybrid_model):
-    flat = torch.randn(3, 203)
-    mm = torch.randn(3, 8, 29, 29)
+    flat = torch.randn(3, 289)
+    mm = torch.randn(3, 8, 32, 32)
     action, log_prob, value = hybrid_model.get_action_and_value(flat, mm)
     assert action.shape == (3,)
     assert log_prob.shape == (3,)
@@ -81,10 +81,10 @@ def test_hybrid_params_property(hybrid_model):
 def test_hybrid_different_grid_size(hybrid_model):
     from rl.actor_critic_hybrid import ActorCriticHybrid
     m16 = ActorCriticHybrid(
-        obs_size=203, n_channels=8, grid_size=33,
+        obs_size=289, n_channels=8, grid_size=33,
         n_actions=45, hidden_sizes=[128, 128], device="cpu",
     )
-    flat = torch.randn(2, 203)
+    flat = torch.randn(2, 289)
     mm = torch.randn(2, 8, 33, 33)
     logits, values = m16(flat, mm)
     assert logits.shape == (2, 45)
@@ -93,8 +93,8 @@ def test_hybrid_different_grid_size(hybrid_model):
 
 def test_hybrid_gradient_flow(hybrid_model):
     hybrid_model.train()
-    flat = torch.randn(4, 203, requires_grad=True)
-    mm = torch.randn(4, 8, 29, 29, requires_grad=True)
+    flat = torch.randn(4, 289, requires_grad=True)
+    mm = torch.randn(4, 8, 32, 32, requires_grad=True)
     logits, values = hybrid_model(flat, mm)
     loss = logits.mean() + values.mean()
     loss.backward()
@@ -111,24 +111,24 @@ def test_hybrid_load_policy_detection(tmp_path):
     from train_ui2.evaluator import _load_policy
 
     m = ActorCriticHybrid(
-        obs_size=203, n_channels=8, grid_size=29,
+        obs_size=289, n_channels=8, grid_size=32,
         n_actions=45, hidden_sizes=[256, 256], device="cpu",
     )
     ckpt_path = tmp_path / "hybrid.pt"
     torch.save({
         "model_state": m.state_dict(),
-        "obs_size": 203,
+        "obs_size": 289,
         "n_channels": 8,
-        "grid_size": 29,
+        "grid_size": 32,
         "n_actions": 45,
         "hidden_sizes": [256, 256],
     }, str(ckpt_path))
 
     policy = _load_policy(ckpt_path, torch.device("cpu"))
     assert isinstance(policy, ActorCriticHybrid)
-    assert policy.obs_size == 203
+    assert policy.obs_size == 289
     assert policy.n_channels == 8
-    assert policy.grid_size == 29
+    assert policy.grid_size == 32
     assert policy.n_actions == 45
 
 
@@ -139,24 +139,24 @@ def test_hybrid_ppo_forward():
     from rl.ppo import PPO
 
     model = ActorCriticHybrid(
-        obs_size=203, n_channels=8, grid_size=29,
+        obs_size=289, n_channels=8, grid_size=32,
         n_actions=45, hidden_sizes=[64, 64], device="cpu",
     )
     n_envs = 2
     n_steps = 4
     buf = _TensorRolloutBuffer(
         n_steps=n_steps, n_envs=n_envs,
-        obs_shape=(8, 29, 29),
+        obs_shape=(8, 32, 32),
         n_actions=45,
         gamma=0.99, gae_lambda=0.95,
         device=torch.device("cpu"),
-        flat_dim=203,
+        flat_dim=289,
     )
     ppo = PPO(model=model, buffer=buf, device=torch.device("cpu"), use_amp=False)
 
     for t in range(n_steps):
-        flat = torch.randn(n_envs, 203)
-        mm = torch.randn(n_envs, 8, 29, 29)
+        flat = torch.randn(n_envs, 289)
+        mm = torch.randn(n_envs, 8, 32, 32)
         with torch.no_grad():
             a, lp, v = model.get_action_and_value(flat, mm)
         buf.add(
@@ -167,8 +167,8 @@ def test_hybrid_ppo_forward():
             flat=flat,
         )
 
-    last_flat = torch.randn(n_envs, 203)
-    last_mm = torch.randn(n_envs, 8, 29, 29)
+    last_flat = torch.randn(n_envs, 289)
+    last_mm = torch.randn(n_envs, 8, 32, 32)
     with torch.no_grad():
         last_value = model.get_value(last_flat, last_mm)
     last_done = torch.zeros(n_envs, dtype=torch.bool)
@@ -184,16 +184,16 @@ def test_hybrid_save_load_roundtrip(tmp_path):
     from rl.ppo import PPO
 
     model = ActorCriticHybrid(
-        obs_size=203, n_channels=8, grid_size=29,
+        obs_size=289, n_channels=8, grid_size=32,
         n_actions=45, hidden_sizes=[64, 64], device="cpu",
     )
     buf = _TensorRolloutBuffer(
         n_steps=4, n_envs=2,
-        obs_shape=(8, 29, 29),
+        obs_shape=(8, 32, 32),
         n_actions=45,
         gamma=0.99, gae_lambda=0.95,
         device=torch.device("cpu"),
-        flat_dim=203,
+        flat_dim=289,
     )
     ppo = PPO(model=model, buffer=buf, device=torch.device("cpu"), use_amp=False)
 
@@ -202,11 +202,11 @@ def test_hybrid_save_load_roundtrip(tmp_path):
 
     ckpt = torch.load(save_path, map_location="cpu", weights_only=False)
     assert "obs_size" in ckpt
-    assert ckpt["obs_size"] == 203
+    assert ckpt["obs_size"] == 289
     assert "n_channels" in ckpt
     assert ckpt["n_channels"] == 8
     assert "grid_size" in ckpt
-    assert ckpt["grid_size"] == 29
+    assert ckpt["grid_size"] == 32
 
 
 def test_config_accepts_hybrid():
@@ -226,17 +226,17 @@ def test_hybrid_buffer_flat_storage():
 
     buf = _TensorRolloutBuffer(
         n_steps=4, n_envs=2,
-        obs_shape=(8, 29, 29),
+        obs_shape=(8, 32, 32),
         n_actions=45,
         gamma=0.99, gae_lambda=0.95,
         device=torch.device("cpu"),
-        flat_dim=203,
+        flat_dim=289,
     )
     assert buf.flat_obs is not None
-    assert buf.flat_obs.shape == (8, 203)
+    assert buf.flat_obs.shape == (8, 289)
 
-    flat = torch.randn(2, 203)
-    mm = torch.randn(2, 8, 29, 29)
+    flat = torch.randn(2, 289)
+    mm = torch.randn(2, 8, 32, 32)
     buf.add(
         obs=mm,
         action=torch.zeros(2, dtype=torch.long),
@@ -247,7 +247,7 @@ def test_hybrid_buffer_flat_storage():
         terminated=torch.zeros(2, dtype=torch.bool),
         flat=flat,
     )
-    assert buf.flat_obs[0:2].shape == (2, 203)
+    assert buf.flat_obs[0:2].shape == (2, 289)
     assert torch.allclose(buf.flat_obs[0:2], flat)
 
 
@@ -256,7 +256,7 @@ def test_hybrid_buffer_no_flat():
 
     buf = _TensorRolloutBuffer(
         n_steps=4, n_envs=2,
-        obs_shape=(8, 29, 29),
+        obs_shape=(8, 32, 32),
         n_actions=45,
         gamma=0.99, gae_lambda=0.95,
         device=torch.device("cpu"),

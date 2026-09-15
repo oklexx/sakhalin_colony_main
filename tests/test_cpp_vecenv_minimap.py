@@ -20,11 +20,11 @@ def test_env_manager_minimap_mode():
     assert em.n_envs == 2
     obs = em.reset()
     assert isinstance(obs, torch.Tensor)
-    assert obs.shape == (2, 8, 29, 29)
+    assert obs.shape == (2, 8, 32, 32)
 
     actions = np.zeros(2, dtype=np.int64)
     next_obs, rewards, dones, infos = em.step(actions)
-    assert next_obs.shape == (2, 8, 29, 29)
+    assert next_obs.shape == (2, 8, 32, 32)
     assert rewards.shape == (2,)
     assert dones.shape == (2,)
     em.close()
@@ -44,11 +44,11 @@ def test_env_manager_hybrid_mode():
     flat_obs, minimap_obs = obs
     assert isinstance(flat_obs, torch.Tensor)
     assert isinstance(minimap_obs, torch.Tensor)
-    assert minimap_obs.shape == (2, 8, 29, 29)
+    assert minimap_obs.shape == (2, 8, 32, 32)
 
     # Test collect_step in hybrid mode
     next_obs, infos = em.collect_step()
     assert isinstance(next_obs, tuple)
     next_flat, next_mm = next_obs
-    assert next_mm.shape == (2, 8, 29, 29)
+    assert next_mm.shape == (2, 8, 32, 32)
     em.close()

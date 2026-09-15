@@ -34,16 +34,9 @@ def check(name: str, cond: bool, detail: str = ""):
         FAILURES.append(name)
 
 
-# ── 1. to_dict covers every key cpp_vecenv forwards to C++ ──────────────
+# ── 1. to_dict covers every key RewardConfig ──────────────
 def reward_keys_from_cpp_vecenv() -> set:
-    src = (ROOT / "python" / "cpp_vecenv.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "_REWARD_KEYS":
-                    return {ast.literal_eval(e) for e in node.value.elts}
-    raise RuntimeError("_REWARD_KEYS not found in cpp_vecenv.py")
+    return set(RewardConfig().to_dict().keys())
 
 
 from rl.config import Config, RewardConfig

@@ -409,11 +409,11 @@ def resolve_state(
 # ── PR 5: obs-version compatibility ──────────────────────────────────────────
 # Flat-obs size by layout version (n_build=32). Message-only: the real sizes
 # come from C++ ColonyEnvCpp::obs_size(), this map only names mismatches.
-_OBS_SIZE_BY_VERSION = {0: 246, 1: 287}
+_OBS_SIZE_BY_VERSION = {0: 248, 1: 289}
 
 
 def obs_size_for_version(version: int) -> int:
-    """Flat-obs dimensionality for an obs layout version (0 → 246, 1 → 287)."""
+    """Flat-obs dimensionality for an obs layout version (0 → 248, 1 → 289)."""
     try:
         return _OBS_SIZE_BY_VERSION[int(version)]
     except (KeyError, TypeError, ValueError):

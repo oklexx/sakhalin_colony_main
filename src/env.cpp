@@ -602,6 +602,40 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
     double ratio = (tax_amount > 0) ? (double)g.money / (double)tax_amount : 0.0;
     push((float)std::min(2.0, ratio));
 
+    // Nearest water relative coordinates (dx, dy) normalized by map_size
+    int ms = g.map_size();
+    int base_x = g.earth.init_sel_x;
+    int base_y = g.earth.init_sel_y;
+    const int8_t* lots = g.earth.lots().data();
+
+    int best_water_x = -1;
+    int best_water_y = -1;
+    double min_dist_sq = -1.0;
+
+    for (int wy = 0; wy < ms; wy++) {
+        for (int wx = 0; wx < ms; wx++) {
+            if (lots[(size_t)wy * ms + wx] == LT_WATER) {
+                double dx_diff = (double)(wx - base_x);
+                double dy_diff = (double)(wy - base_y);
+                double dist_sq = dx_diff * dx_diff + dy_diff * dy_diff;
+                if (min_dist_sq < 0 || dist_sq < min_dist_sq) {
+                    min_dist_sq = dist_sq;
+                    best_water_x = wx;
+                    best_water_y = wy;
+                }
+            }
+        }
+    }
+
+    float water_dx = 0.0f;
+    float water_dy = 0.0f;
+    if (min_dist_sq >= 0) {
+        water_dx = (float)((double)(best_water_x - base_x) / (double)ms);
+        water_dy = (float)((double)(best_water_y - base_y) / (double)ms);
+    }
+    push(water_dx);
+    push(water_dy);
+
     // PR 5, obs v1: the frame - effective resource weights (all_resources
     // renders as nine 1.0s, exactly what the economy applies) + build_allowed
     // bits (all_builds renders as all 1.0s). Appended AFTER the v0 tail so v0

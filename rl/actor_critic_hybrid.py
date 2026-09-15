@@ -31,14 +31,16 @@ class ActorCriticHybrid(ActorCriticBase):
         if n_channels is not None:
             minimap_channels = n_channels
         if grid_size is not None:
+            self.grid_size = grid_size
             minimap_radius = (grid_size - 1) // 2
-        elif minimap_radius is None:
-            minimap_radius = 14
+        else:
+            if minimap_radius is None:
+                minimap_radius = 14
+            self.grid_size = 2 * minimap_radius + 1
         self.obs_size = obs_size
         self.minimap_radius = minimap_radius
         self.minimap_channels = minimap_channels
         self.n_channels = minimap_channels
-        self.grid_size = 2 * minimap_radius + 1
         self.n_actions = n_actions
         self.device = device
 
@@ -47,7 +49,7 @@ class ActorCriticHybrid(ActorCriticBase):
             nn.ReLU(),
         ).to(device) if hidden_sizes else nn.Identity().to(device)
 
-        map_size = 2 * minimap_radius + 1
+        map_size = self.grid_size
         self.cnn = nn.Sequential(
             nn.Conv2d(minimap_channels, 32, 3, padding=1),
             nn.ReLU(),

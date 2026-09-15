@@ -63,7 +63,7 @@ def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device
 
         return ActorCriticCNN(
             n_channels=8,
-            minimap_radius=cfg.minimap_radius,
+            grid_size=32,
             n_actions=n_actions,
             hidden_sizes=cfg.net_arch,
             device=device,
@@ -73,7 +73,7 @@ def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device
 
     return ActorCriticHybrid(
         obs_size=obs_size,
-        minimap_radius=cfg.minimap_radius,
+        grid_size=32,
         minimap_channels=8,
         n_actions=n_actions,
         hidden_sizes=cfg.net_arch,
@@ -91,7 +91,7 @@ def _make_buffer(
     """Create rollout buffer (flat tensor or N-D tensor variant for minimap/hybrid)."""
     from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
 
-    grid = 2 * cfg.minimap_radius + 1
+    grid = 32
     if cfg.obs_mode == "minimap":
         return _TensorRolloutBuffer(
             n_steps=cfg.n_steps,

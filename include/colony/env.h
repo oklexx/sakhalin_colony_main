@@ -125,9 +125,9 @@ public:
     int n_bases() const { return (int)game_.bases.size(); }
     int n_actions() const { return A_BUILD0 + n_build_ + N_MANAGERS; }
     // PR 5: obs v1 appends the frame AFTER the v0 tail, so obs v0 is a strict
-    // prefix of obs v1 (246 = 27+32+7+9+128+9+32+2; 287 = 246+9+32).
+    // prefix of obs v1 (248 = 27+32+7+9+128+9+32+2+2; 289 = 248+9+32).
     int obs_size() const {
-        return 27 + n_build_ + 7 + 9 + 4 * n_build_ + 9 + n_build_ + 2 +
+        return 27 + n_build_ + 7 + 9 + 4 * n_build_ + 9 + n_build_ + 2 + 2 +
                (curriculum_.obs_version >= 1 ? SUNDUK_SIZE + n_build_ : 0);
     }
     // Action mask: 1.0 = available, 0.0 = blocked. Size = n_actions().

@@ -27,12 +27,14 @@ class ActorCriticCNN(ActorCriticBase):
         if hidden_sizes is None:
             hidden_sizes = [256, 256]
         if grid_size is not None:
+            self.grid_size = grid_size
             minimap_radius = (grid_size - 1) // 2
-        elif minimap_radius is None:
-            minimap_radius = 14
+        else:
+            if minimap_radius is None:
+                minimap_radius = 14
+            self.grid_size = 2 * minimap_radius + 1
         self.n_channels = n_channels
         self.minimap_radius = minimap_radius
-        self.grid_size = 2 * minimap_radius + 1
         self.n_actions = n_actions
         self.device = device
 
@@ -45,7 +47,7 @@ class ActorCriticCNN(ActorCriticBase):
             nn.ReLU(),
         ).to(device)
 
-        map_size = 2 * minimap_radius + 1
+        map_size = self.grid_size
         conv_out = 64 * map_size * map_size
 
         layers: List[nn.Module] = []
