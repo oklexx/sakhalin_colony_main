@@ -465,10 +465,8 @@ PYBIND11_MODULE(colony_cpp, m) {
         })
         .def("obs", [](ColonyEnvCpp& env) { return env.obs(); })
         .def("minimap", [](const ColonyEnvCpp& env) {
-            const int R = env.minimap_radius();
-            const int N = 2 * R + 1;
             std::vector<float> mm = env.minimap();
-            py::array_t<float> arr({8, N, N});
+            py::array_t<float> arr({8, 32, 32});
             std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
             return arr;
         })
@@ -597,10 +595,8 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("clear_step_log", &ColonyVecEnvCpp::clear_step_log, py::arg("env_idx"))
         .def("dump_obs", &ColonyVecEnvCpp::dump_obs, py::arg("env_idx"))
         .def("minimap_batch", [](const ColonyVecEnvCpp& v) {
-            const int R = v.minimap_radius();
-            const int N = 2 * R + 1;
             std::vector<float> mm = v.minimap_batch();
-            py::array_t<float> arr({(int)v.n_envs(), 8, N, N});
+            py::array_t<float> arr({(int)v.n_envs(), 8, 32, 32});
             std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
             return arr;
         })

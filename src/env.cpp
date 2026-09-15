@@ -726,25 +726,26 @@ std::string ColonyEnvCpp::dump_obs() const {
 }
 
 std::vector<float> ColonyEnvCpp::minimap() const {
-    const int R = minimap_radius_;
-    const int N = 2 * R + 1;
     const Game& g = game_;
     const int ms = g.map_size();
-    const int cx = g.earth.init_sel_x, cy = g.earth.init_sel_y;
     const int8_t* lots = g.earth.lots().data();
     const uint8_t* occ = g.occupied.data();
+    const int G = 32;
 
-    std::vector<float> out((size_t)8 * N * N, 0.0f);
-    auto put = [&](int ch, int x, int y) {
-        out[(size_t)ch * N * N + (size_t)y * N + x] = 1.0f;
+    std::vector<float> out((size_t)8 * G * G, 0.0f);
+    auto put = [&](int ch, int gx, int gy) {
+        if (gx >= 0 && gx < G && gy >= 0 && gy < G) {
+            out[(size_t)ch * G * G + (size_t)gy * G + gx] = 1.0f;
+        }
     };
 
-    for (int dy = -R; dy <= R; dy++) {
-        int wy = cy + dy;
-        if (wy < 0 || wy >= ms) continue;
-        for (int dx = -R; dx <= R; dx++) {
-            int wx = cx + dx;
-            if (wx < 0 || wx >= ms) continue;
+    for (int wy = 0; wy < ms; wy++) {
+        int gy = (wy * G) / ms;
+        if (gy >= G) gy = G - 1;
+        for (int wx = 0; wx < ms; wx++) {
+            int gx = (wx * G) / ms;
+            if (gx >= G) gx = G - 1;
+
             int8_t lot = lots[(size_t)wy * ms + wx];
             int ch = -1;
             switch (lot) {
@@ -757,8 +758,8 @@ std::vector<float> ColonyEnvCpp::minimap() const {
                 case LT_GOLD:   ch = 6; break;
                 default: break;
             }
-            if (ch >= 0) put(ch, dx + R, dy + R);
-            if (occ[(size_t)wy * ms + wx]) put(7, dx + R, dy + R);
+            if (ch >= 0) put(ch, gx, gy);
+            if (occ[(size_t)wy * ms + wx]) put(7, gx, gy);
         }
     }
     return out;
@@ -1580,9 +1581,8 @@ StepBatchResult ColonyVecEnvCpp::step_wait_batch() {
 std::vector<float> ColonyVecEnvCpp::minimap_batch() const {
     if (envs_.empty()) return {};
     const int n = (int)envs_.size();
-    const int R = minimap_radius_;
-    const int N = 2 * R + 1;
-    const size_t per = (size_t)8 * N * N;
+    const int G = 32;
+    const size_t per = (size_t)8 * G * G;
     std::vector<float> out((size_t)n * per, 0.0f);
     for (int i = 0; i < n; i++) {
         std::vector<float> mm = envs_[(size_t)i].minimap();
