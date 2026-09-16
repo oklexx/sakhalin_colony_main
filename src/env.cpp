@@ -49,6 +49,9 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
     n_build_ = (int)build_ids_.size();
     for (int i = 0; i < n_build_; i++) build_id_to_idx_[build_ids_[i]] = i;
     manager_base_ = A_BUILD0 + n_build_;
+    road_build_idx_ = -1;
+    for (int i = 0; i < n_build_; i++)
+        if (build_ids_[(size_t)i] == ROAD_ID) { road_build_idx_ = i; break; }
 
     // курикулум уже лежит в curriculum_ (см. set_curriculum); каталог зависит от него
     compute_catalog();
@@ -437,6 +440,99 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(int need_earth, bool n
     return std::nullopt;
 }
 
+// Directional sibling of find_lot: identical legality rules, but instead of
+// returning the BFS-first cell it collects every reachable legal cell and
+// returns the one furthest along (dx, dy) from the colony centroid. That gives
+// the ROAD_E/W/S/N actions a meaning the agent can actually steer -- the plain
+// Road action had none, which is why water stayed unreachable.
+std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(int need_earth,
+                                                              bool no_near_base,
+                                                              int dx, int dy) {
+    const Game& g = game_;
+    const int ms = g.map_size();
+    const int8_t* lots = g.earth.lots().data();
+    const int32_t* idx_map = g.base_index_map().data();
+
+    auto lot_matches = [&](int x, int y) -> bool {
+        if (!g.earth.in_bounds(x, y)) return false;
+        size_t idx = (size_t)y * ms + x;
+        if (idx_map[idx] >= 0) return false;
+        int8_t cur = lots[idx];
+        if (!(cur >= LT_NORMAL && cur < LT_LAST)) return false;
+        if (need_earth != LT_EVERYWHERE && cur != need_earth) return false;
+        return true;
+    };
+    auto has_base_neighbor = [&](int x, int y) -> bool {
+        if (x > 0 && idx_map[(size_t)y * ms + (x - 1)] >= 0) return true;
+        if (x < ms - 1 && idx_map[(size_t)y * ms + (x + 1)] >= 0) return true;
+        if (y > 0 && idx_map[(size_t)(y - 1) * ms + x] >= 0) return true;
+        if (y < ms - 1 && idx_map[(size_t)(y + 1) * ms + x] >= 0) return true;
+        return false;
+    };
+    auto is_base = [&](int x, int y) -> bool {
+        return idx_map[(size_t)y * ms + x] >= 0;
+    };
+
+    // Colony centroid: the origin the direction is measured from.
+    double cx = 0.0, cy = 0.0;
+    if (g.bases.empty()) {
+        cx = g.earth.init_sel_x; cy = g.earth.init_sel_y;
+    } else {
+        for (const auto& b : g.bases) { cx += b.x; cy += b.y; }
+        cx /= (double)g.bases.size();
+        cy /= (double)g.bases.size();
+    }
+
+    // Same frontier expansion as find_lot, but every accepted cell is kept.
+    std::vector<std::pair<int, int>> frontier, candidates;
+    std::vector<char> visited((size_t)ms * ms, 0);
+    const int dx4[4] = {1, -1, 0, 0};
+    const int dy4[4] = {0, 0, 1, -1};
+
+    auto consider = [&](int nx, int ny, bool on_path_has_road) {
+        if (is_base(nx, ny)) { frontier.push_back({nx, ny}); return; }
+        if (!lot_matches(nx, ny)) return;
+        if (!has_base_neighbor(nx, ny) && !on_path_has_road) return;
+        if (no_near_base && has_base_neighbor(nx, ny)) return;
+        candidates.push_back({nx, ny});
+    };
+
+    for (const auto& b : g.bases) {
+        for (int i = 0; i < 4; i++) {
+            int nx = b.x + dx4[i], ny = b.y + dy4[i];
+            if (!g.earth.in_bounds(nx, ny)) continue;
+            size_t nidx = (size_t)ny * ms + nx;
+            if (visited[nidx]) continue;
+            visited[nidx] = 1;
+            consider(nx, ny, false);
+        }
+    }
+    for (size_t head = 0; head < frontier.size(); ++head) {
+        auto [x, y] = frontier[head];
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx4[i], ny = y + dy4[i];
+            if (!g.earth.in_bounds(nx, ny)) continue;
+            size_t nidx = (size_t)ny * ms + nx;
+            if (visited[nidx]) continue;
+            visited[nidx] = 1;
+            consider(nx, ny, true);
+        }
+    }
+    if (candidates.empty()) return std::nullopt;
+
+    // Furthest along (dx, dy); ties broken by closeness to the centroid so the
+    // frontier grows as a compact arm rather than scattering.
+    std::pair<int, int> best = candidates[0];
+    double best_score = -1e18;
+    for (auto c : candidates) {
+        double along = (double)(c.first - cx) * dx + (double)(c.second - cy) * dy;
+        double lateral = std::fabs((double)(c.first - cx) * dy - (double)(c.second - cy) * dx);
+        double score = along - 0.01 * lateral;
+        if (score > best_score) { best_score = score; best = c; }
+    }
+    return best;
+}
+
 double ColonyEnvCpp::year_production_value(const BaseData& d) const {
     int64_t v = 0;
     for (int i = 0; i < SUNDUK_SIZE; i++) v += d.profit[i] * SALE_SUNDUK[i];
@@ -713,6 +809,19 @@ std::vector<float> ColonyEnvCpp::action_mask() {
         }
     }
 
+    // Directional road actions: same gate as BUILD:Road (curriculum, money,
+    // legal cell) but the cell must exist in the requested direction.
+    if (road_build_idx_ >= 0) {
+        const BaseData* rd = build_data_[road_build_idx_];
+        if (build_allowed(rd->id) && g.money >= rd->price) {
+            for (int dir = 0; dir < N_ROAD_DIRS; ++dir) {
+                if (find_lot_dir(rd->need_earth, rd->no_near_base,
+                                 ROAD_DIR_DX[dir], ROAD_DIR_DY[dir]))
+                    mask[road_dir_base() + dir] = 1.0f;
+            }
+        }
+    }
+
     return mask;
 }
 
@@ -803,6 +912,25 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     Game& g = game_;
     double rew = 0.0;
 
+    // ROAD_E/W/S/N fold onto the ordinary BUILD:Road action, carrying a
+    // placement hint that find_lot_dir consumes below. Remapping here keeps the
+    // whole existing build path -- curriculum gate, money check, build bonus,
+    // error penalty, logging -- applying to them unchanged.
+    road_dir_hint_.reset();
+    const char* road_dir_name = nullptr;  // kept for the step log after remap
+    const int rdb = road_dir_base();
+    if (action >= rdb && action < rdb + N_ROAD_DIRS) {
+        const int dir = action - rdb;
+        if (road_build_idx_ >= 0) {
+            road_dir_hint_ = std::make_pair(ROAD_DIR_DX[dir], ROAD_DIR_DY[dir]);
+            road_dir_name = ROAD_DIR_NAMES[dir];
+            action = A_BUILD0 + road_build_idx_;
+        } else {
+            // No Road in the catalogue: nothing to place, treat as a wasted day.
+            action = A_DAY;
+        }
+    }
+
     // component accumulators for logging
     double c_build = 0, c_cost = 0, c_diversity = 0, c_proximity = 0, c_provider = 0, c_prereq = 0;
     double c_error = 0, c_tax = 0, c_tax_bonus = 0, c_novelty = 0, c_daily = 0, c_chain = 0;
@@ -859,7 +987,8 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         action_name = action == A_DAY ? "DAY" : "WEEK";
     } else if (action >= A_BUILD0 && action < A_BUILD0 + n_build_) {
         const BaseData* d = build_data_[action - A_BUILD0];
-        action_name = "BUILD:" + d->id;
+        action_name = road_dir_name ? (std::string(road_dir_name) + "(Road)")
+                                    : ("BUILD:" + d->id);
         // PR 6: заблокированное действие — чистый штраф и ранний выход: день не
         // проходит (без advance_day и дневных/каталожных бонусов), obs — текущий.
         // Попытка строго убыточна: раньше день проходил и tax_daily_bonus капал.
@@ -896,7 +1025,10 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             out.steps = steps_;
             return out;
         }
-        auto cell = find_lot(d->need_earth, d->no_near_base);
+        auto cell = road_dir_hint_
+                        ? find_lot_dir(d->need_earth, d->no_near_base,
+                                       road_dir_hint_->first, road_dir_hint_->second)
+                        : find_lot(d->need_earth, d->no_near_base);
         bool built = false;
         std::string build_error;
         if (cell) {
@@ -1343,12 +1475,21 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     rew += cfg_.survival_bonus; c_survival += cfg_.survival_bonus;
     if (days_since_last_build_ >= cfg_.idle_build_threshold_days) {
-        // Only penalize when there are affordable, unlocked buildings available
+        // Only penalize when there is a *real* building the agent could have
+        // placed. Two corrections over the old money+curriculum-only check:
+        //   - Road is excluded: it is always affordable and always has a lot, so
+        //     it made the condition permanently true and punished every policy
+        //     that was not road spam (measured -120/episode on a farm policy).
+        //   - find_lot() must succeed: a building that is affordable but has no
+        //     connected lot is not something the agent could have built, and
+        //     penalising it teaches nothing (the action is masked anyway).
         bool any_build_available = false;
         for (int i = 0; i < n_build_; ++i) {
             const BaseData* d = build_data_[i];
+            if (d->id == ROAD_ID) continue;
             if (!build_allowed(d->id)) continue;
             if (g.money < d->price) continue;
+            if (!find_lot(d->need_earth, d->no_near_base)) continue;
             any_build_available = true;
             break;
         }

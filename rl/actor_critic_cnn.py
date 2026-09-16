@@ -10,7 +10,8 @@ from rl._nn_common import ActorCriticBase, orthogonal_init
 class ActorCriticCNN(ActorCriticBase):
     """CNN actor-critic for minimap observations.
 
-    Input: [B, C, R, R] where R = 2*minimap_radius+1.
+    Input: [B, C, G, G] where G = grid_size (the env emits a fixed global 32x32;
+    `minimap_radius` is a legacy alias kept only for old call sites).
     Flattens after conv, then MLP heads.
     """
 
@@ -19,7 +20,7 @@ class ActorCriticCNN(ActorCriticBase):
         n_channels: int = 8,
         minimap_radius: Optional[int] = None,
         grid_size: Optional[int] = None,
-        n_actions: int = 45,
+        n_actions: int = 49,  # 2 + 32 builds + 11 managers + 4 road dirs
         hidden_sizes: Optional[List[int]] = None,
         device: torch.device = torch.device("cpu"),
     ):

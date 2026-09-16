@@ -756,7 +756,14 @@ void Game::reset_milestones() {
 double Game::check_milestones(double milestone_base, double milestone_people,
                               double milestone_day, double milestone_year) {
     double bonus = 0.0;
-    int nbases = (int)bases.size();
+    // Roads are infrastructure, not colony buildings. Counting them here let a
+    // policy farm milestone_base (+30 every 5 bases) by spamming 400-money roads
+    // that employ nobody and produce nothing: measured +1241 milestone reward for
+    // 205 roads vs +41 for a working 5-building farm economy. Exclude them, the
+    // same way build_bonus already does in env.cpp.
+    int nbases = 0;
+    for (const Base& b : bases)
+        if (b.data->id != ROAD_ID) ++nbases;
     int64_t peop = people;
     int64_t d = days_alive;
 

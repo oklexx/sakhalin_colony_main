@@ -124,13 +124,24 @@ class RolloutBuffer:
             next_adv = delta + self.gamma * self.gae_lambda * (~next_dones) * next_adv
             adv[start:end] = next_adv
 
+        # Advantages and returns are regression TARGETS, never part of the
+        # policy graph. Detach at the source: `last_value` may legitimately
+        # carry a grad_fn, and letting it propagate into self.advantages made
+        # the whitening below an in-place write on a graph-tracked tensor --
+        # backward() then died with "modified by an inplace operation". It also
+        # kept the whole GAE graph alive across the update.
+        adv = adv.detach()
+
+        # `returns` must keep using the UNNORMALISED advantages (GAE targets for
+        # the value head); only `advantages` gets whitened for the policy loss.
         self.advantages[:n] = adv
         self.returns[:n] = adv + self.values[:n]
 
-        mean_adv = self.advantages[:n].mean()
-        std_adv = self.advantages[:n].std()
+        mean_adv = adv[:n].mean()
+        std_adv = adv[:n].std()
         if std_adv > 1e-8:
-            self.advantages[:n] = (self.advantages[:n] - mean_adv) / (std_adv + 1e-8)
+            adv = (adv - mean_adv) / (std_adv + 1e-8)
+        self.advantages[:n] = adv
 
     def get_batches(self, batch_size: int):
         """Yield mini-batches. Each batch: dict of tensors."""

@@ -183,6 +183,9 @@ class Config:
     # ── network / observation ──
     net_arch: List[int] = field(default_factory=lambda: [256, 256])
     obs_mode: str = "flat"  # flat | minimap | hybrid
+    # DEPRECATED / dead: ColonyEnvCpp::minimap() emits a fixed global 32x32 and
+    # _make_model() passes grid_size=32 explicitly, so this value is ignored
+    # (the nets rewrite it to 15). Kept so old configs still load.
     minimap_radius: int = 14
 
     # ── training / eval ──

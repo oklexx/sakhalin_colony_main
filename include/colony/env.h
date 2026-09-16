@@ -74,7 +74,10 @@ public:
     std::vector<float> obs() const;
     std::vector<float> obs(const Game& g) const;
 
-    // Миникарта: окно 2R+1 вокруг старта (init_sel), каналы:
+    // Миникарта: ГЛОБАЛЬНАЯ сетка 32×32 на всю карту (не окно вокруг старта).
+    // minimap_radius_ сохранён как мёртовое поле совместимости — на размер
+    // вывода он не влияет, см. ColonyEnvCpp::minimap() (const int G = 32).
+    // каналы:
     //   0: суша (LT_NORMAL)
     //   1: вода (LT_WATER)
     //   2: лес (LT_WOOD)
@@ -123,7 +126,9 @@ public:
 
     int n_build() const { return n_build_; }
     int n_bases() const { return (int)game_.bases.size(); }
-    int n_actions() const { return A_BUILD0 + n_build_ + N_MANAGERS; }
+    // +N_ROAD_DIRS: the four compass road actions appended after the managers.
+    int n_actions() const { return road_dir_base() + N_ROAD_DIRS; }
+    int road_dir_base() const { return A_BUILD0 + n_build_ + N_MANAGERS; }
     // PR 5: obs v1 appends the frame AFTER the v0 tail, so obs v0 is a strict
     // prefix of obs v1 (248 = 27+32+7+9+128+9+32+2+2; 289 = 248+9+32).
     int obs_size() const {
@@ -152,6 +157,12 @@ public:
 public:
     // Debug helpers
     std::optional<std::pair<int, int>> find_lot(int need_earth, bool no_near_base);
+    // Same legality rules as find_lot, but among ALL reachable legal cells
+    // returns the one furthest along (dx, dy) measured from the colony
+    // centroid -- i.e. "extend the frontier that way". Returns nullopt when
+    // no legal cell exists.
+    std::optional<std::pair<int, int>> find_lot_dir(int need_earth, bool no_near_base,
+                                                    int dx, int dy);
     bool lot_ok(int x, int y, int need_earth, bool no_near_base) const;
     double debug_net_worth() const { return net_worth(game_); }
     std::string dump_obs() const;
@@ -195,6 +206,11 @@ private:
     int n_build_;
     std::unordered_map<std::string, int> build_id_to_idx_;
     int manager_base_;  // A_BUILD0 + n_build_
+    int road_build_idx_ = -1;  // index of ROAD_ID in build_ids_, -1 if absent
+    // Placement hint for the directional road actions: when set, the build path
+    // picks the legal cell furthest along this direction instead of the
+    // BFS-first one. Reset on every step().
+    std::optional<std::pair<int, int>> road_dir_hint_;
 
     std::vector<float> sale_prices_;
     std::vector<std::vector<float>> catalog_by_season_;  // [4][n_build*4]

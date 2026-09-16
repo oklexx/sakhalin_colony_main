@@ -95,15 +95,17 @@ class AsyncTrainer:
         self._action_names: List[str] = getattr(env_manager, 'action_names', [])
         if not self._action_names:
             # Fallback if env doesn't provide action_names. Index-aligned
-            # with the standard layout (DAY, WEEK, 32 builds, 11 managers);
-            # build slots stay generic — only the env knows the real order
-            # (a hardcoded guess here once mislabeled Road as GOLDMINE).
+            # with the standard layout (DAY, WEEK, 32 builds, 11 managers,
+            # 4 road directions); build slots stay generic — only the env knows
+            # the real order (a hardcoded guess here once mislabeled Road as
+            # GOLDMINE).
             self._action_names = (
                 ["DAY", "WEEK"]
                 + [f"BUILD_{i}" for i in range(32)]
                 + ["IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
                    "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
                    "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX"]
+                + ["ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"]
             )
 
         # Action history for loop detection (safe tracking)

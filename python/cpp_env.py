@@ -100,7 +100,8 @@ class CppColonyEnv(gym.Env):
     """
     Gymnasium wrapper for C++ ColonyEnvCpp.
     Observation space: 207-dim float32 vector
-    Action space: Discrete(45) - 0=DAY, 1=WEEK, 2-33=BUILD, 34-44=MANAGER
+    Action space: Discrete(49) - 0=DAY, 1=WEEK, 2-33=BUILD, 34-44=MANAGER,
+    45-48=ROAD_E/W/S/N (directional road extension)
     """
     
     metadata = {"render_modes": ["human", "rgb_array"]}
@@ -203,7 +204,8 @@ class CppColonyEnv(gym.Env):
         # Action name mapping (for debugging)
         self._action_names = ["DAY", "WEEK"] + self.cpp_env.build_ids() + [
             "IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH", "PRESERVE",
-            "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD", "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX"
+            "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD", "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX",
+            "ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N",
         ]
     
     def reset(

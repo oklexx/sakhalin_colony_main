@@ -21,7 +21,7 @@ class ActorCriticHybrid(ActorCriticBase):
         minimap_radius: Optional[int] = None,
         n_channels: Optional[int] = None,
         grid_size: Optional[int] = None,
-        n_actions: int = 45,
+        n_actions: int = 49,  # 2 + 32 builds + 11 managers + 4 road dirs
         hidden_sizes: Optional[List[int]] = None,
         device: torch.device = torch.device("cpu"),
     ):
