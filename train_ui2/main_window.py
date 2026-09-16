@@ -324,8 +324,10 @@ class MainWindow2(QMainWindow):
         root.addLayout(g, 1)
 
         bottom = QHBoxLayout()
-        self.bars_actions = Bars()
-        bottom.addWidget(self.bars_actions, 3)
+        self.bars_actions = Bars(title="Активности")
+        self.bars_build = Bars(title="Строительство зданий")
+        bottom.addWidget(self.bars_actions, 2)
+        bottom.addWidget(self.bars_build, 2)
         side = QVBoxLayout()
         self.lbl_loop = T.label("циклы: нет", T.DIM)
         self.lbl_curric = T.label("курикулум: —", T.DIM)
@@ -1103,7 +1105,17 @@ class MainWindow2(QMainWindow):
             self.card_ent.set_value(f"{ent:.2f}")
             self.card_kl.set_value(f"{kl:.4f}")
             self.chart_ent.push({"entropy": ent, "kl": kl})
-            self.bars_actions.set_items(d.get("top_actions", {}))
+            top_actions = d.get("top_actions", {})
+            actions_dict = {}
+            build_dict = {}
+            for k, v in top_actions.items():
+                uk = str(k).upper()
+                if "BUILD:" in uk or uk.startswith("A_BUILD") or uk.startswith("BUILD_") or uk in ALL_BUILD_IDS:
+                    build_dict[k] = v
+                else:
+                    actions_dict[k] = v
+            self.bars_actions.set_items(actions_dict)
+            self.bars_build.set_items(build_dict)
             if d.get("loop_detected"):
                 self.lbl_loop.setText(
                     f"циклы: {d.get('envs_with_loops', 0)} env ({d.get('loop_action_name') or '?'})")

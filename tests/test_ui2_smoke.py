@@ -90,8 +90,10 @@ check("progress: entropy card", win.card_ent.val.text() == "1.35",
 check("progress: curriculum label", "этап 3 (42%)" in win.lbl_curric.text(),
       win.lbl_curric.text())
 check("progress: loop label", "3 env" in win.lbl_loop.text(), win.lbl_loop.text())
-check("progress: bars items", len(win.bars_actions.items) == 3,
+check("progress: bars actions items", len(win.bars_actions.items) == 2,
       str(win.bars_actions.items))
+check("progress: bars build items", len(win.bars_build.items) == 1,
+      str(win.bars_build.items))
 
 ev = P.LogMsg(message="[Eval @ 1,048,576] days=731.0 people=69.0 bases=5.0 "
               "return=-3408.7 score=85.00 thresholds=(PASS)", level="info")
