@@ -1,15 +1,13 @@
 """Minimap observation wrappers.
 
-The colony env provides a flat 209-dim observation (counts, resources,
-catalog). Spatial information (where land/resources are relative to the
-colony) is lost. These wrappers add a 2D minimap tensor:
-    [8 channels, 2R+1, 2R+1] — one-hot land types + occupied, window
-    centered on the colony start (init_sel), radius R (default 14).
+The colony env provides a flat observation (counts, resources,
+catalog). Spatial information is provided via a global 2D minimap tensor:
+    [8 channels, 32, 32] — one-hot land types + occupied, global downsampled map.
 
 Usage:
     env = MinimapVecEnvWrapper(CppVecEnv(...))          # training
     env = MinimapSingleEnvWrapper(CppColonyEnv(...))    # eval / watch
-    obs = env.minimap_obs()  # (n_envs, 8, 29, 29) float32
+    obs = env.minimap_obs()  # (n_envs, 8, 32, 32) float32
 """
 from __future__ import annotations
 
@@ -22,9 +20,8 @@ class MinimapVecEnvWrapper:
 
     def __init__(self, venv):
         self.venv = venv
-        self.radius = int(venv.venv.minimap_radius())
         self.channels = 8
-        self.grid = 2 * self.radius + 1
+        self.grid = 32
         self.minimap_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(self.channels, self.grid, self.grid),
             dtype=np.float32,
@@ -40,8 +37,8 @@ class MinimapVecEnvWrapper:
         return np.ascontiguousarray(mm, dtype=np.float32)
 
     def refresh(self):
-        self.radius = int(self.venv.venv.minimap_radius())
-        self.grid = 2 * self.radius + 1
+        self.channels = 8
+        self.grid = 32
         self.minimap_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(self.channels, self.grid, self.grid),
             dtype=np.float32,
@@ -53,9 +50,8 @@ class MinimapSingleEnvWrapper:
 
     def __init__(self, env):
         self.env = env
-        self.radius = int(env.cpp_env.minimap_radius())
         self.channels = 8
-        self.grid = 2 * self.radius + 1
+        self.grid = 32
         self.minimap_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(self.channels, self.grid, self.grid),
             dtype=np.float32,
@@ -71,8 +67,8 @@ class MinimapSingleEnvWrapper:
         return np.ascontiguousarray(mm, dtype=np.float32)
 
     def refresh(self):
-        self.radius = int(self.env.cpp_env.minimap_radius())
-        self.grid = 2 * self.radius + 1
+        self.channels = 8
+        self.grid = 32
         self.minimap_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(self.channels, self.grid, self.grid),
             dtype=np.float32,

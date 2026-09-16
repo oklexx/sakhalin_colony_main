@@ -34,6 +34,6 @@
   "debt_coeff": 0.1,
   "home_overflow_penalty": 2.0,
   "housing_need_bonus": 3.0,
-  "food_need_bonus": 0.0,  // отключено чтобы не искажать баланс
-  "water_need_bonus": 0.8  // снижено чтобы не перевешивало buy_food_penalty (3.0)
+    "food_need_bonus": 0.0,
+    "water_need_bonus": 0.8
 }

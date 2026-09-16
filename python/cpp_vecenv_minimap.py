@@ -21,13 +21,8 @@ class CppVecEnvMinimap(CppVecEnv):
         super().__init__(*args, **kwargs)
         self.obs_mode = obs_mode
         self.minimap_radius = minimap_radius
-        
-        # Set minimap radius in C++ venv
-        if hasattr(self.cpp_vec, "set_minimap_radius"):
-            self.cpp_vec.set_minimap_radius(minimap_radius)
-
         self.channels = 8
-        self.grid = 2 * minimap_radius + 1
+        self.grid = 32
 
         if obs_mode == "minimap":
             self.observation_space = gym.spaces.Box(
