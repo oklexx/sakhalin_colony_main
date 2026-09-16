@@ -37,9 +37,9 @@ app = QApplication(sys.argv)
 win = MainWindow2(models_dir=Path(__file__).resolve().parent.parent / "models")
 
 # ── tabs ──
-check("5 tabs", win.tabs.count() == 5, f"got {win.tabs.count()}")
+check("6 tabs", win.tabs.count() == 6, f"got {win.tabs.count()}")
 titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-check("tab titles", titles == ["Обучение", "Мониторинг", "Награды", "Модели", "Наблюдение"], str(titles))
+check("tab titles", titles == ["Обучение", "Мониторинг", "Награды", "Курикулум", "Модели", "Наблюдение"], str(titles))
 
 # ── param groups present with all keys ──
 p_keys = set()
@@ -138,7 +138,7 @@ check("state: model_name", saved["model_name"] == "ui2_test")
 check("state: watch_seed", saved["watch_seed"] == 777)
 check("state: net_arch", saved["net_arch"] == [256, 256, 256], str(saved["net_arch"]))
 check("state: reward key present", "sale_bonus" in saved)
-check("state: versioned", saved["config_version"] == 1)
+check("state: versioned", saved["config_version"] == 2)
 check("state: disable flags flat bool", saved.get("disable_net_worth") is False
       and isinstance(saved.get("disable_daily_income"), bool))
 

@@ -12,7 +12,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from train_ui2.theme import DIM, FIELD, LINE, color_for
+from train_ui2.theme import DIM, FIELD, LINE, TXT, color_for
 
 # Русские названия действий модели (ключ — английское имя из action_names).
 _ACTION_RU = {

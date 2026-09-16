@@ -928,7 +928,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             if (is_new_type)
                 episode_metrics_.unique_build_types++;
             double ypv_b = year_production_value(*d);
-            double build_r = cfg_.build_bonus + std::log2(1.0 + ypv_b / 1000.0);
+            double build_r = is_road ? 0.0 : (cfg_.build_bonus + std::log2(1.0 + ypv_b / 1000.0));
             rew += build_r; c_build += build_r;
             double cost_r = -cfg_.build_cost_penalty * static_cast<double>(d->price);
             rew += cost_r; c_cost += cost_r;
