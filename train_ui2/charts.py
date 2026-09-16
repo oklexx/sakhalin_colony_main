@@ -247,8 +247,9 @@ def _fmt(v: float) -> str:
 class Bars(QWidget):
     """Horizontal percentage bars (top actions)."""
 
-    def __init__(self, height: int = 240, parent=None):
+    def __init__(self, title: str = "", height: int = 240, parent=None):
         super().__init__(parent)
+        self.title = title
         self.items: List[tuple] = []  # (name, pct)
         self.setMinimumHeight(height)
         self.setMaximumHeight(height + 40)
@@ -260,17 +261,31 @@ class Bars(QWidget):
 
     def paintEvent(self, _ev):
         p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, QColor(FIELD))
+
+        top_offset = 18 if self.title else 2
+        if self.title:
+            font = p.font()
+            font.setBold(True)
+            p.setFont(font)
+            p.setPen(QColor(TXT))
+            p.drawText(QRectF(4, 2, w - 8, 16), Qt.AlignLeft | Qt.AlignVCenter, self.title)
+            font.setBold(False)
+            p.setFont(font)
+
         if not self.items:
             p.setPen(QColor(DIM))
-            p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, "нет данных")
+            p.drawText(QRectF(0, top_offset, w, h - top_offset), Qt.AlignCenter, "нет данных")
             p.end()
             return
-        row_h = min(18, h // max(1, len(self.items)))
+
+        avail_h = h - top_offset - 4
+        row_h = min(18, avail_h // max(1, len(self.items)))
         max_pct = max((v for _, v in self.items), default=1.0) or 1.0
         for i, (name, pct) in enumerate(self.items):
-            y = i * row_h + 2
+            y = top_offset + i * row_h + 2
             p.setPen(QColor(DIM))
             p.drawText(QRectF(4, y, 130, row_h - 3), Qt.AlignLeft | Qt.AlignVCenter,
                        name[:18])
