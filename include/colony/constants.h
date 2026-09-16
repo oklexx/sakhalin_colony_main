@@ -127,6 +127,18 @@ constexpr int A_DAY = 0;
 constexpr int A_WEEK = 1;
 constexpr int A_BUILD0 = 2;
 constexpr int N_MANAGERS = 11;
+// Directional road actions. The plain BUILD:Road action places a road at the
+// BFS-first legal cell, which the agent cannot aim -- so water 7 cells away
+// stayed unreachable (the WaterChannel action was masked on 0/2000 random
+// steps). These four extend the road frontier towards a chosen compass
+// direction instead, giving the policy a way to act on water_dx/water_dy and
+// the minimap. They sit AFTER the manager block so the
+// `A_BUILD0 + i <-> build_ids_[i]` invariant is untouched.
+constexpr int N_ROAD_DIRS = 4;
+inline constexpr int ROAD_DIR_DX[N_ROAD_DIRS] = {1, -1, 0, 0};   // E, W, S, N
+inline constexpr int ROAD_DIR_DY[N_ROAD_DIRS] = {0, 0, 1, -1};
+inline constexpr const char* ROAD_DIR_NAMES[N_ROAD_DIRS] = {
+    "ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"};
 constexpr int MAX_STEPS = 10000;
 constexpr int LOT_RADIUS = 45;
 inline constexpr const char* ROAD_ID = "Road";

@@ -41,8 +41,16 @@ class CppVecEnvMinimap(CppVecEnv):
         return flat_obs
 
     def step_wait(self):
-        obs, rewards, dones, infos = super().step_wait()
+        # ORDER MATTERS. `step_async_batch()` has already applied the actions,
+        # and the parent's `step_wait()` only normalises and then AUTO-RESETS
+        # every done env (ColonyVecEnvCpp::step_wait_batch -> do_reset ->
+        # envs_[i].reset). Reading the minimap after that call therefore returns
+        # the *next* episode's map for any env that just ended, while `obs`
+        # still carries the terminal one -- in hybrid the two halves of the
+        # tuple disagree, in minimap the whole obs is wrong, and it is wrong
+        # exactly where GAE bootstraps. Sample the minimap first.
         minimap_obs = np.ascontiguousarray(self.cpp_vec.minimap_batch(), dtype=np.float32)
+        obs, rewards, dones, infos = super().step_wait()
         if self.obs_mode == "minimap":
             return minimap_obs, rewards, dones, infos
         elif self.obs_mode == "hybrid":

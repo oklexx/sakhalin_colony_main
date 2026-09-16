@@ -8,6 +8,17 @@
 namespace colony {
 
 // Proximity bonus: building id → nearby land type that gives bonus.
+//
+// NOTE: the search in env.cpp is a ±3 window that excludes the building's own
+// cell, so a building placed ON its required lot type still needs a *neighbour*
+// of that type to score. That is why WaterChannel (need_earth=LT_WATER) is
+// deliberately absent: it always sits on water, so a LT_WATER proximity check
+// would fire unconditionally and carry no information. Its siting incentive is
+// water_need_bonus in env.cpp instead.
+//
+// KNOWN ODDITY (left as-is, reward balance): WaterMill and PowerStation map to
+// LT_OIL. WaterMill wanting oil rather than water looks like a copy-paste, but
+// changing it moves the reward landscape, so it needs a measured A/B first.
 int proximity_land_for(const std::string& id) {
     if (id == "Farm" || id == "Garden" || id == "CowFarm" || id == "Hothouse" ||
         id == "Goldmine" || id == "Apiary" || id == "Puerperal")
@@ -15,11 +26,11 @@ int proximity_land_for(const std::string& id) {
     if (id == "Coalmine" || id == "CoalCut" || id == "HuntingLand" ||
         id == "Mushroom" || id == "BigFarm")
         return LT_WOOD;
+    // BigFarm is matched by the LT_WOOD branch above, so a second BigFarm case
+    // here (returning LT_IRON) was unreachable dead code. Removed.
     if (id == "Ironmine" || id == "Sawmill" || id == "BigSawmill" ||
         id == "PowerStation" || id == "WaterMill")
         return LT_OIL;
-    if (id == "BigFarm")
-        return LT_IRON;
     return LT_NONE;
 }
 

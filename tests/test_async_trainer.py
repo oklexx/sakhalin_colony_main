@@ -358,12 +358,13 @@ def test_fallback_action_names_index_aligned():
     em = SimpleNamespace(device=torch.device("cpu"))
     trainer = AsyncTrainer(cfg=cfg, env_manager=em)
     names = trainer._action_names
-    assert len(names) == 45
+    assert len(names) == 49  # 2 + 32 builds + 11 managers + 4 road directions
     assert names[0] == "DAY" and names[1] == "WEEK"
     assert names[2:34] == [f"BUILD_{i}" for i in range(32)]
-    assert names[34:] == ["IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
-                          "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
-                          "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX"]
+    assert names[34:45] == ["IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH",
+                            "PRESERVE", "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD",
+                            "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX"]
+    assert names[45:] == ["ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"]
 
 
 def test_top_actions_dict_omits_zeros_and_maps_names():

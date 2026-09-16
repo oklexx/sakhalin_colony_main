@@ -165,7 +165,13 @@ class CppVecEnv(VecEnv):
             "IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH", "PRESERVE",
             "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD", "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX",
         ]
-        self._action_names: List[str] = ["DAY", "WEEK"] + self._build_names + self._manager_names
+        # Directional road actions appended after the managers (constants.h
+        # N_ROAD_DIRS). They extend the road frontier towards a compass
+        # direction instead of the BFS-first cell BUILD_ROAD uses.
+        self._road_dir_names: List[str] = ["ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"]
+        self._action_names: List[str] = (
+            ["DAY", "WEEK"] + self._build_names + self._manager_names + self._road_dir_names
+        )
         # Trim to actual n_actions if C++ has fewer
         if n_actions < len(self._action_names):
             self._action_names = self._action_names[:n_actions]

@@ -92,7 +92,11 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
         else:
             obs_size = int(ckpt.get("obs_size", 0)) or int(model_state["flat_trunk.0.weight"].shape[1])
         n_channels = int(ckpt.get("n_channels", 8))
-        grid = int(ckpt.get("grid_size", 2 * minimap_radius + 1))
+        # ColonyEnvCpp::minimap() emits a fixed global 32x32 grid, independent
+        # of minimap_radius. Defaulting to 2*minimap_radius+1 (=29) here would
+        # build a net that cannot consume the 32x32 obs from any checkpoint
+        # saved before grid_size was recorded.
+        grid = int(ckpt.get("grid_size", 32))
         model = ActorCriticHybrid(
             obs_size=obs_size,
             n_channels=n_channels,
@@ -110,7 +114,11 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
         if first_conv is None:
             raise ValueError("cannot infer CNN input channels from checkpoint")
         n_channels = int(first_conv.shape[1])
-        grid = int(ckpt.get("grid_size", 2 * minimap_radius + 1))
+        # ColonyEnvCpp::minimap() emits a fixed global 32x32 grid, independent
+        # of minimap_radius. Defaulting to 2*minimap_radius+1 (=29) here would
+        # build a net that cannot consume the 32x32 obs from any checkpoint
+        # saved before grid_size was recorded.
+        grid = int(ckpt.get("grid_size", 32))
         model = ActorCriticCNN(
             n_channels=n_channels,
             grid_size=grid,
