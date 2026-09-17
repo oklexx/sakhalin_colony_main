@@ -463,6 +463,66 @@ DEMOLISH без зданий (кроме Города), PRESERVE/UNPRESERVE бе
 все вырожденные политики доживают до экономической смерти вместо календарной
 (`DAY only`: 3929 шагов, `cheapest`: 2218 шагов, `road spam`: 2350 шагов).
 
+### 6.3 Наблюдение за моделью через UI: проверено, две поломки найдены и починены
+
+Проверялся путь «вкладка Наблюдение / Модели → 👁 Наблюдать»:
+`train_ui2/main_window.py::_toggle_watch` → `watch_champion.py` (headless-текст
+либо `--visual` → raylib-GUI в режиме `--headless-ai` + IPC state.json/actions.txt).
+Правки P0/P1 в него не входили, но меняли ровно те вещи, от которых он зависит
+(дефолт `obs_version`, налоговая политика), поэтому проверка нашла две реальные
+поломки:
+
+1. **Старые модели перестали смотреться.** UI не передаёт `--obs-version`, а дефолт
+   `watch_champion.py` стал 2 → модель, обученная на 289, падала с
+   `RuntimeError: obs mismatch: ... was trained on obs v1 (289-dim), but the env
+   serves obs v2 (299-dim)`. Починка: `rl/curriculum.resolve_obs_version()` —
+   явный `--obs-version` → версия из meta модели → текущий дефолт; watch печатает
+   источник версии. Теперь 289-модель смотрится на 289 (нормализатор тоже 289),
+   а явный флаг по-прежнему упирается в проверку совместимости.
+
+2. **Окно `--visual` играло в другую игру.** `gui.cpp` создаёт среду для человека
+   (диалог налогов, `tax_to_debt=false`), и наблюдение получало ту же политику —
+   то есть watched-модель видела заморозку календаря на 365-м дне, которую мы
+   только что убрали из обучения. Замер (`tests/cpp/gui_watch_check.cpp`,
+   политика «4 фермы, дальше DAY», obs_version=2 из curriculum JSON):
+
+   | режим | steps | day | credit | Σr | финал |
+   |---|---|---|---|---|---|
+   | `tax_to_debt=false` (как было в GUI) | 424 | **365** | 0 | −267.0 | TERMINATED на 365-м дне |
+   | `tax_to_debt=true` (нужно для watch) | 434 | 434 | 4 605 | +151.2 | прогон продолжается |
+
+   Починка: в `gui.cpp` появились `--tax-to-debt` / `--tax-dialog`, по умолчанию —
+   по режиму (человек → диалог, `--headless-ai` → долг), а `watch_champion.py`
+   передаёт `--tax-to-debt` явно и печатает строку `Tax policy: долг (как при
+   обучении)` в лог UI. Флаг пишется и в `ai_debug_gui.log` (`tax_to_debt=%d` в
+   `GUI STARTUP`). Для человеческого GUI поведение не изменилось.
+
+**Как проверено.** В песочнице собрано настоящее расширение `colony_cpp` (заголовки
+CPython — из исходников `codeload.github.com/python/cpython`, `pybind11` с PyPI;
+`g++ -shared -fPIC -std=c++17 -Iinclude -Iinclude/third_party -I<cpython>/Include
+-I<cpython> -I$(python3 -c "import pybind11;print(pybind11.get_include())")
+src/bindings.cpp src/{env,data,resources,game,rewards,rng,earth}.cpp -o colony_cpp.so`),
+после чего **реальный `watch_champion.py`** прогонялся headless (текстовый режим,
+тот же путь, что у UI без галочки «GUI-окно»): `--model-dir` двух «моделей» (meta
+`obs_version` 2 и 1), `--log-file` — тот самый JSONL, который читает `_poll_watch`.
+
+* новая модель: `Obs layout: v2 (299 dims, из meta модели)`, нормализатор 299,
+  60 шагов masked-random по маске 49 действий, JSONL содержит `day/money/people/
+  bases/action/reward` — все поля, которые UI кладёт в карточки и график;
+* старая модель: до починки — `RuntimeError` (см. выше), после — `v1 (289 dims)`
+  и прогон без ошибок;
+* визуальный режим: `launch_visual_watch` действительно собирает argv
+  `--headless-ai ... --tax-to-debt --curriculum {..., "obs_version": 2}
+  --reward-config ... --minimap-radius 14` (проверено запуском с `exe=/bin/echo`),
+  а сам raylib-exe под Linux не запускается — его часть закрыта зондом
+  `gui_watch_check` (6/0 PASS) и синтаксической сборкой `gui.cpp`.
+
+Ограничение честное: **на вашей стороне нужны пересобранные `colony_cpp.pyd` и
+GUI-exe** — старый exe просто проигнорирует незнакомый `--tax-to-debt` и продолжит
+морозить календарь на 365-м дне. Новые тесты: `tests/test_watch_obs_version.py`
+(9 проверок, без torch) и два кейса в `tests/test_watch_champion.py`
+(`--tax-to-debt` по умолчанию / `--tax-dialog` явно).
+
 ### 6.2 Что эти правки НЕ решают
 
 * **Долговая спираль.** Политика «потратить всё и не продавать» теперь умирает не

@@ -413,6 +413,11 @@ def resolve_state(
 # come from C++ ColonyEnvCpp::obs_size(), this map only names mismatches.
 _OBS_SIZE_BY_VERSION = {0: 248, 1: 289, 2: 299}
 
+#: Текущая (дефолтная) версия раскладки наблюдения. Держать в синхроне с
+#: Config.obs_version (rl/config.py): импортировать её оттуда нельзя — получился
+#: бы цикл rl/__init__ → rl.config → rl.curriculum.
+CURRENT_OBS_VERSION = 2
+
 #: obs v2, последние 10 float в кадре — (dx, dy) к ближайшему тайлу каждого
 #: типа из этого списка, делённые на размер карты. Порядок = C++
 #: `NEAREST_LOT_TYPES` (include/colony/constants.h): wood, coal, iron, oil, gold.
@@ -470,6 +475,27 @@ def check_obs_version_compat(
         f"({obs_size_for_version(env_version)}-dim); re-run with "
         f"--obs-version {stored} or retrain the model"
     )
+
+
+def resolve_obs_version(
+    explicit: int | None,
+    model_dir=None,
+    meta: Dict[str, object] | None = None,
+    *,
+    default: int = CURRENT_OBS_VERSION,
+) -> int:
+    """Версия obs для watch/eval: явный аргумент → версия чекпойнта → дефолт.
+
+    Смотреть (и оценивать) модель надо в той раскладке, на которой она
+    обучалась: v1-чекпойнт (289) на v2-среде (299) падает с «obs mismatch», а
+    если бы проверку обойти — молча получил бы сдвинутые признаки. Явный
+    ``--obs-version`` по-прежнему побеждает: тогда расхождение с meta ловит
+    `check_obs_version_compat`, а не тихая подмена.
+    """
+    if explicit is not None:
+        return int(explicit)
+    stored = stored_obs_version(model_dir, meta)
+    return int(stored) if stored is not None else int(default)
 
 
 def ckpt_flat_width(state_dict) -> int | None:

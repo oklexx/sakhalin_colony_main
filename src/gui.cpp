@@ -812,6 +812,7 @@ int main(int argc, char* argv[]) {
     Curriculum curriculum;  // default: everything allowed
     int minimap_radius = -1;
     std::string reward_config_path;
+    bool tax_policy_cli = false, tax_policy_set = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--seed" && i+1 < argc) seed = std::stoll(argv[++i]);
@@ -830,6 +831,12 @@ int main(int argc, char* argv[]) {
         else if (a == "--actions-file" && i+1 < argc) ai_actions_path = argv[++i];
         else if (a == "--state-file" && i+1 < argc) ai_state_path = argv[++i];
         else if (a == "--reward-config" && i+1 < argc) reward_config_path = argv[++i];
+        // P0 (2026-09-17): налоговая политика. У GUI для человека — диалог
+        // налогов («Нет» = конец игры), у наблюдения за моделью — как при
+        // обучении (неоплаченный остаток → долг, календарь идёт всегда).
+        // По умолчанию выбирается по режиму (см. ниже), флаги — явное переопределение.
+        else if (a == "--tax-to-debt") { tax_policy_cli = true; tax_policy_set = true; }
+        else if (a == "--tax-dialog") { tax_policy_cli = false; tax_policy_set = true; }
     }
 
     auto bd = load_base_data("configs/bases.json");
@@ -905,11 +912,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Налоговая политика: явный флаг → иначе по режиму. Человек играет с
+    // диалогом налогов («Нет» = конец игры); headless-ai (окно наблюдения за
+    // моделью) обязан повторять обучение, иначе watched-модель видит заморозку
+    // календаря на 365-м дне, которой при обучении уже нет
+    // (tests/cpp/gui_watch_check.cpp: day=365/terminated против day=434).
+    const bool gui_tax_to_debt = tax_policy_set ? tax_policy_cli : headless_ai;
     // Курикулум приезжает готовым (--curriculum JSON): C++ его только применяет.
-    // P0: GUI держит «диалоговую» налоговую политику — при неоплате игрок видит
-    // диалог налогов и может проиграть (кнопка «Нет»), календарь не замирает молча.
     ColonyEnvCpp env(bd, ed, seed, map_size, curriculum, rc, "normal", gui_no_city_game_over,
-                     gui_no_people_days, /*tax_to_debt=*/false);
+                     gui_no_people_days, gui_tax_to_debt);
     if (minimap_radius > 0) {
         env.set_minimap_radius(minimap_radius);
     }
@@ -943,10 +954,11 @@ int main(int argc, char* argv[]) {
     {
         FILE* f = fopen("ai_debug_gui.log", "a");
         if (f) {
-            fprintf(f, "=== GUI STARTUP === headless=%d actions_path='%s' state_path='%s' seed=%lld map_size=%d curriculum_all=%d allowed=%zu stage=%d\n",
+            fprintf(f, "=== GUI STARTUP === headless=%d actions_path='%s' state_path='%s' seed=%lld map_size=%d curriculum_all=%d allowed=%zu stage=%d tax_to_debt=%d\n",
                     headless_ai, ai_actions_path.c_str(), ai_state_path.c_str(),
                     (long long)seed, map_size, (int)curriculum.all_builds,
-                    curriculum.allowed_builds.size(), curriculum.stage_report);
+                    curriculum.allowed_builds.size(), curriculum.stage_report,
+                    (int)env.tax_to_debt());
             fclose(f);
         }
     }

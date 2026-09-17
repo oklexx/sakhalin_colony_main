@@ -81,6 +81,29 @@ def test_visual_launches_gui_exe(tmp_path):
         assert "--state-file" in args
         # PR 1: the curriculum flag is never skipped (explicit unrestricted).
         assert "--curriculum-all" in args
+        # P0: окно наблюдения играет по правилам обучения — налог уходит в долг,
+        # а не в диалог (иначе watched-модель «умирает» на 365-м дне).
+        assert "--tax-to-debt" in args
+
+
+def test_visual_launch_can_ask_for_the_dialog_tax_policy(tmp_path):
+    """tax_to_debt=False (человеческий GUI) → явный --tax-dialog."""
+    import watch_champion
+    importlib.reload(watch_champion)
+
+    mock_proc = MagicMock()
+    with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+        watch_champion.launch_visual_watch(
+            model_dir=tmp_path,
+            exe_path="test_gui.exe",
+            actions_file=tmp_path / "actions.txt",
+            state_file=tmp_path / "state.json",
+            seed=42,
+            map_size=200,
+            tax_to_debt=False,
+        )
+        args = mock_popen.call_args[0][0]
+        assert "--tax-dialog" in args and "--tax-to-debt" not in args
 
 
 def test_write_action_file(tmp_path):

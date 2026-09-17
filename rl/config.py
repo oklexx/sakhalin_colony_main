@@ -172,7 +172,7 @@ class Config:
     # P0 (2026-09-17): 0 = 248-dim, 1 = 289-dim (frame), 2 = 299-dim (+dx,dy
     # к ближайшим wood/coal/iron/oil/gold). 2 — дефолт: без направлений 12
     # из 32 построек недостижимы политикой (карты в flat-obs нет).
-    obs_version: int = 2
+    obs_version: int = 2  # = rl.curriculum.CURRENT_OBS_VERSION (держать в синхроне)
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # ── PPO ──
