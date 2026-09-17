@@ -28,7 +28,7 @@ struct Curriculum {
     bool all_resources = true;                 // PR 4: false => resource_weights активны
     std::array<double, SUNDUK_SIZE> resource_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     int stage_report = 0;                      // только для obs-фичи и дампов
-    int obs_version = 0;  // PR 5: 0 = legacy 246-dim obs, 1 = 287-dim (frame appended)
+    int obs_version = 0;  // 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim (P0: +dx/dy to nearest lots)
     // Разобрать JSON вида {"all_builds":bool,"allowed_builds":[...],"stage":int}
     // (транспорт watch_champion -> GUI/main). Бросает std::runtime_error.
     static Curriculum from_json(const std::string& text);
@@ -43,7 +43,10 @@ public:
                  const RewardConfig& cfg = RewardConfig(),
                  const std::string& difficulty = "normal",
                  bool no_city_game_over = false,
-                 int64_t no_people_days = GAME_OVER_NO_PEOPLE_DAYS);
+                 int64_t no_people_days = GAME_OVER_NO_PEOPLE_DAYS,
+                 // P0 (2026-09-17): неоплаченный налог → долг банку, календарь
+                 // никогда не замирает. false = диалоговая политика (GUI).
+                 bool tax_to_debt = true);
 
     // Единственная точка входа курикулума: идемпотентна, пересчитывает каталог.
     void set_curriculum(const Curriculum& c);
@@ -117,6 +120,7 @@ public:
         bool tax_grace_expired = false;
         double ep_return = 0.0;
         int64_t steps = 0;
+        int64_t tax_borrowed = 0;  // P0: долг за этот шаг (0 = налога не было)
         EpisodeMetrics metrics;
     };
     StepOut step(int action);
@@ -125,15 +129,22 @@ public:
     int tax_grace_days() const;
 
     int n_build() const { return n_build_; }
+    // P0: сколько налога переоформилось в долг на последнем step() (0 = ничего).
+    int64_t last_tax_borrowed() const { return last_tax_borrowed_; }
+    bool tax_to_debt() const { return tax_to_debt_; }
     int n_bases() const { return (int)game_.bases.size(); }
     // +N_ROAD_DIRS: the four compass road actions appended after the managers.
     int n_actions() const { return road_dir_base() + N_ROAD_DIRS; }
     int road_dir_base() const { return A_BUILD0 + n_build_ + N_MANAGERS; }
     // PR 5: obs v1 appends the frame AFTER the v0 tail, so obs v0 is a strict
     // prefix of obs v1 (248 = 27+32+7+9+128+9+32+2+2; 289 = 248+9+32).
+    // P0 (2026-09-17): v2 appends 5 nearest-resource vectors (dx,dy each) for
+    // wood/coal/iron/oil/gold AFTER the v1 frame, so v0/v1 stay strict prefixes
+    // (299 = 289 + 10). Water already has water_dx/water_dy in the v0 tail.
     int obs_size() const {
         return 27 + n_build_ + 7 + 9 + 4 * n_build_ + 9 + n_build_ + 2 + 2 +
-               (curriculum_.obs_version >= 1 ? SUNDUK_SIZE + n_build_ : 0);
+               (curriculum_.obs_version >= 1 ? SUNDUK_SIZE + n_build_ : 0) +
+               (curriculum_.obs_version >= 2 ? 2 * N_NEAREST_LOTS : 0);
     }
     // Action mask: 1.0 = available, 0.0 = blocked. Size = n_actions().
     std::vector<float> action_mask();
@@ -204,6 +215,8 @@ private:
     std::vector<std::string> build_ids_;
     std::vector<const BaseData*> build_data_;
     int n_build_;
+    bool tax_to_debt_ = true;        // P0: см. ctor
+    int64_t last_tax_borrowed_ = 0;  // P0: долг за последний шаг (лог/тесты)
     std::unordered_map<std::string, int> build_id_to_idx_;
     int manager_base_;  // A_BUILD0 + n_build_
     int road_build_idx_ = -1;  // index of ROAD_ID in build_ids_, -1 if absent
@@ -273,7 +286,9 @@ public:
                     const Curriculum& curriculum = Curriculum(),
                     const RewardConfig& cfg = RewardConfig(),
                     int n_threads = 0,
-                    const std::string& difficulty = "normal");
+                    const std::string& difficulty = "normal",
+                    // P0: неоплаченный налог → долг банку (см. ColonyEnvCpp).
+                    bool tax_to_debt = true);
 
     void reset_batch(const std::vector<int64_t>& seeds);
     void step_async_batch(const std::vector<int>& actions);

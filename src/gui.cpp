@@ -886,6 +886,10 @@ int main(int argc, char* argv[]) {
             if (rj.contains("food_need_bonus")) rc.food_need_bonus = rj["food_need_bonus"].get<double>();
             if (rj.contains("water_need_bonus")) rc.water_need_bonus = rj["water_need_bonus"].get<double>();
             if (rj.contains("buy_food_penalty")) rc.buy_food_penalty = rj["buy_food_penalty"].get<double>();
+            // P0/P1 (2026-09-17): штраф за налоговый долг и маска по применимости
+            if (rj.contains("tax_debt_penalty")) rc.tax_debt_penalty = rj["tax_debt_penalty"].get<double>();
+            if (rj.contains("mask_managers_by_applicability"))
+                rc.mask_managers_by_applicability = rj["mask_managers_by_applicability"].get<bool>();
         }
     }
 
@@ -902,7 +906,10 @@ int main(int argc, char* argv[]) {
     }
 
     // Курикулум приезжает готовым (--curriculum JSON): C++ его только применяет.
-    ColonyEnvCpp env(bd, ed, seed, map_size, curriculum, rc, "normal", gui_no_city_game_over, gui_no_people_days);
+    // P0: GUI держит «диалоговую» налоговую политику — при неоплате игрок видит
+    // диалог налогов и может проиграть (кнопка «Нет»), календарь не замирает молча.
+    ColonyEnvCpp env(bd, ed, seed, map_size, curriculum, rc, "normal", gui_no_city_game_over,
+                     gui_no_people_days, /*tax_to_debt=*/false);
     if (minimap_radius > 0) {
         env.set_minimap_radius(minimap_radius);
     }

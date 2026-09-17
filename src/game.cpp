@@ -124,6 +124,7 @@ Game::Game(const Game& other)
       tax_annual_paid_(other.tax_annual_paid_),
       tax_main_paid_(other.tax_main_paid_),
       tax_postponed_(other.tax_postponed_),
+      tax_to_debt_(other.tax_to_debt_),
       next_uid_(other.next_uid_),
       enable_undo_(other.enable_undo_),
       gate_(other.gate_),
@@ -159,6 +160,7 @@ Game& Game::operator=(const Game& other) {
     tax_annual_paid_ = other.tax_annual_paid_;
     tax_main_paid_ = other.tax_main_paid_;
     tax_postponed_ = other.tax_postponed_;
+    tax_to_debt_ = other.tax_to_debt_;
     next_uid_ = other.next_uid_;
     enable_undo_ = other.enable_undo_;
     gate_ = other.gate_;
@@ -287,8 +289,14 @@ std::pair<bool, std::string> Game::check_advance() const {
     if (credit > max_credit())
         return {false, "Вы должны банку больше " + thousands(max_credit()) +
                            ". Дальнейшее невозможно, пока не вернете долг."};
-    if (annual_tax_due()) return {false, "annual_tax"};
-    if (main_tax_due()) return {false, "main_tax"};
+    // P0: в долговой политике (RL) налог НЕ останавливает календарь — остаток
+    // переоформляет в credit settle_tax_with_debt() внутри шага среды. Блокировка
+    // остаётся только для явной отсрочки (tax_postponed, GUI-диалог) и для
+    // «диалоговой» политики (GUI: диалог налогов → «Нет» → конец игры).
+    if (!tax_to_debt_ || tax_postponed_) {
+        if (annual_tax_due()) return {false, "annual_tax"};
+        if (main_tax_due()) return {false, "main_tax"};
+    }
     return {true, ""};
 }
 
@@ -327,6 +335,31 @@ bool Game::pay_main_tax() {
     money -= total;
     tax_main_paid_ = true;
     return true;
+}
+
+Game::TaxSettleOut Game::settle_tax_with_debt() {
+    TaxSettleOut out;
+    const bool annual = annual_tax_due();
+    const bool main = main_tax_due();
+    if (!annual && !main) return out;
+    out.kind = annual ? "annual" : "main";
+    const int64_t amount = std::max<int64_t>(0, annual ? annual_tax_amount()
+                                                      : main_tax_amount());
+    // Сколько можем — деньгами, остаток — долгом банку. Проценты по нему
+    // (CREDITPERCENT/1000 в день) и штраф debt_coeff в env — цена решения.
+    out.paid = std::min<int64_t>(money, amount);
+    out.borrowed = amount - out.paid;
+    money -= out.paid;
+    credit += out.borrowed;
+    if (annual) {
+        summ_buy = 0;
+        summ_sale = 0;
+        tax_annual_paid_ = true;
+    } else {
+        tax_main_paid_ = true;
+    }
+    out.settled = true;
+    return out;
 }
 
 // ---------------------------------------------------------------- день

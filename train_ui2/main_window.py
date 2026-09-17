@@ -198,7 +198,7 @@ class MainWindow2(QMainWindow):
         self.cmb_difficulty.currentTextChanged.connect(lambda _: self._on_param_changed())
         inner.addWidget(self.cmb_difficulty, row, 1, Qt.AlignLeft)
         row += 1
-        inner.addWidget(T.field_label("Режим obs", "flat=MLP 287, minimap=CNN, hybrid=оба"), row, 0)
+        inner.addWidget(T.field_label("Режим obs", "flat=MLP 299, minimap=CNN, hybrid=оба"), row, 0)
         self.cmb_obs_mode = T.combo(["flat", "minimap", "hybrid"], "flat")
         self.cmb_obs_mode.currentTextChanged.connect(lambda _: self._on_param_changed())
         inner.addWidget(self.cmb_obs_mode, row, 1, Qt.AlignLeft)
@@ -741,8 +741,10 @@ class MainWindow2(QMainWindow):
                 if "use_curriculum_tab" not in d:
                     # legacy state file: ручной набор уже был → применяем его
                     merged["use_curriculum_tab"] = bool(str(merged["unlock_ids"]).strip())
-                if merged.get("gamma") in (0.99, 0.995, 0.997):
-                    merged["gamma"] = 0.999
+                # P0: старые прогоны шли с gamma 0.99/0.995/0.997/0.999 — при
+                # горизонте эпизода 10 000 шагов это «близоруко» (см. diagnostic).
+                if merged.get("gamma") in (0.99, 0.995, 0.997, 0.999):
+                    merged["gamma"] = 0.99999
                 if merged.get("ent_coef") == 0.05:
                     merged["ent_coef"] = 0.01
                 # v3 migration: if file predates v3, ensure food/water 0.8

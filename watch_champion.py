@@ -217,9 +217,9 @@ def main():
                         help="Resource priority set (CSV) from the «Курикулум» tab. "
                              "If not set, reads curriculum_resources from the model "
                              "meta. Pass \"\" to explicitly use all resources.")
-    parser.add_argument("--obs-version", type=int, default=1, choices=[0, 1],
-                        help="Obs layout: 0 = legacy 246-dim (for v0 checkpoints), "
-                             "1 = 287-dim frame (default).")
+    parser.add_argument("--obs-version", type=int, default=2, choices=[0, 1, 2],
+                        help="Obs layout: 0 = 248-dim (old checkpoints), 1 = 289-dim "
+                             "frame, 2 = 299-dim + resource directions (default).")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
     parser.add_argument("--allow-stale-pyd", action="store_true",

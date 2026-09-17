@@ -18,6 +18,8 @@ static int find_id(ColonyEnvCpp& e, const std::string& id) {
 }
 
 // Parse "key=value" pairs out of the STEP lines and accumulate per component.
+// P0 (2026-09-17): старый формат печатал `total=` ДО клипа; теперь лог печатает
+// `total_raw=` и `total_clip=`. `total` = возвращаемая среде награда = clip.
 static std::map<std::string, double> accumulate(const std::string& path, double& total) {
     std::map<std::string, double> acc;
     std::ifstream in(path);
@@ -33,7 +35,7 @@ static std::map<std::string, double> accumulate(const std::string& path, double&
             std::string k = tok.substr(0, eq);
             double v = atof(tok.c_str() + eq + 1);
             acc[k] += v;
-            if (k == "total") total += v;
+            if (k == "total_clip") total += v;
         }
     }
     return acc;
@@ -58,7 +60,8 @@ static void run_policy(const std::vector<BaseData>& bd, const std::vector<BaseEv
     auto acc = accumulate(logpath, total);
     printf("\n--- %s (seed 42, 1500 steps) total=%+.1f ---\n", label, total);
     const char* keys[] = {"build","cost","div","prox","prov","preq","daily","nov","mile",
-                          "surv","idle","err","tax","taxb","sale","chain","extr","gover"};
+                          "surv","idle","err","tax","taxb","sale","chain","extr","gover",
+                          "debt","born","died","lost","overflow","taxdebt"};
     for (const char* k : keys)
         if (acc.count(k)) printf("   %-6s %+10.2f\n", k, acc[k]);
 }
@@ -89,7 +92,8 @@ int main() {
         auto acc = accumulate("/tmp/log_farmw.txt", total);
         printf("--- FARM ECONOMY (water granted) total=%+.1f ---\n", total);
         const char* keys[] = {"build","cost","div","prox","prov","preq","daily","nov","mile",
-                              "surv","idle","err","tax","taxb","sale","chain","extr","gover"};
+                              "surv","idle","err","tax","taxb","sale","chain","extr","gover",
+                              "debt","born","died","lost","overflow","taxdebt"};
         for (const char* k : keys)
             if (acc.count(k)) printf("   %-6s %+10.2f\n", k, acc[k]);
     }

@@ -1,14 +1,20 @@
 // Standalone diagnostic #2: the tax freeze and what it does to the MDP.
 //
-// Findings this harness is meant to pin down on the real C++ core:
-//   * `Game::check_advance()` blocks *time itself* when the annual tax is due
-//     and unpaid: `advance_day()` returns !ok, so no day passes, no production
-//     happens, and the only thing the agent can do is burn steps (-2 error
-//     penalty for DAY/WEEK) until `tax_due_days_ >= TAX_GRACE_DAYS` (60) kills
-//     the episode at day 365 — the first tax date.
-//   * Consequence: every trajectory that spends the starting capital dies at
-//     the first March 1st, while "do nothing" survives for years.
-//   * Rescue: TAKE_LOAN (+50k) makes the tax payable again.
+// HISTORY (2026-09 diagnostic): `Game::check_advance()` used to block *time
+// itself* when the annual tax was due and unpaid — `advance_day()` returned
+// !ok, so no day passed, no production happened, and the only thing a policy
+// could do was burn steps (-2 error for DAY/WEEK) until
+// `tax_due_days_ >= TAX_GRACE_DAYS` (60) killed the episode at day 365, the
+// first tax date. Every trajectory that spent the starting capital died there
+// while "do nothing" survived for years; TAKE_LOAN (+50k) was the only rescue.
+//
+// FIX (P0, 2026-09-17): the env now runs a *debt policy* by default
+// (`tax_to_debt=true`): the unpaid remainder is settled into bank credit and
+// the calendar keeps moving. This harness therefore runs each scenario twice:
+//   * `legacy`  = tax_to_debt=false → the old freeze (kept for the GUI/dialog
+//                 path and as the control that the bug is really gone);
+//   * `debt`    = tax_to_debt=true  → the RL default (see tests/cpp/p0_p1_check.cpp
+//                 for the focused regression checks).
 //
 // Build (from the repo root):
 //   g++ -std=c++17 -O2 -Iinclude -Iinclude/third_party -o /tmp/tax_trap \
@@ -93,9 +99,11 @@ int main() {
     auto bd = load_base_data("configs/bases.json");
     auto ed = load_events("configs/events.json");
 
-    printf("================ 1. tax freeze: what DAY does when broke ================\n");
-    {
-        ColonyEnvCpp e(bd, ed, 42, 200, Curriculum(), RewardConfig(), DIFFICULTY_NORMAL);
+    printf("=========== 1. broke with tax due: legacy freeze vs debt policy ===========\n");
+    for (bool to_debt : {false, true}) {
+        printf("  --- tax_to_debt=%s ---\n", to_debt ? "true" : "false");
+        ColonyEnvCpp e(bd, ed, 42, 200, Curriculum(), RewardConfig(), DIFFICULTY_NORMAL,
+                       /*no_city_game_over=*/false, /*no_people_days=*/365, to_debt);
         e.reset(42);
         const int farm = find_id(e, "Farm");
         // Spend the capital: 4 farms then nothing.
@@ -103,22 +111,20 @@ int main() {
             auto out = e.step(A_BUILD0 + farm);
             (void)out;
         }
-        printf("after 4 farms: is Farm legal now? ");
-        {
-            std::vector<float> m = e.action_mask();
-            printf("%s\n", m[(size_t)(A_BUILD0 + farm)] > 0.5f ? "yes" : "no");
-        }
-        printf("  day | money  | steps | DAY advances the calendar?\n");
+        printf("  after 4 farms: money=%lld, DAY advances the calendar?\n",
+               (long long)e.game().money);
         int64_t prev_days = -1;
-        for (int i = 0; i < 80; i++) {
-            std::vector<float> m = e.action_mask();
+        int frozen_run = 0;
+        for (int i = 0; i < 430; i++) {
             auto out = e.step(A_DAY);
-            if (i < 8 || i % 10 == 0 || i > 74) {
-                printf("  %5lld | %6lld | %5lld | %s%s\n", (long long)out.days,
-                       (long long)out.money, (long long)i,
-                       (prev_days >= 0 && out.days == prev_days) ? "NO (frozen)" : "yes",
-                       out.terminated ? "   <- episode TERMINATED" : "");
-            }
+            bool frozen = prev_days >= 0 && out.days == prev_days;
+            frozen_run = frozen ? frozen_run + 1 : 0;
+            if (i < 3 || i % 100 == 0 || (frozen && frozen_run <= 2) || out.terminated)
+                printf("    step %4d | day %5lld | money %6lld | credit %6lld | %s%s\n",
+                       i, (long long)out.days, (long long)out.money,
+                       (long long)e.game().credit,
+                       frozen ? "FROZEN" : "advances",
+                       out.terminated ? "  <- TERMINATED" : "");
             if (out.terminated) break;
             prev_days = out.days;
         }
@@ -141,8 +147,8 @@ int main() {
                (long long)loan.money);
         for (int i = 0; i < 5; i++) {
             auto o = e.step(A_DAY);
-            printf("  DAY #%d:        reward=%+.3f money=%lld   (tax_daily_bonus +0.3, "
-                   "debt term hidden, step log does NOT show it)\n",
+            printf("  DAY #%d:        reward=%+.3f money=%lld   (tax_daily_bonus +0.3; "
+                   "debt term now visible in the step log as debt=/taxdebt=)\n",
                    i + 1, o.rew, (long long)o.money);
         }
         // 365 days later the debt term has grown
@@ -152,24 +158,31 @@ int main() {
                "0.1*credit/1000 per day)\n", late.rew, (long long)late.money);
     }
 
-    printf("\n============ 3. do-nothing vs invest: 3000 steps, 3 seeds ==============\n");
+    printf("\n============ 3. do-nothing vs invest: 3000 steps, 3 seeds ==============\n"
+           "  (legacy = old freeze, debt = P0 default: calendar always moves)\n");
     for (int64_t seed : {1, 42, 777}) {
         auto e1 = std::make_unique<ColonyEnvCpp>(bd, ed, seed, 200, Curriculum(),
                                                  RewardConfig(), DIFFICULTY_NORMAL);
         e1->reset(seed);
         show("DAY only", roll(*e1, 3000, [](ColonyEnvCpp&) { return A_DAY; }));
 
+        auto spend = [](ColonyEnvCpp& e) {
+            for (int b = 0; b < e.n_build(); b++) {
+                std::vector<float> m = e.action_mask();
+                if (m[(size_t)(A_BUILD0 + b)] > 0.5f) return A_BUILD0 + b;
+            }
+            return A_DAY;
+        };
         auto e2 = std::make_unique<ColonyEnvCpp>(bd, ed, seed, 200, Curriculum(),
-                                                 RewardConfig(), DIFFICULTY_NORMAL);
+                                                 RewardConfig(), DIFFICULTY_NORMAL,
+                                                 false, 365, /*tax_to_debt=*/false);
         e2->reset(seed);
-        show("cheapest build, no buffer",
-             roll(*e2, 3000, [](ColonyEnvCpp& e) {
-                 for (int b = 0; b < e.n_build(); b++) {
-                     std::vector<float> m = e.action_mask();
-                     if (m[(size_t)(A_BUILD0 + b)] > 0.5f) return A_BUILD0 + b;
-                 }
-                 return A_DAY;
-             }));
+        show("cheapest build (legacy)", roll(*e2, 3000, spend));
+
+        auto e2d = std::make_unique<ColonyEnvCpp>(bd, ed, seed, 200, Curriculum(),
+                                                  RewardConfig(), DIFFICULTY_NORMAL);
+        e2d->reset(seed);
+        show("cheapest build (debt)", roll(*e2d, 3000, spend));
 
         auto e3 = std::make_unique<ColonyEnvCpp>(bd, ed, seed, 200, Curriculum(),
                                                  RewardConfig(), DIFFICULTY_NORMAL);

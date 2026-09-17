@@ -26,7 +26,7 @@ using namespace colony;
 #define COLONY_GIT_SHA "unknown"
 #endif
 #ifndef COLONY_EXTENSION_VERSION
-#define COLONY_EXTENSION_VERSION 2
+#define COLONY_EXTENSION_VERSION 3
 #endif
 
 namespace {
@@ -132,6 +132,7 @@ py::dict env_step_to_dict(const ColonyEnvCpp::StepOut& s) {
     d["tax_grace_expired"] = s.tax_grace_expired;
     d["ep_return"] = s.ep_return;
     d["steps"] = s.steps;
+    d["tax_borrowed"] = s.tax_borrowed;
     d["metrics"] = s.metrics;
     return d;
 }
@@ -154,6 +155,8 @@ PYBIND11_MODULE(colony_cpp, m) {
             "resource_curriculum", // веса ресурсов + priority_reached (PR 4)
             "minimap",             // minimap()/minimap_batch()/set_minimap_radius()
             "action_masks_batch",  // ColonyVecEnvCpp.action_masks_batch()
+            "obs_v2",              // P0: obs v2 = 299-dim (+dx/dy ближайших ресурсов)
+            "tax_to_debt",         // P0: налог → долг, календарь не замирает
         };
         d["src_sha"] = COLONY_GIT_SHA;
         return d;
@@ -423,7 +426,11 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readwrite("housing_need_bonus", &RewardConfig::housing_need_bonus)
         .def_readwrite("food_need_bonus", &RewardConfig::food_need_bonus)
         .def_readwrite("water_need_bonus", &RewardConfig::water_need_bonus)
-        .def_readwrite("buy_food_penalty", &RewardConfig::buy_food_penalty);
+        .def_readwrite("buy_food_penalty", &RewardConfig::buy_food_penalty)
+        // P0/P1 (2026-09-17)
+        .def_readwrite("tax_debt_penalty", &RewardConfig::tax_debt_penalty)
+        .def_readwrite("mask_managers_by_applicability",
+                       &RewardConfig::mask_managers_by_applicability);
 
     py::class_<ColonyEnvCpp::EpisodeMetrics>(m, "EpisodeMetrics")
         .def_readonly("total_reward", &ColonyEnvCpp::EpisodeMetrics::total_reward)
@@ -445,17 +452,21 @@ PYBIND11_MODULE(colony_cpp, m) {
                          const std::vector<BaseEvent>& events_data,
                          int64_t seed, int map_size, const py::dict& curriculum,
                          const RewardConfig& reward, const std::string& difficulty,
-                         bool no_city_game_over, int64_t no_people_days) {
+                         bool no_city_game_over, int64_t no_people_days,
+                         bool tax_to_debt) {
                  return new ColonyEnvCpp(base_data, events_data, seed, map_size,
                                          curriculum_from_dict(curriculum), reward,
-                                         difficulty, no_city_game_over, no_people_days);
+                                         difficulty, no_city_game_over, no_people_days,
+                                         tax_to_debt);
              }),
              py::arg("base_data"), py::arg("events_data"), py::arg("seed"),
              py::arg("map_size") = 280, py::arg("curriculum") = py::dict(),
              py::arg("reward") = RewardConfig(),
              py::arg("difficulty") = "normal",
              py::arg("no_city_game_over") = false,
-             py::arg("no_people_days") = 365)
+             py::arg("no_people_days") = 365,
+             // P0: RL-дефолт — календарь не замирает на налоге, остаток → долг.
+             py::arg("tax_to_debt") = true)
         .def("reset", &ColonyEnvCpp::reset)
         .def("set_step_log", &ColonyEnvCpp::set_step_log, py::arg("path"))
         .def("dump_obs", &ColonyEnvCpp::dump_obs)
@@ -473,6 +484,8 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("minimap_radius", &ColonyEnvCpp::minimap_radius)
         .def("set_minimap_radius", [](ColonyEnvCpp& env, int r) { env.set_minimap_radius(r); })
         .def("n_build", &ColonyEnvCpp::n_build)
+        .def("tax_to_debt", &ColonyEnvCpp::tax_to_debt)
+        .def("last_tax_borrowed", &ColonyEnvCpp::last_tax_borrowed)
         .def("n_bases", &ColonyEnvCpp::n_bases)
         .def("n_actions", &ColonyEnvCpp::n_actions)
         .def("obs_size", &ColonyEnvCpp::obs_size)
@@ -553,10 +566,11 @@ PYBIND11_MODULE(colony_cpp, m) {
                          const std::vector<BaseEvent>& events_data,
                          int n_envs, int64_t base_seed, int map_size,
                          const py::dict& curriculum, const RewardConfig& reward,
-                         int n_threads, const std::string& difficulty) {
+                         int n_threads, const std::string& difficulty,
+                         bool tax_to_debt) {
                  return new ColonyVecEnvCpp(base_data, events_data, n_envs, base_seed,
                                             map_size, curriculum_from_dict(curriculum),
-                                            reward, n_threads, difficulty);
+                                            reward, n_threads, difficulty, tax_to_debt);
              }),
              py::arg("base_data"), py::arg("events_data"),
              py::arg("n_envs"), py::arg("base_seed"),
@@ -564,7 +578,8 @@ PYBIND11_MODULE(colony_cpp, m) {
              py::arg("curriculum") = py::dict(),
              py::arg("reward") = RewardConfig(),
              py::arg("n_threads") = 0,
-             py::arg("difficulty") = "normal")
+             py::arg("difficulty") = "normal",
+             py::arg("tax_to_debt") = true)
         .def("reset_batch", [](ColonyVecEnvCpp& v, const std::vector<int64_t>& seeds) {
             v.reset_batch(seeds);
         }, py::arg("seeds"), py::call_guard<py::gil_scoped_release>())

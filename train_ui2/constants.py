@@ -25,7 +25,7 @@ REWARD_GROUPS = {
     "Добыча (v3)": ["first_extraction_bonus", "extraction_daily",
                     "need_fill_bonus", "loan_penalty"],
     "Экономика": ["daily_income", "sale_bonus", "tax_daily_bonus",
-                  "manual_tax_penalty", "debt_coeff"],
+                  "manual_tax_penalty", "debt_coeff", "tax_debt_penalty"],
     "Выживание": ["survival_bonus", "survival_coeff", "game_over_penalty",
                   "death_penalty", "tax_fail_penalty", "base_lost_penalty",
                   "born_bonus", "home_overflow_penalty"],
@@ -42,6 +42,9 @@ REWARD_FLAGS = [
     ("disable_daily_income", "Выкл. daily_income", "Не начислять ежедневный доход (абляция)"),
     ("disable_net_worth", "Выкл. net worth бонус", "Убрать бонус за чистую стоимость (абляция)"),
     ("disable_provider_bonus", "Выкл. provider бонус", "Убрать бонус провайдера потребностей (абляция)"),
+    ("mask_managers_by_applicability", "Маска по применимости",
+     "Маскировать менеджеров по применимости (BUY_FOOD без нужды, REPAY без долга, "
+     "IMPROVE без денег и т.п. — иначе это чистый error_penalty)"),
 ]
 
 # ── curriculum (single source: rl/curriculum.py) ─────────────────────────────

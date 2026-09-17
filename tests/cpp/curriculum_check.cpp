@@ -464,6 +464,48 @@ int main() {
             if (o1[i] != 1.0f) { tail = false; break; }
         check(tail, "v1 unrestricted tail is all ones (9 weights + 32 bits)");
 
+        // ── P0 (2026-09-17): obs v2 — dx/dy к ближайшим ресурсам (не вода) ──
+        Curriculum c2;
+        c2.obs_version = 2;
+        ColonyEnvCpp e2(bd, ed, 7, 280, c2);
+        e2.reset(7);
+        check(e2.obs_size() == 299, "v2 obs_size is 299");
+        auto o2 = e2.obs();
+        check((int)o2.size() == 299, "v2 obs() has 299 floats");
+        bool pre2 = true;
+        for (int i = 0; i < 289; i++)
+            if (o1[i] != o2[i]) { pre2 = false; break; }
+        check(pre2, "v1 obs is a strict prefix of v2 obs");
+        {
+            const Game& gg = e2.game();
+            const int ms = gg.map_size();
+            const int bx = gg.earth.init_sel_x, by = gg.earth.init_sel_y;
+            bool dirs2 = true;
+            int found_slots = 0;
+            for (int k = 0; k < N_NEAREST_LOTS; k++) {
+                bool found = false;
+                int bestx = -1, besty = -1;
+                double best = 0.0;
+                for (int y = 0; y < ms; y++)
+                    for (int x = 0; x < ms; x++) {
+                        if (gg.earth.lots()[(size_t)y * ms + x] != NEAREST_LOT_TYPES[k]) continue;
+                        double dx = (double)(x - bx), dy = (double)(y - by);
+                        double d2 = dx * dx + dy * dy;
+                        if (!found || d2 < best) { found = true; bestx = x; besty = y; best = d2; }
+                    }
+                float wx = found ? (float)((double)(bestx - bx) / (double)ms) : 0.0f;
+                float wy = found ? (float)((double)(besty - by) / (double)ms) : 0.0f;
+                if (found) found_slots++;
+                if (o2[(size_t)(289 + 2 * k)] != wx ||
+                    o2[(size_t)(289 + 2 * k + 1)] != wy) dirs2 = false;
+            }
+            check(dirs2, "v2 dx/dy match the real nearest lots");
+            check(found_slots >= 3, "v2 test map has several resource types");
+        }
+        bool threw_v2 = false;
+        try { e1.set_curriculum(c2); } catch (const std::runtime_error&) { threw_v2 = true; }
+        check(threw_v2, "set_curriculum refuses a v1->v2 change mid-run");
+
         // Restricted frame: weights + bits reflect the curriculum, not terrain.
         Curriculum cr;
         cr.all_builds = false;

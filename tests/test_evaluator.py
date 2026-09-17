@@ -327,6 +327,7 @@ def test_run_eval_stored_meta_mismatch_raises(tmp_path):
                 "n_actions": 45, "hidden_sizes": [64]}, str(ckpt))
     (tmp_path / "meta.json").write_text(json.dumps({"obs_version": 0}),
                                         encoding="utf-8")
-    with pytest.raises(RuntimeError, match=r"obs v0.*248.*obs v1.*289"):
+    # P0: дефолт среды теперь obs v2 (299) — сообщение об ошибке называет её
+    with pytest.raises(RuntimeError, match=r"obs v0.*248.*obs v2.*299"):
         run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
                  map_size=100)

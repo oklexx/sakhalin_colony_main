@@ -101,8 +101,8 @@ def parse_args():
                         "--curriculum-resources water,wood. Only listed resources grant "
                         "extraction bonuses; empty = all (legacy behaviour). "
                         "--priority-resources is an alias of this flag.")
-    p.add_argument("--obs-version", type=int, default=_d.obs_version, choices=[0, 1],
-                   help="Obs layout: 0 = legacy 246-dim, 1 = 287-dim frame "
+    p.add_argument("--obs-version", type=int, default=_d.obs_version, choices=[0, 1, 2],
+                   help="Obs layout: 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim (+directions to nearest resources; default) "
                         "(default; +9 resource weights +32 build bits).")
     p.add_argument("--allow-stale-pyd", action="store_true",
                    help="Debugging only: run even if the colony_cpp binary is stale "

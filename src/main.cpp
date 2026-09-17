@@ -149,7 +149,11 @@ int main(int argc, char* argv[]) {
     std::cout << "  bases: " << bases_data.size() << " types\n";
     std::cout << "  events: " << events_data.size() << " types\n";
 
-    ColonyEnvCpp env(bases_data, events_data, seed, map_size, curriculum);
+    // P0 (2026-09-17): у консоли нет диалога налогов (в отличие от GUI) —
+    // берём долговую политику: время идёт всегда, неуплаченный остаток → credit.
+    ColonyEnvCpp env(bases_data, events_data, seed, map_size, curriculum,
+                     RewardConfig(), "normal", false, GAME_OVER_NO_PEOPLE_DAYS,
+                     /*tax_to_debt=*/true);
 
     std::cout << "  env created: obs_size=" << env.obs_size()
               << " n_actions=" << env.n_actions()
