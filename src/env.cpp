@@ -27,7 +27,8 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
                            const RewardConfig& cfg,
                            const std::string& difficulty,
                            bool no_city_game_over,
-                           int64_t no_people_days)
+                           int64_t no_people_days,
+                           bool tax_to_debt)
     : base_data_(std::make_shared<const std::vector<BaseData>>(base_data)),
       events_data_(std::make_shared<const std::vector<BaseEvent>>(events_data)),
       cfg_(cfg),
@@ -36,6 +37,7 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
       difficulty_(difficulty),
       no_city_game_over_(no_city_game_over),
       no_people_days_(no_people_days),
+      tax_to_debt_(tax_to_debt),
       game_(*base_data_, *events_data_, seed, map_size, difficulty, no_city_game_over, no_people_days) {
     // пул построек
     std::unordered_set<std::string> subset;
@@ -57,6 +59,7 @@ ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
     compute_catalog();
     // RL-среда не использует undo — отключаем для производительности
     game_.set_enable_undo(false);
+    game_.set_tax_to_debt(tax_to_debt_);  // P0: время не замирает на налоге
     seat_build_gate();  // PR 2: гейт на уровне игры
 }
 
@@ -91,7 +94,9 @@ Curriculum Curriculum::from_json(const std::string& text) {
         for (int k = 0; k < SUNDUK_SIZE; k++)
             c.resource_weights[(size_t)k] = j["resource_weights"][(size_t)k].get<double>();
     }
-    // PR 5: obs layout version (default 0 = legacy 246-dim).
+    // Obs layout version: 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim
+    // (P0: + dx/dy к ближайшим wood/coal/iron/oil/gold). Дефолт C++ — 0,
+    // Python/RL передаёт 2 (см. rl/config.py: obs_version).
     c.obs_version = j.value("obs_version", 0);
     return c;
 }
@@ -205,6 +210,8 @@ void ColonyEnvCpp::set_step_log(const std::string& path) {
 void ColonyEnvCpp::reset(int64_t seed) {
     game_ = Game(base_data_, events_data_, seed, map_size_, difficulty_, no_city_game_over_, no_people_days_);
     seat_build_gate();  // PR 2: свежий Game без гейта — вернуть его сразу
+    game_.set_tax_to_debt(tax_to_debt_);  // P0: свежий Game без политики — вернуть её
+    last_tax_borrowed_ = 0;
     game_.reset_milestones();
     net_worth_valid_ = false;
     cached_net_worth_ = 0.0;
@@ -704,33 +711,49 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
     int base_y = g.earth.init_sel_y;
     const int8_t* lots = g.earth.lots().data();
 
-    int best_water_x = -1;
-    int best_water_y = -1;
-    double min_dist_sq = -1.0;
-
+    // Один проход по карте: ближайший тайл воды (slot 0, v0) и ближайшие тайлы
+    // каждого добываемого ресурса (слоты 1..N_NEAREST_LOTS, только obs v2).
+    // Порядок обхода и сравнение (строго <) сохранены — значения воды в v0/v1
+    // остаются бит-в-бит прежними.
+    int best_x[1 + N_NEAREST_LOTS], best_y[1 + N_NEAREST_LOTS];
+    double best_sq[1 + N_NEAREST_LOTS];
+    for (int k = 0; k <= N_NEAREST_LOTS; k++) {
+        best_x[k] = best_y[k] = -1;
+        best_sq[k] = -1.0;
+    }
     for (int wy = 0; wy < ms; wy++) {
+        const int8_t* row = lots + (size_t)wy * ms;
         for (int wx = 0; wx < ms; wx++) {
-            if (lots[(size_t)wy * ms + wx] == LT_WATER) {
-                double dx_diff = (double)(wx - base_x);
-                double dy_diff = (double)(wy - base_y);
-                double dist_sq = dx_diff * dx_diff + dy_diff * dy_diff;
-                if (min_dist_sq < 0 || dist_sq < min_dist_sq) {
-                    min_dist_sq = dist_sq;
-                    best_water_x = wx;
-                    best_water_y = wy;
-                }
+            const int8_t t = row[wx];
+            int slot = -1;
+            if (t == LT_WATER) {
+                slot = 0;
+            } else if (curriculum_.obs_version >= 2) {
+                for (int k = 0; k < N_NEAREST_LOTS; k++)
+                    if (t == NEAREST_LOT_TYPES[k]) { slot = k + 1; break; }
+            }
+            if (slot < 0) continue;
+            double dx_diff = (double)(wx - base_x);
+            double dy_diff = (double)(wy - base_y);
+            double dist_sq = dx_diff * dx_diff + dy_diff * dy_diff;
+            if (best_sq[slot] < 0 || dist_sq < best_sq[slot]) {
+                best_sq[slot] = dist_sq;
+                best_x[slot] = wx;
+                best_y[slot] = wy;
             }
         }
     }
+    auto rel_dx = [&](int slot) -> float {
+        return best_sq[slot] < 0 ? 0.0f
+                                 : (float)((double)(best_x[slot] - base_x) / (double)ms);
+    };
+    auto rel_dy = [&](int slot) -> float {
+        return best_sq[slot] < 0 ? 0.0f
+                                 : (float)((double)(best_y[slot] - base_y) / (double)ms);
+    };
 
-    float water_dx = 0.0f;
-    float water_dy = 0.0f;
-    if (min_dist_sq >= 0) {
-        water_dx = (float)((double)(best_water_x - base_x) / (double)ms);
-        water_dy = (float)((double)(best_water_y - base_y) / (double)ms);
-    }
-    push(water_dx);
-    push(water_dy);
+    push(rel_dx(0));
+    push(rel_dy(0));
 
     // PR 5, obs v1: the frame - effective resource weights (all_resources
     // renders as nine 1.0s, exactly what the economy applies) + build_allowed
@@ -744,6 +767,15 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
                            curriculum_.allowed_builds.find(build_ids_[(size_t)i]) !=
                                curriculum_.allowed_builds.end();
             push(allowed ? 1.0f : 0.0f);
+        }
+    }
+    // P0, obs v2: направления к ближайшему дереву/углю/железу/нефти/золоту.
+    // Без них 12 из 32 построек (need_earth = 3..7) недостижимы: клетку выбирает
+    // find_lot(), а в flat-obs карты нет вообще (см. docs/RL_DIAGNOSIS_2026_09.md).
+    if (curriculum_.obs_version >= 2) {
+        for (int k = 0; k < N_NEAREST_LOTS; k++) {
+            push(rel_dx(k + 1));
+            push(rel_dy(k + 1));
         }
     }
 
@@ -781,7 +813,14 @@ std::vector<float> ColonyEnvCpp::action_mask() {
         mask[act] = 1.0f;
     }
 
-    // Manager actions
+    // Manager actions. P1 (2026-09-17): маска по ПРИМЕНИМОСТИ — действие,
+    // которое заведомо вернёт error_penalty (-2) или потратит деньги впустую,
+    // не должно попадать в выбор политики. Раньше 9 менеджеров были легальны
+    // безусловно, и masked-random тратил ~-1.6/шаг на «легальные» ошибки.
+    // Все проверки — только чтение: good_earth()/restore_all() мутируют игру,
+    // поэтому их предикаты продублированы здесь (см. обработчики в step()).
+    // cfg_.mask_managers_by_applicability = false возвращает старые маски.
+    const bool apply_mask = cfg_.mask_managers_by_applicability;
     for (int i = 0; i < N_MANAGERS; ++i) {
         int act = manager_base_ + i;
         if (i == 4) {
@@ -804,8 +843,64 @@ std::vector<float> ColonyEnvCpp::action_mask() {
                 }
             }
             if (has_preserved) mask[act] = 1.0f;
-        } else {
+        } else if (!apply_mask) {
             mask[act] = 1.0f;
+        } else if (i == 0) {
+            // IMPROVE_LAND: нужны деньги и участок, который ещё не улучшен.
+            if (g.money >= BUYGOODEARTH) {
+                auto cell = find_lot(LT_EVERYWHERE, false);
+                if (cell && !g.is_good(cell->first, cell->second)) mask[act] = 1.0f;
+            }
+        } else if (i == 1) {
+            // REPAIR: есть изношенное здание и хватает хотя бы на день ремонта
+            // (Game::restore ремонтирует столько, на сколько хватает денег).
+            const Base* b = g.find_slowest_base();
+            if (b != nullptr && b->data->restore_price_per_day() > 0 &&
+                g.money >= b->data->restore_price_per_day())
+                mask[act] = 1.0f;
+        } else if (i == 2) {
+            // REPAIR_ALL: есть повреждённые здания и денег хватает хотя бы на
+            // самый дешёвый день ремонта (иначе restore_all вернёт «Недостаточно
+            // денег» и action станет чистым error_penalty).
+            bool damaged = false;
+            int64_t min_per_day = -1;
+            for (const Base& b : g.bases) {
+                int64_t per_day = b.data->restore_price_per_day();
+                if (per_day <= 0 || b.live_time >= b.data->live_time_total()) continue;
+                damaged = true;
+                if (min_per_day < 0 || per_day < min_per_day) min_per_day = per_day;
+            }
+            if (damaged && g.money >= min_per_day) mask[act] = 1.0f;
+        } else if (i == 3) {
+            // DEMOLISH: есть что сносить, и это не Город (шаг с Городом = ошибка).
+            const Base* b = g.find_slowest_base();
+            if (b != nullptr && b->data->id != DEPOT_ID) mask[act] = 1.0f;
+        } else if (i == 6) {
+            // SELL_SURPLUS: только если есть излишек сверх 200 единиц
+            // (шаг продаёт max(0, sunduk-200)).
+            int64_t total = 0;
+            for (int r = 0; r < SUNDUK_SIZE; r++) {
+                int64_t surplus = g.sunduk[r] - 200;
+                if (surplus > 0) total += surplus * SALE_SUNDUK[r];
+            }
+            if (total > 0) mask[act] = 1.0f;
+        } else if (i == 7) {
+            // BUY_FOOD: шаг покупает до 400 единиц и без нужды = двойной штраф.
+            int64_t need = 400 - g.sunduk[FOOD];
+            if (need > 0 && g.money >= need * BUY_SUNDUK[FOOD]) mask[act] = 1.0f;
+        } else if (i == 8) {
+            // TAKE_LOAN: политика шага сама отказывает при credit >= 100000 и
+            // при выходе за лимит банка (bank_take).
+            if (g.credit < 100000 && g.credit + 50000 <= g.max_credit()) mask[act] = 1.0f;
+        } else if (i == 9) {
+            // REPAY_LOAN: есть долг и деньги на минимальный платёж.
+            if (g.credit > 0 && g.money >= std::min<int64_t>(50000, g.credit))
+                mask[act] = 1.0f;
+        } else if (i == 10) {
+            // MGR:manual_tax — исторический «ручной налог»: только штраф и один
+            // день (налог платится автоматически ниже, в том же step()). Это
+            // строго доминируемое A_DAY, поэтому маска его не открывает.
+            mask[act] = 0.0f;
         }
     }
 
@@ -937,6 +1032,9 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     double c_milestone = 0, c_sale = 0, c_preserve = 0, c_manual_tax = 0, c_gameover = 0;
     double c_survival = 0, c_idle = 0;
     double c_extract = 0, c_loan = 0;  // v3
+    // P0 (2026-09-17): раньше эти слагаемые учитывались в rew, но не в логе —
+    // из-за этого сумма компонентов в step-логе не сходилась с total.
+    double c_debt = 0, c_born = 0, c_died = 0, c_lost = 0, c_overflow = 0, c_tax_debt = 0;
     std::string action_name = "?";
 
     // Update episode metrics peaks
@@ -1230,20 +1328,47 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     if (results.empty() && (action == A_DAY || action == A_WEEK || action == manager_base_ + 10)) { rew += cfg_.error_penalty; c_error += cfg_.error_penalty; }
 
     // налог платится автоматически после advance_day
+    // P0: tax_fail_penalty — только для «диалоговой» политики (GUI: долг не
+    // оформляется, налог просто не уплачен). В долговой политике ценой служат
+    // tax_debt_penalty + проценты, двойной штраф не нужен.
     if (!g.tax_postponed_ && g.annual_tax_due()) {
         if (g.money >= g.annual_tax_amount()) {
             g.pay_annual_tax();
-        } else {
+        } else if (!tax_to_debt_) {
             rew -= cfg_.tax_fail_penalty; c_tax -= cfg_.tax_fail_penalty;
         }
     } else if (!g.tax_postponed_ && g.main_tax_due()) {
         if (g.money >= g.main_tax_amount()) {
             g.pay_main_tax();
-        } else {
+        } else if (!tax_to_debt_) {
             rew -= cfg_.tax_fail_penalty; c_tax -= cfg_.tax_fail_penalty;
         }
     }
-    if (!g.annual_tax_due() && !g.main_tax_due() && !g.tax_postponed_) {
+    // P0 (2026-09-17): неоплаченный остаток НЕ останавливает календарь — он
+    // переоформляется в долг банку. Платим деньгами сколько можем, остаток —
+    // credit (проценты CREDITPERCENT/1000 в день + debt_coeff выше).
+    // В «диалоговой» политике (tax_to_debt_ = false, GUI) поведение прежнее.
+    last_tax_borrowed_ = 0;
+    if (tax_to_debt_ && !g.tax_postponed_ && (g.annual_tax_due() || g.main_tax_due())) {
+        auto settle = g.settle_tax_with_debt();
+        if (settle.settled) {
+            last_tax_borrowed_ = settle.borrowed;
+            if (settle.borrowed > 0) {
+                double dp = -cfg_.tax_debt_penalty *
+                            std::log1p((double)settle.borrowed / 1000.0);
+                rew += dp; c_tax_debt += dp;
+            }
+            if (step_log_.is_open()) {
+                step_log_ << "  TAX->DEBT: kind=" << settle.kind
+                          << " paid=" << settle.paid << " borrowed=" << settle.borrowed
+                          << " credit=" << g.credit << "\n";
+            }
+        }
+    }
+    // «Спокойный день» без висящего налога. Шаг самой конверсии в долг бонуса
+    // не получает: это не спокойный день (last_tax_borrowed_ > 0).
+    if (!g.annual_tax_due() && !g.main_tax_due() && !g.tax_postponed_ &&
+        last_tax_borrowed_ == 0) {
         rew += cfg_.tax_daily_bonus; c_tax_bonus += cfg_.tax_daily_bonus;
     }
     invalidate_net_worth();
@@ -1259,11 +1384,17 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         rew += nw; c_survival += nw;
     }
     for (const DayResult& r : results) {
-        rew -= cfg_.debt_coeff * (double)g.credit / 1000.0;
-        rew += (double)r.born * cfg_.born_bonus + (double)r.people_arrived * cfg_.born_bonus;
-        rew -= (double)r.died * cfg_.death_penalty;
-        rew -= (double)r.base_lost * cfg_.base_lost_penalty;
-        if (r.home_overflow) rew -= cfg_.home_overflow_penalty;
+        double d_debt = -cfg_.debt_coeff * (double)g.credit / 1000.0;
+        rew += d_debt; c_debt += d_debt;
+        double d_born = (double)r.born * cfg_.born_bonus +
+                        (double)r.people_arrived * cfg_.born_bonus;
+        rew += d_born; c_born += d_born;
+        double d_died = -(double)r.died * cfg_.death_penalty;
+        rew += d_died; c_died += d_died;
+        double d_lost = -(double)r.base_lost * cfg_.base_lost_penalty;
+        rew += d_lost; c_lost += d_lost;
+        if (r.home_overflow) { rew -= cfg_.home_overflow_penalty;
+                               c_overflow -= cfg_.home_overflow_penalty; }
         episode_metrics_.births += r.born;
         episode_metrics_.deaths += r.died;
     }
@@ -1502,8 +1633,13 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     if (step_log_.is_open()) {
         auto f2 = [](double v) { char b[32]; snprintf(b, 32, "%.3f", v); return std::string(b); };
-        step_log_ << "STEP " << steps_ << " | " << action_name << " | total=" << f2(rew)
+        double log_clip = std::clamp(rew, cfg_.clip_reward_min, cfg_.clip_reward_max);
+        step_log_ << "STEP " << steps_ << " | " << action_name
+          << " | total_raw=" << f2(rew) << " total_clip=" << f2(log_clip)
           << " err=" << f2(c_error) << " tax=" << f2(c_tax) << " taxb=" << f2(c_tax_bonus)
+          << " taxdebt=" << f2(c_tax_debt)
+          << " debt=" << f2(c_debt) << " born=" << f2(c_born) << " died=" << f2(c_died)
+          << " lost=" << f2(c_lost) << " overflow=" << f2(c_overflow)
           << " build=" << f2(c_build) << " cost=" << f2(c_cost) << " div=" << f2(c_diversity)
           << " prox=" << f2(c_proximity) << " prov=" << f2(c_provider) << " preq=" << f2(c_prereq)
           << " pres=" << f2(c_preserve) << " sale=" << f2(c_sale) << " mtax=" << f2(c_manual_tax)
@@ -1512,7 +1648,8 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
           << " gover=" << f2(c_gameover) << " extr=" << f2(c_extract) << " loan=" << f2(c_loan)
           << " | nw=" << net_worth() << " nw_delta=" << f2(net_worth() - net0)
           << " pop=" << g.people << " bases=" << (int)g.bases.size()
-          << " money=" << g.money << " credit=" << g.credit << " day=" << g.days_alive
+          << " money=" << g.money << " credit=" << g.credit
+          << " tax_borrowed=" << last_tax_borrowed_ << " day=" << g.days_alive
           << " | food=" << g.sunduk[FOOD] << " water=" << g.sunduk[WATER] << " coal=" << g.sunduk[COAL]
           << " home=" << g.now_home_places() << " free=" << g.free_people()
           << " roads=" << road_count() << "\n";
@@ -1561,6 +1698,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     out.metrics = episode_metrics_;
     out.ep_return = ep_return_;
     out.steps = steps_;
+    out.tax_borrowed = last_tax_borrowed_;
     return out;
 }
 
@@ -1583,7 +1721,8 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
     const Curriculum& curriculum,
     const RewardConfig& cfg,
     int n_threads,
-    const std::string& difficulty)
+    const std::string& difficulty,
+    bool tax_to_debt)
     : base_data_(std::make_shared<std::vector<BaseData>>(base_data)),
       events_data_(std::make_shared<std::vector<BaseEvent>>(events_data)),
       cfg_(cfg),
@@ -1601,7 +1740,8 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
     envs_.reserve(n_envs);
     for (int i = 0; i < n_envs; ++i) {
         envs_.emplace_back(*base_data_, *events_data_, base_seed + i * 10000,
-                           map_size, curriculum, cfg, difficulty);
+                           map_size, curriculum, cfg, difficulty, false,
+                           GAME_OVER_NO_PEOPLE_DAYS, tax_to_debt);
     }
     obs_size_ = envs_[0].obs_size();
     n_actions_ = envs_[0].n_actions();

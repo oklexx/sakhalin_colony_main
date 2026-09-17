@@ -61,13 +61,13 @@ class Normalizer:
         with open(path) as f:
             d = json.load(f)
         rms = d.get("obs_rms", d)
-        # PR 5: a v0 (246) file on a v1 (287) env — or vice versa — would
-        # silently misalign every normalized feature. Fail, don't warn.
+        # PR 5: a v0 (248) / v1 (289) / v2 (299) file on an env with a different
+        # obs layout would silently misalign every normalized feature. Fail, don't warn.
         if "obs_size" in d and int(d["obs_size"]) != int(self._obs_size):
             raise ValueError(
                 f"normalization mismatch: file '{path}' stores "
                 f"obs_size={d['obs_size']}, but the env serves {self._obs_size} "
-                f"(a v0 file has 246, a v1 file has 287; re-run with the "
+                f"(v0=248, v1=289, v2=299; re-run with the "
                 f"matching --obs-version)"
             )
         self._rms.set_mean(rms["mean"])
@@ -99,7 +99,7 @@ class Normalizer:
 class CppColonyEnv(gym.Env):
     """
     Gymnasium wrapper for C++ ColonyEnvCpp.
-    Observation space: 207-dim float32 vector
+    Observation space: flat, 248 (v0) / 289 (v1) / 299 (v2, default) float32.
     Action space: Discrete(49) - 0=DAY, 1=WEEK, 2-33=BUILD, 34-44=MANAGER,
     45-48=ROAD_E/W/S/N (directional road extension)
     """
@@ -169,7 +169,7 @@ class CppColonyEnv(gym.Env):
         # this module stays importable without torch: rl depends on python/, not vice versa).
         if curriculum is None:
             curr_dict = {"all_builds": True, "allowed_builds": [], "stage": 0,
-                         "all_resources": True, "obs_version": 1}
+                         "all_resources": True, "obs_version": 2}
             self.curriculum_state = None
         elif isinstance(curriculum, dict):
             curr_dict = curriculum

@@ -56,7 +56,8 @@ class CurriculumState:
     gate ignores it. `stage_report` is report-only (obs feature, dumps).
     `all_resources` / `resource_weights` are the PR 4 soft priority weights
     (neutral = all 1.0, i.e. legacy behaviour bit-for-bit).
-    `obs_version` selects the obs layout: 0 = legacy 246-dim, 1 = 287-dim
+    `obs_version` selects the obs layout: 0 = 248-dim, 1 = 289-dim (frame),
+    2 = 299-dim (+ направления к ближайшим ресурсам)
     (PR 5 «frame»: +9 effective weights +32 build_allowed bits). The version
     is fixed at env construction — a mid-run change is refused by C++.
     """
@@ -66,7 +67,7 @@ class CurriculumState:
     all_resources: bool = True
     resource_weights: tuple[float, ...] = _FULL_WEIGHTS
     stage_report: int = 0
-    obs_version: int = 1
+    obs_version: int = 2
 
     @classmethod
     def all(cls, stage_report: int = 0) -> "CurriculumState":
@@ -96,7 +97,7 @@ class CurriculumState:
             resource_weights=tuple(float(w) for w in weights)
             if weights is not None else _FULL_WEIGHTS,
             stage_report=int(d.get("stage", d.get("stage_report", 0))),
-            obs_version=int(d.get("obs_version", 1)),
+            obs_version=int(d.get("obs_version", 2)),
         )
 
 
@@ -207,7 +208,7 @@ def build_state(
     unlock_ids: str | List[str] | None = None,
     use_curriculum_tab: bool = True,
     resources: str | List[str] | None = None,
-    obs_version: int = 1,
+    obs_version: int = 2,
 ) -> CurriculumState:
     """Compute the CurriculumState from (stage, manual set, checkbox).
 
@@ -218,11 +219,12 @@ def build_state(
     `resources`: PR 4 priority set (CSV/list/None). None/"" ⇒ all_resources
     (legacy behaviour); otherwise soft weights (1.0 listed, 0.0 rest). A full
     9-weight set normalises to all_resources, mirroring the building rule.
-    `obs_version`: PR 5 obs layout (0 = legacy 246-dim, 1 = 287-dim frame).
-    Only 0/1 are accepted — anything else fails fast here, not in C++.
+    `obs_version`: obs layout (0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim:
+    frame + dx/dy к ближайшим wood/coal/iron/oil/gold). Only 0/1/2 are accepted
+    — anything else fails fast here, not in C++.
     """
-    if int(obs_version) not in (0, 1):
-        raise ValueError(f"obs_version must be 0 or 1, got {obs_version!r}")
+    if int(obs_version) not in (0, 1, 2):
+        raise ValueError(f"obs_version must be 0, 1 or 2, got {obs_version!r}")
     obs_i = int(obs_version)
     stage_i = max(0, int(stage))
     manual = parse_unlock_ids(unlock_ids)
@@ -375,7 +377,7 @@ def resolve_state(
     unlock_ids: str | List[str] | None = None,
     use_curriculum_tab: bool | None = None,
     resources: str | List[str] | None = None,
-    obs_version: int = 1,
+    obs_version: int = 2,
 ) -> CurriculumState:
     """resolve_curriculum + build_state in one call (eval/watch paths).
 
@@ -409,11 +411,22 @@ def resolve_state(
 # ── PR 5: obs-version compatibility ──────────────────────────────────────────
 # Flat-obs size by layout version (n_build=32). Message-only: the real sizes
 # come from C++ ColonyEnvCpp::obs_size(), this map only names mismatches.
-_OBS_SIZE_BY_VERSION = {0: 248, 1: 289}
+_OBS_SIZE_BY_VERSION = {0: 248, 1: 289, 2: 299}
+
+#: Текущая (дефолтная) версия раскладки наблюдения. Держать в синхроне с
+#: Config.obs_version (rl/config.py): импортировать её оттуда нельзя — получился
+#: бы цикл rl/__init__ → rl.config → rl.curriculum.
+CURRENT_OBS_VERSION = 2
+
+#: obs v2, последние 10 float в кадре — (dx, dy) к ближайшему тайлу каждого
+#: типа из этого списка, делённые на размер карты. Порядок = C++
+#: `NEAREST_LOT_TYPES` (include/colony/constants.h): wood, coal, iron, oil, gold.
+#: Вода как была в хвосте v0 (индексы 246/247), так и осталась.
+NEAREST_LOT_ORDER = (3, 4, 5, 6, 7)  # LT_WOOD, LT_COAL, LT_IRON, LT_OIL, LT_GOLD
 
 
 def obs_size_for_version(version: int) -> int:
-    """Flat-obs dimensionality for an obs layout version (0 → 248, 1 → 289)."""
+    """Flat-obs dimensionality: 0 → 248, 1 → 289, 2 → 299 (n_build=32)."""
     try:
         return _OBS_SIZE_BY_VERSION[int(version)]
     except (KeyError, TypeError, ValueError):
@@ -462,6 +475,27 @@ def check_obs_version_compat(
         f"({obs_size_for_version(env_version)}-dim); re-run with "
         f"--obs-version {stored} or retrain the model"
     )
+
+
+def resolve_obs_version(
+    explicit: int | None,
+    model_dir=None,
+    meta: Dict[str, object] | None = None,
+    *,
+    default: int = CURRENT_OBS_VERSION,
+) -> int:
+    """Версия obs для watch/eval: явный аргумент → версия чекпойнта → дефолт.
+
+    Смотреть (и оценивать) модель надо в той раскладке, на которой она
+    обучалась: v1-чекпойнт (289) на v2-среде (299) падает с «obs mismatch», а
+    если бы проверку обойти — молча получил бы сдвинутые признаки. Явный
+    ``--obs-version`` по-прежнему побеждает: тогда расхождение с meta ловит
+    `check_obs_version_compat`, а не тихая подмена.
+    """
+    if explicit is not None:
+        return int(explicit)
+    stored = stored_obs_version(model_dir, meta)
+    return int(stored) if stored is not None else int(default)
 
 
 def ckpt_flat_width(state_dict) -> int | None:

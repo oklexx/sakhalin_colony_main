@@ -107,6 +107,28 @@ public:
     bool pay_annual_tax();
     bool pay_main_tax();
 
+    // ── Налоговая политика (P0, 2026-09-17) ─────────────────────────────────
+    // false — историческое поведение: неоплаченный налог останавливает сам
+    //         календарь (check_advance → !ok). Так работает GUI: диалог налогов
+    //         + «Нет» = конец игры.
+    // true  — RL-путь (ColonyEnvCpp по умолчанию): время идёт всегда, а
+    //         неоплаченный остаток переоформляется в долг банку
+    //         (settle_tax_with_debt). Раньше любая политика, потратившая
+    //         стартовые 82 000, гарантированно умирала на 365-й день:
+    //         60 шагов заморозки → TAX_GRACE_DAYS.
+    void set_tax_to_debt(bool v) { tax_to_debt_ = v; }
+    bool tax_to_debt() const { return tax_to_debt_; }
+
+    struct TaxSettleOut {
+        bool settled = false;
+        std::string kind;    // "annual" | "main" | ""
+        int64_t paid = 0;      // уплачено деньгами
+        int64_t borrowed = 0;  // остаток, переоформленный в credit
+    };
+    // Оплатить текущий налог: деньги — сколько есть, остаток — в кредит.
+    // Идемпотентно: если ничего не должно, settled=false и состояние не меняется.
+    TaxSettleOut settle_tax_with_debt();
+
     // ---- день ----
     bool increment_date();
     DayResult new_day();
@@ -182,6 +204,7 @@ private:
     bool no_city_game_over_;
     int64_t no_people_days_limit_;
     bool tax_annual_paid_ = false, tax_main_paid_ = false;
+    bool tax_to_debt_ = false;  // P0: см. set_tax_to_debt
     int64_t next_uid_ = 1;
     std::unique_ptr<Game> undo_;
     bool enable_undo_ = true;

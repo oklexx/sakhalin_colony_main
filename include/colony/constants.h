@@ -139,6 +139,10 @@ inline constexpr int ROAD_DIR_DX[N_ROAD_DIRS] = {1, -1, 0, 0};   // E, W, S, N
 inline constexpr int ROAD_DIR_DY[N_ROAD_DIRS] = {0, 0, 1, -1};
 inline constexpr const char* ROAD_DIR_NAMES[N_ROAD_DIRS] = {
     "ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"};
+// P0 (2026-09-17): obs v2 — сколько ближайших ресурсных тайлов (кроме воды)
+// отдаётся векторами (dx, dy). Порядок: wood, coal, iron, oil, gold.
+constexpr int N_NEAREST_LOTS = 5;
+constexpr int NEAREST_LOT_TYPES[N_NEAREST_LOTS] = {LT_WOOD, LT_COAL, LT_IRON, LT_OIL, LT_GOLD};
 constexpr int MAX_STEPS = 10000;
 constexpr int LOT_RADIUS = 45;
 inline constexpr const char* ROAD_ID = "Road";

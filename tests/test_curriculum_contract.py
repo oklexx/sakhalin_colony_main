@@ -341,14 +341,16 @@ def test_resource_names_match_cpp_and_ui():
 # ── PR 5: obs layout version ─────────────────────────────────────────────
 
 def test_build_state_obs_version_default_and_explicit():
-    assert build_state(0, None, True).obs_version == 1
+    # P0 (2026-09-17): дефолт — obs v2 (299): без направлений к ближайшим
+    # ресурсам 12 из 32 построек недостижимы (см. docs/RL_DIAGNOSIS_2026_09.md).
+    assert build_state(0, None, True).obs_version == 2
     assert build_state(0, None, True, None, 0).obs_version == 0
     assert build_state(0, "WaterChannel", True, "water", 0).obs_version == 0
 
 
 def test_build_state_obs_version_invalid_raises():
-    with pytest.raises(ValueError, match="obs_version must be 0 or 1"):
-        build_state(0, None, True, None, 2)
+    with pytest.raises(ValueError, match="obs_version must be 0, 1 or 2"):
+        build_state(0, None, True, None, 3)
 
 
 def test_curriculum_state_obs_roundtrip():
@@ -359,14 +361,14 @@ def test_curriculum_state_obs_roundtrip():
     # absent key = current default (tolerant read)
     d2 = dict(d)
     del d2["obs_version"]
-    assert CurriculumState.from_dict(d2).obs_version == 1
-    assert CurriculumState.all().obs_version == 1
+    assert CurriculumState.from_dict(d2).obs_version == 2
+    assert CurriculumState.all().obs_version == 2
 
 
 def test_curriculum_meta_carries_obs_version():
     from rl.config import Config
 
-    assert Config().curriculum_meta()["obs_version"] == 1
+    assert Config().curriculum_meta()["obs_version"] == 2
     assert Config(obs_version=0).curriculum_meta()["obs_version"] == 0
     assert Config(obs_version=0).curriculum_state().obs_version == 0
 

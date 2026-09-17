@@ -61,6 +61,9 @@ class RewardConfig:
     extraction_daily: float = 0.3
     need_fill_bonus: float = 1.5
     loan_penalty: float = 0.5
+    # P0: штраф за переоформление неоплаченного налога в долг банку
+    # (log1p(borrowed/1000) * вес). См. Game::settle_tax_with_debt.
+    tax_debt_penalty: float = 2.0
 
     novelty: float = 5.0
     daily_income: float = 1.0
@@ -95,6 +98,8 @@ class RewardConfig:
     disable_net_worth: bool = False
     disable_daily_income: bool = False
     disable_provider_bonus: bool = False
+    # P1: маскировать менеджеров по применимости (не по формальной легальности)
+    mask_managers_by_applicability: bool = True
 
     # formerly hardcoded C++ weights — must be exported or C++ keeps defaults
     tax_fail_penalty: float = 5.0
@@ -164,7 +169,10 @@ class Config:
     # False = unlock_ids игнорируется, действует только curriculum_stage.
     use_curriculum_tab: bool = False
     curriculum_resources: str = ""  # csv, e.g. "water,wood,coal"; "" = all
-    obs_version: int = 1  # PR 5: 0 = legacy 246-dim obs, 1 = 287-dim frame
+    # P0 (2026-09-17): 0 = 248-dim, 1 = 289-dim (frame), 2 = 299-dim (+dx,dy
+    # к ближайшим wood/coal/iron/oil/gold). 2 — дефолт: без направлений 12
+    # из 32 построек недостижимы политикой (карты в flat-obs нет).
+    obs_version: int = 2  # = rl.curriculum.CURRENT_OBS_VERSION (держать в синхроне)
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # ── PPO ──
@@ -172,7 +180,10 @@ class Config:
     n_steps: int = 4096
     batch_size: int = 8192
     n_epochs: int = 10
-    gamma: float = 0.999
+    # P0 (2026-09-17): горизонт эпизода 10 000 дней, при gamma=0.99/0.999
+    # «оптимальной» становится политика «сжечь капитал» (docs/RL_DIAGNOSIS_2026_09.md §3.1).
+    # Пользователь вручную гонял 0.99999 — это и есть согласованный дефолт.
+    gamma: float = 0.99999
     gae_lambda: float = 0.98
     clip_range: float = 0.2
     ent_coef: float = 0.01

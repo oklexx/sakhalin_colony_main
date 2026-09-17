@@ -150,8 +150,17 @@ def launch_visual_watch(
     curriculum=None,  # CurriculumState | dict | None (None = explicitly unrestricted)
     reward_config_path: str | None = None,
     minimap_radius: int | None = None,
+    tax_to_debt: bool = True,
 ) -> "subprocess.Popen":
-    """Launch the GUI exe in headless-ai mode."""
+    """Launch the GUI exe in headless-ai mode.
+
+    `tax_to_debt=True` (по умолчанию) повторяет налоговую политику обучения:
+    неоплаченный налог уходит в долг, календарь идёт. У GUI-окна для людей
+    политика обратная (диалог налогов + «Нет» = конец игры), поэтому режим
+    наблюдения сообщает его явно — иначе watched-модель играет в другую игру
+    и «умирает» на 365-м дне там, где обучение уже не умирает
+    (см. tests/cpp/gui_watch_check.cpp).
+    """
     import json as _json
     import subprocess
     args = [
@@ -162,6 +171,7 @@ def launch_visual_watch(
         "--seed", str(seed),
         "--map-size", str(map_size),
     ]
+    args.append("--tax-to-debt" if tax_to_debt else "--tax-dialog")
     # PR 1: the GUI env takes the same computed state over --curriculum JSON —
     # the flag is never skipped, so its action_mask can't silently re-enable
     # buildings (the watched policy would pick e.g. прииск again).
@@ -217,9 +227,12 @@ def main():
                         help="Resource priority set (CSV) from the «Курикулум» tab. "
                              "If not set, reads curriculum_resources from the model "
                              "meta. Pass \"\" to explicitly use all resources.")
-    parser.add_argument("--obs-version", type=int, default=1, choices=[0, 1],
-                        help="Obs layout: 0 = legacy 246-dim (for v0 checkpoints), "
-                             "1 = 287-dim frame (default).")
+    parser.add_argument("--obs-version", type=int, default=None, choices=[0, 1, 2],
+                        help="Obs layout: 0 = 248-dim, 1 = 289-dim frame, "
+                             "2 = 299-dim + resource directions. Default: from the "
+                             "checkpoint meta (watch in the layout it was trained "
+                             "with), else the current default (2). An explicit value "
+                             "wins; a mismatch with the checkpoint still errors out.")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
     parser.add_argument("--allow-stale-pyd", action="store_true",
@@ -335,7 +348,28 @@ def main():
     # training. Previously the manual set from the «Курикулум» tab was lost here
     # and stage 0 unlocked every building — the champion then built Goldmine
     # (прииск) even though only WaterChannel was allowed during training.
-    from rl.curriculum import resolve_curriculum, resolve_state
+    from rl.curriculum import (
+        CURRENT_OBS_VERSION,
+        obs_size_for_version,
+        resolve_curriculum,
+        resolve_obs_version,
+        resolve_state,
+        stored_obs_version,
+    )
+
+    # Версия obs: явный --obs-version → раскладка чекпойнта → текущий дефолт.
+    # Без этого старые модели (289) не смотрелись бы на новом дефолте (299):
+    # UI не передаёт --obs-version, значит версия обязана следовать за моделью.
+    stored_v = stored_obs_version(model_dir)
+    obs_version = resolve_obs_version(args.obs_version, model_dir)
+    _vsrc = ("--obs-version" if args.obs_version is not None
+             else "meta модели" if stored_v is not None
+             else f"дефолт {CURRENT_OBS_VERSION}")
+    _vmsg = (f"Obs layout: v{obs_version} "
+             f"({obs_size_for_version(obs_version)} dims, из {_vsrc})")
+    print(_vmsg)
+    if emit_log:
+        emit_log(_vmsg)
 
     resolved = resolve_curriculum(
         model_dir,
@@ -350,7 +384,7 @@ def main():
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
         resources=args.curriculum_resources,
-        obs_version=args.obs_version,
+        obs_version=obs_version,
     )
     stage = int(resolved["curriculum_stage"])
     manual_csv = str(resolved["unlock_ids"])
@@ -369,8 +403,7 @@ def main():
         stored_obs_version,
     )
     check_obs_version_compat(
-        stored_obs_version(model_dir), st.obs_version,
-        ckpt_path=str(model_path),
+        stored_v, st.obs_version, ckpt_path=str(model_path),
     )
     _flat_dim = getattr(policy, "obs_size", None)
     if _flat_dim is not None:  # CNN-only policies have no flat input
@@ -415,6 +448,12 @@ def main():
               f"Curriculum (CLI): stage={stage}"
               f"{f', manual={manual_csv}' if manual_csv else ''}"
               f" → {n_allowed} buildings allowed")
+
+    _tax_policy = "долг (как при обучении)" if env.cpp_env.tax_to_debt() else "диалог"
+    _taxmsg = f"Tax policy: {_tax_policy}"
+    print(_taxmsg)
+    if emit_log:
+        emit_log(_taxmsg)
 
     action_names = env._action_names
     cur_mask = curriculum_action_mask(resolved["allowed"], action_names)
@@ -554,6 +593,7 @@ def main():
             curriculum=st,
             reward_config_path=reward_cfg_path,
             minimap_radius=resolved_minimap_radius,
+            tax_to_debt=True,
         )
 
         for f in (actions_file, state_file):
@@ -582,6 +622,7 @@ def main():
                 curriculum=st,
                 reward_config_path=reward_cfg_path,
                 minimap_radius=resolved_minimap_radius,
+                tax_to_debt=True,
             )
             write_action(actions_file, 0)
             return p

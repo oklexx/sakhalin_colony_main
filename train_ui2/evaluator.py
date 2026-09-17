@@ -162,12 +162,12 @@ def run_eval(
     use_curriculum_tab: bool | None = None,
     curriculum_resources: str | None = None,
     allow_stale_pyd: bool | None = None,
-    obs_version: int = 1,
+    obs_version: int = 2,
 ) -> Dict[str, float]:
     """Run the trained policy in the colony env and return mean stats.
 
-    mode: "auto" (detect from checkpoint), "flat" (MLP: 287-dim v1, 246-dim
-    v0), "minimap" (CNN). `obs_version` selects the eval env's obs layout
+    mode: "auto" (detect from checkpoint), "flat" (MLP: 299-dim v2, 289-dim
+    v1, 248-dim v0), "minimap" (CNN). `obs_version` selects the eval env's obs layout
     (explicit-only, never restored from meta); a stored mismatch raises.
     log_path: if set, writes a per-step observation log to this file.
 

@@ -22,6 +22,10 @@ struct RewardConfig {
     double extraction_daily = 0.3;
     double need_fill_bonus = 1.5;
     double loan_penalty = 0.5;
+    // P0 (2026-09-17): штраф за переоформление неоплаченного налога в долг банку
+    // (Game::settle_tax_with_debt). Масштаб — log1p(borrowed/1000): ~-3 за 4k,
+    // ~-12 за 500k. Само обслуживание долга идёт через debt_coeff (см. ниже).
+    double tax_debt_penalty = 2.0;
 
     double novelty = 5.0;
     double daily_income = 1.0;
@@ -56,6 +60,11 @@ struct RewardConfig {
     bool disable_net_worth = false;
     bool disable_daily_income = false;
     bool disable_provider_bonus = false;
+    // P1 (2026-09-17): маскировать действия-менеджеры по ПРИМЕНИМОСТИ, а не по
+    // формальной возможности. BUY_FOOD без нужды, SELL с пустым складом, REPAY
+    // без долга, IMPROVE_LAND без денег и т.п. дают чистый error_penalty и
+    // засоряют выбор (замер: err ~-1.6/шаг у masked-random). false = старые маски.
+    bool mask_managers_by_applicability = true;
     // PR 4: считать потребителей ресурсов (n_consumers в compute_catalog) только
     // по разрешённым постройкам. false = как раньше (по всем 32), старые прогоны
     // не меняются.

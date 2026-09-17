@@ -272,7 +272,7 @@ def test_priority_metrics_end_to_end():
 
 # ── PR 5: obs layout on the real env ─────────────────────────────────────
 
-@pytest.mark.parametrize("obs_version,expected", [(1, 289), (0, 248)])
+@pytest.mark.parametrize("obs_version,expected", [(2, 299), (1, 289), (0, 248)])
 def test_obs_layout_sizes(obs_version, expected):
     st = build_state(0, None, True, None, obs_version)
     env = _single_env(st)
@@ -280,6 +280,44 @@ def test_obs_layout_sizes(obs_version, expected):
         obs, _ = env.reset(seed=7)
         assert len(obs) == expected == env.cpp_env.obs_size()
         assert int(env.cpp_env.curriculum()["obs_version"]) == obs_version
+    finally:
+        env.close()
+
+
+def test_v2_nearest_resource_directions_match_the_map():
+    """v2: последние 10 float — (dx, dy) к ближайшим wood/coal/iron/oil/gold.
+
+    Сверяем с независимым поиском по карте (та же карта seed 7, до шагов).
+    """
+    from rl.curriculum import NEAREST_LOT_ORDER  # type: ignore
+
+    st = build_state(0, None, True, None, 2)
+    env = _single_env(st)
+    try:
+        env.reset(seed=7)
+        raw = list(env.cpp_env.obs())
+        assert len(raw) == 299 == env.cpp_env.obs_size()
+        # v1-хвост на месте и является префиксом
+        assert raw[248:257] == [pytest.approx(1.0)] * 9
+        game = env.cpp_env.game()
+        ms = game.map_size()
+        bx, by = game.init_sel_x, game.init_sel_y
+        found = 0
+        for k, lot_type in enumerate(NEAREST_LOT_ORDER):
+            best = None
+            for y in range(ms):
+                for x in range(ms):
+                    if game.earth.lot(x, y) != lot_type:
+                        continue
+                    d2 = (x - bx) ** 2 + (y - by) ** 2
+                    if best is None or d2 < best[0]:
+                        best = (d2, x, y)
+            if best is None:
+                continue
+            found += 1
+            assert raw[289 + 2 * k] == pytest.approx((best[1] - bx) / ms, abs=1e-6)
+            assert raw[289 + 2 * k + 1] == pytest.approx((best[2] - by) / ms, abs=1e-6)
+        assert found >= 3, "тестовая карта должна иметь несколько типов ресурсов"
     finally:
         env.close()
 
@@ -323,14 +361,14 @@ def test_set_curriculum_refuses_version_change():
 
 
 def test_env_manager_obs_layout_and_buffer():
-    """EnvManager on v1: 289-dim obs, version in curriculum(), sized buffer."""
+    """EnvManager sizes the obs/buffer for each layout version (v2 — дефолт)."""
     pytest.importorskip("torch")
     import torch
 
     from rl.config import Config
     from rl.env_manager import EnvManager
 
-    for ver, size in ((1, 289), (0, 248)):
+    for ver, size in ((2, 299), (1, 289), (0, 248)):
         cfg = Config(n_envs=2, map_size=_MAP, obs_version=ver)
         em = EnvManager(cfg, torch.device("cpu"))
         try:
