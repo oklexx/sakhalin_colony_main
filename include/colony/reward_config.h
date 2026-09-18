@@ -85,6 +85,11 @@ struct RewardConfig {
     double food_need_bonus = 0.8;
     double water_need_bonus = 0.8;
     double buy_food_penalty = 3.0;
+
+    // v4 (2026-09): цель на выживание, бонус за оплату 500k и предналоговое давление
+    double goal_survival_coeff = 200.0;
+    double main_tax_cash_bonus = 100.0;
+    double main_tax_pressure_coeff = 0.002;
 };
 
 }  // namespace colony

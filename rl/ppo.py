@@ -308,7 +308,10 @@ class PPO:
         policy_loss = -torch.min(surr1, surr2).mean()
 
         values = values.squeeze(-1)
-        value_loss = 0.5 * ((values - returns) ** 2).mean()
+        # Huber loss (Smooth L1): защищает градиенты политики (актора) от подавления
+        # при clip_grad_norm_, когда критик совершает крупные ошибки на размахах
+        # отдачи (-25 000 .. +5 000). При ошибках > 10 лосс становится линейным.
+        value_loss = nn.functional.smooth_l1_loss(values, returns, beta=10.0)
 
         with torch.no_grad():
             approx_kl = (old_log_probs - new_log_probs).mean().abs()

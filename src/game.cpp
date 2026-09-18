@@ -47,6 +47,12 @@ void Base::end_day(Game& game) {
     if (build_days) {
         build_days -= 1;
         if (build_days && good) build_days -= 1;
+        // Р5 (2026-09): кэш home_places/need_workers инвалидировался только
+        // при смене сезона или изменении числа баз. Завершившаяся стройка
+        // меняла can_work() без инвалидации — готовое жильё (и рабочие)
+        // «включались» с задержкой до 92 дней, а проверка перенаселения
+        // убивала людей по устаревшей ёмкости. Починено в точке завершения.
+        if (build_days == 0) game.invalidate_caches();
         return;
     }
     if (data->season_works(game.season) && !preserved && !need_sunduk && !need_workers) {

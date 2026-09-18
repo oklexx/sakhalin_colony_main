@@ -430,7 +430,11 @@ PYBIND11_MODULE(colony_cpp, m) {
         // P0/P1 (2026-09-17)
         .def_readwrite("tax_debt_penalty", &RewardConfig::tax_debt_penalty)
         .def_readwrite("mask_managers_by_applicability",
-                       &RewardConfig::mask_managers_by_applicability);
+                       &RewardConfig::mask_managers_by_applicability)
+        // v4 (2026-09)
+        .def_readwrite("goal_survival_coeff", &RewardConfig::goal_survival_coeff)
+        .def_readwrite("main_tax_cash_bonus", &RewardConfig::main_tax_cash_bonus)
+        .def_readwrite("main_tax_pressure_coeff", &RewardConfig::main_tax_pressure_coeff);
 
     py::class_<ColonyEnvCpp::EpisodeMetrics>(m, "EpisodeMetrics")
         .def_readonly("total_reward", &ColonyEnvCpp::EpisodeMetrics::total_reward)

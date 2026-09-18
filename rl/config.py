@@ -9,11 +9,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Канонический профиль наград
-#   configs/reward_v3.json — единственный источник значений по умолчанию.
+#   configs/reward_v4.json — единственный источник значений по умолчанию.
 #   Дефолты RewardConfig зеркалят его; при наличии файла он побеждает.
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_REWARD_PROFILE = "reward_v3.json"
+DEFAULT_REWARD_PROFILE = "reward_v4.json"
 
 
 def default_reward_profile_path() -> Optional[Path]:
@@ -49,23 +49,23 @@ def _update_dataclass_from_dict(obj: Any, data: Dict[str, Any], *, coerce_int: s
 
 @dataclass
 class RewardConfig:
-    """All reward coefficients. Defaults mirror configs/reward_v3.json."""
+    """All reward coefficients. Defaults mirror configs/reward_v4.json."""
 
-    # base bonuses
-    build_bonus: float = 2.0
+    # base bonuses (v4: build_bonus = 1.2, build_cost_penalty = 0.00004)
+    build_bonus: float = 1.2
     chain_bonus: float = 1.0
     chain_daily: float = 0.5
 
-    # v3: resource extraction / action costs
+    # v3/v4: resource extraction / action costs
     first_extraction_bonus: float = 3.0
     extraction_daily: float = 0.3
     need_fill_bonus: float = 1.5
-    loan_penalty: float = 0.5
+    loan_penalty: float = 2.0
     # P0: штраф за переоформление неоплаченного налога в долг банку
     # (log1p(borrowed/1000) * вес). См. Game::settle_tax_with_debt.
     tax_debt_penalty: float = 2.0
 
-    novelty: float = 5.0
+    novelty: float = 3.0
     daily_income: float = 1.0
     sale_bonus: float = 0.5
     tax_daily_bonus: float = 0.3
@@ -78,21 +78,21 @@ class RewardConfig:
     preserve_penalty: float = 0.3
     demolish_penalty: float = -3.0
     manual_tax_penalty: float = -0.5
-    build_cost_penalty: float = 0.0001
+    build_cost_penalty: float = 0.00004
     idle_build_penalty: float = -2.0
     idle_build_threshold_days: int = 7
-    survival_coeff: float = 0.0
+    survival_coeff: float = 0.0005
 
-    # milestones
-    milestone_base_bonus: float = 30.0
+    # milestones (v4: milestone_base_bonus = 10.0)
+    milestone_base_bonus: float = 10.0
     milestone_people_bonus: float = 2.0
     milestone_day_bonus: float = 2.0
     milestone_year_bonus: float = 5.0
 
-    # spatial / clipping
+    # spatial / clipping (v4: clip +-100)
     proximity_bonus: float = 0.5
-    clip_reward_min: float = -50.0
-    clip_reward_max: float = 50.0
+    clip_reward_min: float = -100.0
+    clip_reward_max: float = 100.0
 
     # flags (ablations)
     disable_net_worth: bool = False
@@ -103,15 +103,20 @@ class RewardConfig:
 
     # formerly hardcoded C++ weights — must be exported or C++ keeps defaults
     tax_fail_penalty: float = 5.0
-    death_penalty: float = 20.0
+    death_penalty: float = 12.0
     base_lost_penalty: float = 30.0
-    born_bonus: float = 1.0
-    debt_coeff: float = 0.1
+    born_bonus: float = 2.0
+    debt_coeff: float = 0.0
     home_overflow_penalty: float = 2.0
     housing_need_bonus: float = 3.0
     food_need_bonus: float = 0.8
     water_need_bonus: float = 0.8
     buy_food_penalty: float = 3.0
+
+    # v4 (2026-09): цель на выживание, бонус за оплату 500k и предналоговое давление
+    goal_survival_coeff: float = 200.0
+    main_tax_cash_bonus: float = 100.0
+    main_tax_pressure_coeff: float = 0.002
 
     # ── serialization ──
 
@@ -180,11 +185,11 @@ class Config:
     n_steps: int = 4096
     batch_size: int = 8192
     n_epochs: int = 10
-    # P0 (2026-09-17): горизонт эпизода 10 000 дней, при gamma=0.99/0.999
-    # «оптимальной» становится политика «сжечь капитал» (docs/RL_DIAGNOSIS_2026_09.md §3.1).
-    # Пользователь вручную гонял 0.99999 — это и есть согласованный дефолт.
-    gamma: float = 0.99999
-    gae_lambda: float = 0.98
+    # Баланс дисконта (2026-09): gamma=0.999 даёт горизонт ~1000 дней (полураспад 693 дня).
+    # Это полностью покрывает годовой налоговый цикл (365 дней) и окупаемость зданий,
+    # избегая при этом катастрофической дисперсии критика при 0.99999.
+    gamma: float = 0.999
+    gae_lambda: float = 0.99
     clip_range: float = 0.2
     ent_coef: float = 0.01
     vf_coef: float = 0.5
