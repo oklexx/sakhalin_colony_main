@@ -98,6 +98,21 @@ Curriculum Curriculum::from_json(const std::string& text) {
     // (P0: + dx/dy к ближайшим wood/coal/iron/oil/gold). Дефолт C++ — 0,
     // Python/RL передаёт 2 (см. rl/config.py: obs_version).
     c.obs_version = j.value("obs_version", 0);
+    if (j.contains("enabled_mechanics")) {
+        if (!j["enabled_mechanics"].is_array())
+            throw std::runtime_error("bad --curriculum JSON: enabled_mechanics must be an array");
+        c.enabled_mechanics = {false, false, false};
+        for (const auto& v : j["enabled_mechanics"]) {
+            if (!v.is_string())
+                throw std::runtime_error("bad --curriculum JSON: enabled_mechanics must be strings");
+            const std::string name = v.get<std::string>();
+            if (name == "all") c.enabled_mechanics = {true, true, true};
+            else if (name == "improve_land") c.enabled_mechanics[0] = true;
+            else if (name == "preservation") c.enabled_mechanics[1] = true;
+            else if (name == "credit") c.enabled_mechanics[2] = true;
+            else throw std::runtime_error("bad --curriculum JSON: unknown mechanic " + name);
+        }
+    }
     return c;
 }
 
@@ -108,12 +123,20 @@ void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
         throw std::runtime_error("set_curriculum: obs_version change (" +
                                  std::to_string(curriculum_.obs_version) + " -> " +
                                  std::to_string(c.obs_version) + ") requires an env rebuild");
+    for (int i = 0; i < 3; ++i) {
+        if (curriculum_.enabled_mechanics[(size_t)i] && !c.enabled_mechanics[(size_t)i])
+            throw std::runtime_error("set_curriculum: mechanic re-lock is forbidden; "
+                                     "unlock schedules are additive only");
+    }
     curriculum_ = c;
     seat_build_gate();  // тот же this, но гейт дешёвый — пересадить явно
     compute_catalog();
     std::cout << "[C++ ColonyEnvCpp] set_curriculum: all_builds=" << curriculum_.all_builds
               << " allowed=" << curriculum_.allowed_builds.size()
-              << " stage_report=" << curriculum_.stage_report;
+              << " stage_report=" << curriculum_.stage_report
+              << " mechanics=" << curriculum_.enabled_mechanics[0]
+              << "," << curriculum_.enabled_mechanics[1]
+              << "," << curriculum_.enabled_mechanics[2];
     if (!curriculum_.all_builds) {
         std::cout << ":";
         std::vector<std::string> ids(curriculum_.allowed_builds.begin(), curriculum_.allowed_builds.end());
@@ -849,6 +872,9 @@ std::vector<float> ColonyEnvCpp::action_mask() {
     const bool apply_mask = cfg_.mask_managers_by_applicability;
     for (int i = 0; i < N_MANAGERS; ++i) {
         int act = manager_base_ + i;
+        // Mechanic curriculum is independent of applicability: a disabled
+        // action stays zero even when its game predicate happens to be true.
+        if (!mechanic_enabled_for_manager(i)) continue;
         if (i == 4) {
             // PRESERVE: только если есть непreserved здания
             bool has_unpreserved = false;
@@ -1031,6 +1057,48 @@ std::vector<float> ColonyEnvCpp::minimap() const {
 
 ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     Game& g = game_;
+
+    // Hard enforcement: Python masks are advisory. A stale policy, direct C++
+    // caller, or race during a curriculum update must not mutate economy state
+    // or advance the calendar through a disabled manager slot. Count the RL
+    // interaction for diagnostics, but return immediately before tax grace,
+    // Game actions, and advance_day().
+    int disabled_manager = -1;
+    if (action >= manager_base_ && action < manager_base_ + N_MANAGERS) {
+        disabled_manager = action - manager_base_;
+        if (mechanic_enabled_for_manager(disabled_manager)) disabled_manager = -1;
+    }
+    if (disabled_manager >= 0) {
+        const double rew = std::clamp(cfg_.error_penalty, cfg_.clip_reward_min, cfg_.clip_reward_max);
+        ++steps_;
+        ep_return_ += rew;
+        last_reward_ = rew;
+        last_tax_borrowed_ = 0;
+        episode_metrics_.total_reward = (int64_t)ep_return_;
+        episode_metrics_.days_survived = g.days_alive;
+        episode_metrics_.net_worth = net_worth();
+        StepOut out;
+        out.obs = obs();
+        out.rew = rew;
+        out.terminated = false;
+        out.truncated = (steps_ >= MAX_STEPS);
+        out.days = g.days_alive;
+        out.people = g.people;
+        out.money = g.money;
+        out.n_bases = (int64_t)g.bases.size();
+        out.seed = (int64_t)g.earth.seed();
+        out.tax_due_days = tax_due_days_;
+        out.tax_grace_expired = tax_grace_expired();
+        out.ep_return = ep_return_;
+        out.steps = steps_;
+        out.tax_borrowed = 0;
+        out.metrics = episode_metrics_;
+        if (step_log_.is_open())
+            step_log_ << "STEP " << steps_ << " | DISABLED_MECHANIC:"
+                      << disabled_manager << " | calendar_unchanged=1\n";
+        return out;
+    }
+
     double rew = 0.0;
 
     // ROAD_E/W/S/N fold onto the ordinary BUILD:Road action, carrying a

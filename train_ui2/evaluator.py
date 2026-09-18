@@ -136,7 +136,7 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
         )
 
     try:
-        model.load_state_dict(model_state)
+        model.load_state_dict(model_state, strict=False)
     except RuntimeError:
         raise ValueError(
             "checkpoint state_dict does not match the inferred architecture"
@@ -163,6 +163,8 @@ def run_eval(
     curriculum_resources: str | None = None,
     allow_stale_pyd: bool | None = None,
     obs_version: int = 2,
+    enabled_mechanics=None,
+    tax_to_debt: bool | None = None,
 ) -> Dict[str, float]:
     """Run the trained policy in the colony env and return mean stats.
 
@@ -199,31 +201,47 @@ def run_eval(
     use_minimap = isinstance(policy, ActorCriticCNN)
     is_hybrid = isinstance(policy, ActorCriticHybrid)
 
-    # Read reward/curriculum config from the model's meta.json to match training
+    # Read reward/curriculum config from the model's metadata. A checkpoint
+    # sidecar (checkpoint_*.meta.json) has priority over run/best metadata;
+    # otherwise evaluating a late checkpoint could silently use the final
+    # mechanic allow-list.
     reward_cfg = None
     model_dir = model_path.parent
     meta: Dict[str, Any] = {}
-    for meta_name in ("best_model.meta.json", "meta.json"):
-        meta_path = model_dir / meta_name
-        if meta_path.exists():
-            try:
-                import json as _json
-                loaded = _json.loads(meta_path.read_text(encoding="utf-8"))
-                if not isinstance(loaded, dict):
-                    continue
-                meta = loaded
-                reward_cfg = meta.get("config", {}).get("reward")
-                difficulty = meta.get("difficulty", difficulty)
-                if reward_cfg:
-                    break
-            except (Exception,):
-                pass
+    meta_paths = [
+        model_path.with_suffix(".meta.json"),
+        model_dir / "best_model.meta.json",
+        model_dir / "meta.json",
+    ]
+    for meta_path in meta_paths:
+        if not meta_path.exists():
+            continue
+        try:
+            import json as _json
+            loaded = _json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                continue
+            # Earlier entries are more specific; fill only missing keys from
+            # the run-level metadata.
+            for key, value in loaded.items():
+                if key not in meta:
+                    meta[key] = value
+            loaded_cfg = loaded.get("config")
+            if reward_cfg is None and isinstance(loaded_cfg, dict):
+                reward_cfg = loaded_cfg.get("reward")
+            if "difficulty" in loaded and "difficulty" not in meta:
+                difficulty = loaded["difficulty"]
+        except (Exception,):
+            pass
+
+    if tax_to_debt is None:
+        tax_to_debt = bool(meta.get("tax_to_debt", meta.get("config", {}).get("tax_to_debt", True)))
 
     # Explicit args win; otherwise restore the scenario stored next to the model.
     # PR 1: the env takes ONE computed state (resolve_state); the resolved dict
     # stays for logging (stage/manual/count as before).
     resolved = resolve_curriculum(
-        model_dir,
+        None,
         meta=meta,
         curriculum_stage=curriculum_stage,
         unlock_ids=unlock_ids,
@@ -231,13 +249,14 @@ def run_eval(
         resources=curriculum_resources,
     )
     st = resolve_state(
-        model_dir,
+        None,
         meta=meta,
         curriculum_stage=curriculum_stage,
         unlock_ids=unlock_ids,
         use_curriculum_tab=use_curriculum_tab,
         resources=curriculum_resources,
         obs_version=obs_version,
+        enabled_mechanics=enabled_mechanics,
     )
     cur_stage = int(resolved["curriculum_stage"])  # type: ignore[arg-type]
     manual_csv = str(resolved["unlock_ids"])
@@ -248,6 +267,7 @@ def run_eval(
         reward_config=reward_cfg,
         difficulty=difficulty,
         curriculum=st,
+        tax_to_debt=bool(tax_to_debt),
     )
     # PR 5: obs-layout compatibility — a v0 policy on a v1 env (or vice
     # versa) must fail here with a clear message, not in a matmul.
@@ -257,7 +277,7 @@ def run_eval(
         stored_obs_version,
     )
     check_obs_version_compat(
-        stored_obs_version(model_dir, meta or None),
+        stored_obs_version(None, meta or None),
         st.obs_version,
         ckpt_path=str(model_path),
     )

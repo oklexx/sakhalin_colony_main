@@ -178,6 +178,22 @@ class Config:
     # к ближайшим wood/coal/iron/oil/gold). 2 — дефолт: без направлений 12
     # из 32 построек недостижимы политикой (карты в flat-obs нет).
     obs_version: int = 2  # = rl.curriculum.CURRENT_OBS_VERSION (держать в синхроне)
+    # Automatic tax settlement is deliberately independent from the manual
+    # TAKE_LOAN/REPAY_LOAN mechanic gate. True converts unpaid tax to bank debt;
+    # false keeps the explicit/dialogue tax policy (no hidden manual loan).
+    tax_to_debt: bool = True
+    # Mechanic gating never changes the 49-logit action head. These defaults
+    # keep the early curriculum focused on build/economy primitives; unlock
+    # entries are additive and applied by absolute environment steps.
+    disabled_mechanics: List[str] = field(
+        default_factory=lambda: ["improve_land", "preservation", "credit"]
+    )
+    mechanics_unlock_schedule: List = field(
+        default_factory=lambda: [
+            [200_000, ["improve_land", "preservation"]],
+            [500_000, ["credit"]],
+        ]
+    )
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # ── PPO ──
@@ -311,6 +327,14 @@ class Config:
 
         cfg = cls(**filtered)  # type: ignore[arg-type]
 
+        # A pre-mechanic config/checkpoint had no gating contract. Preserve its
+        # legacy all-enabled behaviour; newly created Config() instances use
+        # the early-economy defaults above. Once serialized, the new fields are
+        # explicit and therefore survive round-trips.
+        if "disabled_mechanics" not in src and "mechanics_unlock_schedule" not in src:
+            cfg.disabled_mechanics = []
+            cfg.mechanics_unlock_schedule = []
+
         if reward_raw is not None:
             # reward_raw may be dict or nested
             if isinstance(reward_raw, dict):
@@ -341,6 +365,10 @@ class Config:
             raw = json.load(f)
         if not isinstance(raw, dict):
             raise ValueError(f"config file {p} must contain a JSON object")
+        if "disabled_mechanics" not in raw and "mechanics_unlock_schedule" not in raw:
+            # Same compatibility rule as from_dict for old flat config files.
+            self.disabled_mechanics = []
+            self.mechanics_unlock_schedule = []
         allowed = {f.name for f in fields(self)} - {"reward"}
         for k, v in raw.items():
             if k in allowed:
@@ -363,16 +391,32 @@ class Config:
 
         return manual_ids_csv(self.unlock_ids, self.use_curriculum_tab)
 
-    def curriculum_state(self) -> CurriculumState:
-        """Computed curriculum for every env instance (PR 1 single contract)."""
-        from rl.curriculum import build_state
+    def curriculum_state(self, step: int = 0) -> CurriculumState:
+        """Compute one transport contract for a training/eval environment.
 
+        ``step`` is absolute training progress. Eval/watch callers use the
+        checkpoint's persisted allow-list or explicitly pass a step; a fresh
+        run therefore starts with the configured mechanics disabled.
+        """
+        from rl.curriculum import build_state, mechanics_enabled_at_step
+
+        enabled = mechanics_enabled_at_step(
+            step, self.disabled_mechanics, self.mechanics_unlock_schedule
+        )
         return build_state(
             self.curriculum_stage,
             self.unlock_ids,
             self.use_curriculum_tab,
             self.curriculum_resources,
             self.obs_version,
+            enabled,
+        )
+
+    def enabled_mechanics_at(self, step: int = 0) -> tuple[str, ...]:
+        """Canonical allow-list at ``step`` (useful for metadata/UI/tests)."""
+        from rl.curriculum import mechanics_enabled_at_step
+        return mechanics_enabled_at_step(
+            step, self.disabled_mechanics, self.mechanics_unlock_schedule
         )
 
     def curriculum_meta(self) -> Dict[str, Any]:
@@ -383,6 +427,10 @@ class Config:
             "use_curriculum_tab": bool(self.use_curriculum_tab),
             "curriculum_resources": str(self.curriculum_resources or ""),
             "obs_version": int(self.obs_version),
+            "tax_to_debt": bool(self.tax_to_debt),
+            "disabled_mechanics": list(self.disabled_mechanics),
+            "mechanics_unlock_schedule": self.mechanics_unlock_schedule,
+            "enabled_mechanics": list(self.enabled_mechanics_at(0)),
         }
 
     # ── convenience ──

@@ -33,7 +33,10 @@ class ActorCriticBase(nn.Module):
         return {k: v.detach().cpu().clone() for k, v in self.state_dict().items()}
 
     def load_state_dict_from_env(self, state: dict) -> None:
-        self.load_state_dict(state)
+        # Legacy checkpoints predate the critic's value-only action-mask
+        # projection; the actor/action head and observation contract are still
+        # identical, so missing optional keys are safe.
+        self.load_state_dict(state, strict=False)
 
     @staticmethod
     def _categorical_log_prob(logits: torch.Tensor, action: torch.Tensor | None):

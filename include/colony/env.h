@@ -29,6 +29,9 @@ struct Curriculum {
     std::array<double, SUNDUK_SIZE> resource_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     int stage_report = 0;                      // только для obs-фичи и дампов
     int obs_version = 0;  // 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim (P0: +dx/dy to nearest lots)
+    // Fixed manager slots: improve_land, preservation (preserve + unpreserve),
+    // credit (take + repay). Missing transport field keeps legacy/all-enabled behaviour.
+    std::array<bool, 3> enabled_mechanics{true, true, true};
     // Разобрать JSON вида {"all_builds":bool,"allowed_builds":[...],"stage":int}
     // (транспорт watch_champion -> GUI/main). Бросает std::runtime_error.
     static Curriculum from_json(const std::string& text);
@@ -53,6 +56,12 @@ public:
     Curriculum curriculum() const { return curriculum_; }
     bool build_allowed(const std::string& id) const {
         return curriculum_.all_builds || curriculum_.allowed_builds.count(id) > 0;
+    }
+    bool mechanic_enabled_for_manager(int manager_index) const {
+        if (manager_index == 0) return curriculum_.enabled_mechanics[0];
+        if (manager_index == 4 || manager_index == 5) return curriculum_.enabled_mechanics[1];
+        if (manager_index == 8 || manager_index == 9) return curriculum_.enabled_mechanics[2];
+        return true;
     }
     // PR 2: Game::build — последний рубеж (туда же ходит GUI напрямую).
     // Пересаживается в ctor/set_curriculum/reset: reset() пересоздаёт game_

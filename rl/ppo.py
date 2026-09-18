@@ -160,9 +160,9 @@ class PPO:
         self.model.eval()
         with torch.no_grad():
             if self.is_hybrid:
-                logits, values = self._forward(flat, minimap)
+                logits, values = self._forward(flat, minimap, action_masks)
             else:
-                logits, values = self._forward(flat)
+                logits, values = self._forward(flat, action_masks)
             if action_masks is not None:
                 # Mask unavailable actions: set logits to a large negative value
                 # (-1e9 instead of -inf to avoid NaN when all actions are blocked)
@@ -288,9 +288,9 @@ class PPO:
         action_masks: Optional[torch.Tensor] = None,
     ):
         if self.is_hybrid:
-            logits, values = self._forward(flat, obs)
+            logits, values = self._forward(flat, obs, action_masks)
         else:
-            logits, values = self._forward(obs)
+            logits, values = self._forward(obs, action_masks)
         # Apply action masks: set blocked actions to a large negative value.
         # Always upcast to float32: log_probs/entropy/ratio must not be
         # computed in bf16 (quantization noise directly biases the ratio).
@@ -364,5 +364,13 @@ class PPO:
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self._raw_model.load_state_dict(ckpt["model_state"])
-        self.optimizer.load_state_dict(ckpt["optimizer_state"])
+        # Newer models have a zero-initialized value-only mask projection.
+        # Missing keys are expected for legacy checkpoints; output heads and
+        # observation/action dimensions remain unchanged.
+        self._raw_model.load_state_dict(ckpt["model_state"], strict=False)
+        try:
+            self.optimizer.load_state_dict(ckpt["optimizer_state"])
+        except (KeyError, ValueError, RuntimeError):
+            # Legacy checkpoints predate critic_mask_proj; weights remain valid
+            # and the optimizer is intentionally left freshly initialized.
+            pass

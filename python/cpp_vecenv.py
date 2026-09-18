@@ -38,6 +38,7 @@ class CppVecEnv(VecEnv):
         n_threads: int = 0,
         render_mode: Optional[str] = None,
         difficulty: str = "normal",
+        tax_to_debt: bool = True,
     ):
         # PR 3: fail fast on a stale binary (escape: COLONY_ALLOW_STALE_PYD=1).
         require_colony()
@@ -122,6 +123,7 @@ class CppVecEnv(VecEnv):
             reward=rc,
             n_threads=n_threads,
             difficulty=difficulty,
+            tax_to_debt=tax_to_debt,
         )
 
         obs_size = self.cpp_vec.obs_size()

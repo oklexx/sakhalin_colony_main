@@ -61,29 +61,39 @@ class ActorCriticCNN(ActorCriticBase):
         self.trunk = nn.Sequential(*layers).to(device)
         self.actor_head = nn.Linear(prev, n_actions).to(device)
         self.critic_head = nn.Linear(prev, 1).to(device)
+        self.critic_mask_proj = nn.Linear(n_actions, 1, bias=False).to(device)
 
         self._init_weights()
+        nn.init.constant_(self.critic_mask_proj.weight, 0.0)
 
     def _init_weights(self) -> None:
         for m in self.modules():
             orthogonal_init(m, gain=1.0)
 
-    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, obs: torch.Tensor, action_masks: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         # obs: [B, C, R, R]
         h = self.conv(obs)
         h = h.flatten(1)
         h = self.trunk(h)
-        return self.actor_head(h), self.critic_head(h)
+        values = self.critic_head(h)
+        if action_masks is not None:
+            values = values + self.critic_mask_proj(action_masks.float())
+        return self.actor_head(h), values
 
     def get_action_and_value(
         self,
         obs: torch.Tensor,
         action: Optional[torch.Tensor] = None,
+        action_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, values = self.forward(obs)
+        logits, values = self.forward(obs, action_masks)
         action, log_probs, _ = self._categorical_log_prob(logits, action)
         return action, log_probs, values.squeeze(-1)
 
-    def get_value(self, obs: torch.Tensor) -> torch.Tensor:
-        _, values = self.forward(obs)
+    def get_value(
+        self, obs: torch.Tensor, action_masks: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        _, values = self.forward(obs, action_masks)
         return values.squeeze(-1)
