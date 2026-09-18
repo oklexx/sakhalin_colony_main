@@ -177,6 +177,141 @@ int main() {
               "R3 WaterChannel intentionally has no proximity bonus (it sits on water)");
     }
 
+    // ── R4: housing bonus must stay finite ──────────────────────────────────
+    // The block computes log1p((people - housing) / 10) AFTER advance_day,
+    // and advance_day's overflow kills everyone beyond home capacity — so
+    // (people - housing) <= 0 always. The old formula then produced:
+    //   -inf at housing - people == 10  (log1p(-1)),
+    //   NaN  at housing - people > 10   (log1p(x< -1)).
+    // Measured (seed 42, manual_plan probe, step 1861: people=220, home=230,
+    // action BUILD:House): build=-inf, and with ep_return_ += rew before the
+    // isfinite guard the whole episode return stayed -inf (dashboard NaN).
+    // Post-fix the bonus is 0 unless there is a real (pre-death) shortage.
+    {
+        auto run = [&](int64_t people, int houses) {
+            ColonyEnvCpp e(bd, ed, 42, 200);
+            e.reset(42);
+            e.game().money = 2'000'000;
+            for (int i = 0; i < houses; i++) {
+                auto cell = e.find_lot(LT_EVERYWHERE, false);
+                if (!cell) break;
+                e.game().build("House", cell->first, cell->second);
+            }
+            // дома 25 дней строятся — дождаться завершения, иначе
+            // now_home_places() не увидит готовую ёмкость и сценарий не сойдётся
+            for (int k = 0; k < 30; k++) {
+                ColonyEnvCpp::StepOut o = e.step(A_DAY);
+                if (o.terminated) break;
+            }
+            e.game().people = people;
+            int hs = find_id(e, "House");
+            bool finite = true;
+            double total = 0.0;
+            for (int k = 0; k < 5; k++) {
+                ColonyEnvCpp::StepOut out = e.step(A_BUILD0 + hs);
+                if (!std::isfinite(out.rew) || !std::isfinite(out.ep_return))
+                    finite = false;
+                total += out.rew;
+                if (out.terminated) break;
+            }
+            return std::make_pair(total, finite);
+        };
+        // (housing - people) == 10 exactly -> old code: log1p(-1) = -inf,
+        // который гвард вынужденно переводил в rew=0 и СТЫРАЛ весь
+        // сшаг (build+taxb+milestone). Новое поведение: бонус = 0,
+        // штатная награда шага остаётся положительной.
+        auto trap = run(220, 3);
+        printf("[info] R4 boundary (people=220, home=230): rew5=%+.3f finite=%d\n",
+               trap.first, (int)trap.second);
+        check(trap.second && trap.first > 0.0,
+              "R4a boundary surplus: finite, and step reward is not wiped by -inf");
+        // (housing - people) > 10 -> old code: log1p(x < -1) = NaN -> rew=0
+        auto over = run(200, 3);
+        printf("[info] R4 surplus (people=200, home=230): rew5=%+.3f finite=%d\n",
+               over.first, (int)over.second);
+        check(over.second && over.first > 0.0,
+              "R4b larger surplus: finite, no NaN wipe");
+        // mild surplus: old code gave a small NEGATIVE 'bonus'; post-fix 0.
+        auto mild = run(225, 3);
+        check(mild.second && std::isfinite(mild.first),
+              "R4c mild housing surplus stays finite");
+        // real shortage at step start (people > home): overflow kills the
+        // excess on the first advance_day, so no bonus can be positive — the
+        // run must at least stay finite and not terminate instantly.
+        auto shortage = run(400, 0);
+        check(shortage.second, "R4d population overflow stays finite");
+    }
+
+    // ── R5: Road shaping towards water creates a positive learning gradient ─
+    {
+        ColonyEnvCpp e(bd, ed, 42, 200);
+        e.reset(42);
+
+        int rdb = e.road_dir_base();
+        int wc_act = find_id(e, "WaterChannel");
+        check(wc_act >= 0, "R5 precondition: WaterChannel exists in build catalogue");
+        int wc_full_act = A_BUILD0 + wc_act;
+
+        // WaterChannel must be masked at start
+        check(e.action_mask()[wc_full_act] == 0.0f,
+              "R5a WaterChannel is masked at reset (water is far)");
+
+        // Road towards water gives strictly higher reward than DAY
+        ColonyEnvCpp e_day(bd, ed, 42, 200);
+        e_day.reset(42);
+        auto s_day = e_day.step(A_DAY);
+
+        auto o = e.obs();
+        double wdx = o[o.size() - 2];
+        double wdy = o[o.size() - 1];
+        int best_dir = -1; double best_dot = -1e9;
+        int worst_dir = -1; double worst_dot = 1e9;
+        for (int d = 0; d < 4; d++) {
+            double dot = ROAD_DIR_DX[d] * wdx + ROAD_DIR_DY[d] * wdy;
+            if (dot > best_dot) { best_dot = dot; best_dir = d; }
+            if (dot < worst_dot) { worst_dot = dot; worst_dir = d; }
+        }
+
+        ColonyEnvCpp e_good(bd, ed, 42, 200);
+        e_good.reset(42);
+        auto s_good = e_good.step(rdb + best_dir);
+
+        ColonyEnvCpp e_bad(bd, ed, 42, 200);
+        e_bad.reset(42);
+        auto s_bad = e_bad.step(rdb + worst_dir);
+
+        printf("[info] R5 step 0: road towards water rew=%+.3f, DAY rew=%+.3f, road away rew=%+.3f\n",
+               s_good.rew, s_day.rew, s_bad.rew);
+        check(s_good.rew > s_day.rew,
+              "R5b road towards water earns higher reward than DAY (gradient towards water)");
+        check(s_good.rew > s_bad.rew,
+              "R5c road towards water earns higher reward than road away");
+
+        // Follow the road towards water until WaterChannel unmasks
+        bool reached = false;
+        ColonyEnvCpp e_walk(bd, ed, 42, 200);
+        e_walk.reset(42);
+        for (int step = 0; step < 12; step++) {
+            auto m = e_walk.action_mask();
+            if (m[wc_full_act] != 0.0f) {
+                reached = true;
+                break;
+            }
+            auto ow = e_walk.obs();
+            double dx = ow[ow.size() - 2], dy = ow[ow.size() - 1];
+            int d_best = -1; double bs = -1e18;
+            for (int d = 0; d < N_ROAD_DIRS; d++) {
+                if (m[rdb + d] == 0.0f) continue;
+                double sc = -(std::fabs(dx - ROAD_DIR_DX[d] * 0.05) +
+                              std::fabs(dy - ROAD_DIR_DY[d] * 0.05));
+                if (sc > bs) { bs = sc; d_best = d; }
+            }
+            if (d_best < 0) break;
+            e_walk.step(rdb + d_best);
+        }
+        check(reached, "R5d road chain successfully unmasks WaterChannel");
+    }
+
     printf("\n%s (%d failure(s))\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;
 }

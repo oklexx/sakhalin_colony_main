@@ -8,6 +8,7 @@ observation-mode branching. Public API is unchanged for Config/EnvManager
 consumers.
 """
 
+import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -127,6 +128,11 @@ def _make_buffer(
 def _make_ppo(cfg: Config, model, buffer):
     from rl.ppo import PPO
 
+    steps_per_rollout = cfg.n_steps * cfg.n_envs
+    n_rollouts = max(1, int(math.ceil(cfg.total_timesteps / max(1, steps_per_rollout))))
+    batches_per_epoch = max(1, steps_per_rollout // max(1, cfg.batch_size))
+    total_optimizer_steps = n_rollouts * cfg.n_epochs * batches_per_epoch
+
     return PPO(
         model=model,
         buffer=buffer,
@@ -143,7 +149,7 @@ def _make_ppo(cfg: Config, model, buffer):
         use_amp=cfg.use_amp,
         amp_dtype=cfg.amp_dtype,
         torch_compile=cfg.torch_compile,
-        total_training_steps=cfg.total_timesteps,
+        total_training_steps=total_optimizer_steps,
         target_kl=cfg.target_kl,
         obs_version=cfg.obs_version,
     )

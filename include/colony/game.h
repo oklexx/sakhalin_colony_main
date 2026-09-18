@@ -93,6 +93,12 @@ public:
     bool is_good(int x, int y) const { return good_lots[(size_t)y * map_size_ + x] != 0; }
     int64_t now_home_places() const;
     int64_t now_need_workers() const;
+    // Р5: публичное сбрасывание кэша ёмкости/рабочих — зовётся из
+    // Base::end_day в момент завершения стройки (can_work() меняется).
+    void invalidate_caches() {
+        cached_home_places_ = -1;
+        cached_need_workers_ = -1;
+    }
     int64_t free_people() const { return people - busy_people > 0 ? people - busy_people : 0; }
 
     // ---- налоги ----
@@ -233,10 +239,7 @@ private:
         cached_bases_count_ = bases.size();
         return 0;
     }
-    void invalidate_caches() {
-        cached_home_places_ = -1;
-        cached_need_workers_ = -1;
-    }
+    // invalidate_caches() объявлен в public-секции (Р5)
 
     // ---- milestone tracking ----
     int last_base_milestone_ = 0;

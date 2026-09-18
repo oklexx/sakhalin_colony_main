@@ -229,6 +229,32 @@ void ColonyEnvCpp::reset(int64_t seed) {
     chain_done_.clear();
     first_working_.clear();
     extracted_.clear();
+
+    // Potential-based road shaping: найти ближайшую клетку воды к стартовому городу
+    {
+        int ms = game_.map_size();
+        int bx = game_.earth.init_sel_x;
+        int by = game_.earth.init_sel_y;
+        const int8_t* lots = game_.earth.lots().data();
+        double best_sq = -1.0;
+        target_water_x_ = -1;
+        target_water_y_ = -1;
+        for (int y = 0; y < ms; ++y) {
+            for (int x = 0; x < ms; ++x) {
+                if (lots[(size_t)y * ms + x] == LT_WATER) {
+                    double d2 = (double)((x - bx) * (x - bx) + (y - by) * (y - by));
+                    if (best_sq < 0 || d2 < best_sq) {
+                        best_sq = d2;
+                        target_water_x_ = x;
+                        target_water_y_ = y;
+                    }
+                }
+            }
+        }
+        min_dist_to_water_ = (best_sq >= 0) ? std::sqrt(best_sq) : 1e9;
+        water_reached_ = (min_dist_to_water_ <= 1.5);
+    }
+
     // PR 6: вырожденный сценарий виден сразу, а не как «курикулум не работает»
     std::string deg = degenerate_report();
     if (!deg.empty()) std::cout << deg << std::flush;
@@ -1097,10 +1123,12 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                           << " | REASON: Постройка закрыта курикулумом.\n";
             }
             steps_ += 1;
-            ep_return_ += rew;
-            last_reward_ = rew;
+            // R4: finite-гвард ДО накопления — иначе -inf/NaN (например, из
+            // log1p) разносится в ep_return_ и last_reward_ навсегда.
             if (!std::isfinite(rew)) rew = 0.0;
             rew = std::clamp(rew, cfg_.clip_reward_min, cfg_.clip_reward_max);
+            ep_return_ += rew;
+            last_reward_ = rew;
             episode_metrics_.total_reward = ep_return_;
             episode_metrics_.reached_resources = (int64_t)extracted_.size();
             episode_metrics_.priority_reached = count_priority_reached();
@@ -1162,6 +1190,31 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             rew += build_r; c_build += build_r;
             double cost_r = -cfg_.build_cost_penalty * static_cast<double>(d->price);
             rew += cost_r; c_cost += cost_r;
+
+            // Potential-based road shaping: награда за приближение к воде.
+            // Решает фундаментальную проблему Credit Assignment: дорога не даёт дохода,
+            // пока не дотянется до воды (7-14 клеток). Без шейпинга агент получает -0.04
+            // за каждую дорогу и гарантированно бросает стройку в пользу DAY (0.0).
+            if (is_road && target_water_x_ >= 0 && cell && !water_reached_) {
+                double d_road = std::hypot((double)(cell->first - target_water_x_),
+                                           (double)(cell->second - target_water_y_));
+                if (d_road < min_dist_to_water_ - 0.25) {
+                    double progress = min_dist_to_water_ - d_road;
+                    min_dist_to_water_ = d_road;
+                    double road_shaping = std::min(1.5, 1.0 * progress);
+                    rew += road_shaping;
+                    c_proximity += road_shaping;
+                    if (d_road <= 1.5) {
+                        water_reached_ = true;
+                        rew += 3.0;
+                        c_proximity += 3.0;
+                    }
+                } else {
+                    rew -= 0.1;
+                    c_proximity -= 0.1;
+                }
+            }
+
             // diversity bonus: reward building new types (skip Road)
             if (is_new_type && !is_road) {
                 rew += cfg_.diversity_bonus; c_diversity += cfg_.diversity_bonus;
@@ -1340,8 +1393,29 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     } else if (!g.tax_postponed_ && g.main_tax_due()) {
         if (g.money >= g.main_tax_amount()) {
             g.pay_main_tax();
+            // v4: чистая оплата главного налога 500k из свободных средств
+            if (cfg_.main_tax_cash_bonus > 0.0) {
+                rew += cfg_.main_tax_cash_bonus;
+                c_tax_bonus += cfg_.main_tax_cash_bonus;
+            }
         } else if (!tax_to_debt_) {
             rew -= cfg_.tax_fail_penalty; c_tax -= cfg_.tax_fail_penalty;
+        }
+    }
+
+    // v4: мягкое давление при дефиците средств за <365 дней до главного налога 500k
+    if (cfg_.main_tax_pressure_coeff > 0.0 && !g.light()) {
+        int64_t y = g.year - START_YEAR;
+        bool in_pre_tax_window = (y % 10 == 9 && g.month >= 11) || (y > 0 && y % 10 == 0 && g.month < 11);
+        if (in_pre_tax_window) {
+            int64_t deficit = 500000 - g.money;
+            if (deficit > 0) {
+                int d_passed = (int)results.size();
+                if (d_passed < 1) d_passed = 1;
+                double pressure = cfg_.main_tax_pressure_coeff * ((double)deficit / 1000.0) * ((double)d_passed / 365.0);
+                rew -= pressure;
+                c_tax -= pressure;
+            }
         }
     }
     // P0 (2026-09-17): неоплаченный остаток НЕ останавливает календарь — он
@@ -1422,7 +1496,15 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                 const std::string& build_id = build_ids_[build_idx];
                 if (build_id == "House" || build_id == "SmallHouse" || 
                     build_id == "BigHouse" || build_id == "SuperHouse") {
-                    double housing_bonus = cfg_.housing_need_bonus * std::log1p((double)(people - housing) / 10.0);
+                    // R4 (2026-09): аргумент log1p обязан быть > -1. Условие
+                    // блока допускает housing > people (дефицит лишь < 20%),
+                    // и при (people - housing) <= -10 log1p даёт -inf (NaN
+                    // дальше), а это разносило reward и, до починки порядка
+                    // ep_return_ += rew, — весь ep_return до -inf. Бонус
+                    // определён только при реальном дефиците жилья.
+                    double housing_shortage =
+                        std::max(0.0, (double)(people - housing) / 10.0);
+                    double housing_bonus = cfg_.housing_need_bonus * std::log1p(housing_shortage);
                     rew += housing_bonus;
                     c_build += housing_bonus;
                 }
@@ -1582,6 +1664,11 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     // терминалы
     steps_ += 1;
+    // R4: finite-гвард ДО накопления — иначе -inf/NaN (например, из log1p)
+    // разносится в ep_return_ и last_reward_ навсегда (метрики, дашборд).
+    // Повторный гвард перед out.rew ниже остаётся: терминальный штраф и
+    // survival/idle добавляются после этого места.
+    if (!std::isfinite(rew)) rew = 0.0;
     ep_return_ += rew;
     last_reward_ = rew;
     bool terminated = false, truncated = false;
@@ -1602,6 +1689,15 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         rew -= cfg_.game_over_penalty; c_gameover -= cfg_.game_over_penalty;
     } else if (steps_ >= MAX_STEPS) {
         truncated = true;
+    }
+
+    // v4: цель на выживание — терминальный бонус пропорционально прожитым дням (к цели 10 000 дней)
+    if (terminated || truncated) {
+        if (cfg_.goal_survival_coeff > 0.0) {
+            double goal_r = cfg_.goal_survival_coeff * std::min(1.0, (double)g.days_alive / 10000.0);
+            rew += goal_r;
+            c_survival += goal_r;
+        }
     }
 
     rew += cfg_.survival_bonus; c_survival += cfg_.survival_bonus;

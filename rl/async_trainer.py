@@ -682,6 +682,17 @@ class AsyncTrainer:
                 norm_path = str(ckpt_path).replace(".pt", ".norm.json")
                 (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(norm_path)
                 (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(save_dir / "normalization.json"))
+                # Записать метаданные чекпоинта (стадия курикулума, шаги, obs_version)
+                meta_file = Path(str(ckpt_path).replace(".pt", ".meta.json"))
+                try:
+                    with open(meta_file, "w", encoding="utf-8") as mf:
+                        json.dump({
+                            "curriculum_stage": int(self._curriculum_stage),
+                            "total_timesteps": total_done,
+                            "obs_version": int(getattr(self.cfg, "obs_version", 2)),
+                        }, mf)
+                except Exception:
+                    pass
                 self._log(f"[Save] {ckpt_path}")
 
             # Curriculum stage switching
@@ -757,6 +768,18 @@ class AsyncTrainer:
                     cp_norm = Path(str(cp).replace(".pt", ".norm.json"))
                     cp_norm_str = str(cp_norm) if cp_norm.exists() else norm_str
 
+                    # Оценивать чекпоинт под той стадией курикулума, под которой он учился
+                    eval_curriculum = dict(self._curriculum_kwargs())
+                    cp_meta = Path(str(cp).replace(".pt", ".meta.json"))
+                    if cp_meta.exists():
+                        try:
+                            with open(cp_meta, encoding="utf-8") as cmf:
+                                cdata = json.load(cmf)
+                                if "curriculum_stage" in cdata:
+                                    eval_curriculum["curriculum_stage"] = int(cdata["curriculum_stage"])
+                        except Exception:
+                            pass
+
                     all_days = []
                     all_bases = []
                     all_people = []
@@ -773,7 +796,7 @@ class AsyncTrainer:
                             mode=getattr(self.cfg, "obs_mode", "flat"),
                             minimap_radius=getattr(self.cfg, "minimap_radius", 14),
                             difficulty=getattr(self.cfg, "difficulty", "normal"),
-                            **self._curriculum_kwargs(),
+                            **eval_curriculum,
                         )
                         all_days.extend(res.get("episode_days", [res["days"]]))
                         all_bases.extend(res.get("episode_bases", [res["bases"]]))
@@ -794,11 +817,18 @@ class AsyncTrainer:
                     bases_std = float(np.std(all_bases)) if all_bases else 0.0
                     days_std = float(np.std(all_days)) if all_days else 0.0
                     variance_penalty = 0.2 * bases_std + 0.001 * days_std
-                    sc = (days_agg * w1 + bases_agg * w2
-                             + people_agg * w3 + max(0.0, return_agg) * w4
-                             - variance_penalty)
 
-                    if bases_agg >= min_b and days_agg >= min_d and sc > best_cand_score:
+                    # Балансировка очков турнира:
+                    # 1) Ограничиваем вклад числа баз (до 15), чтобы спам сараев в долг не давал победу
+                    effective_bases = min(bases_agg, 15.0)
+                    # 2) Реальный вес возврата (0.005 вместо 0.0001): здоровая экономика +2000 даёт +10 очков
+                    return_score = return_agg * 0.005
+                    sc = (days_agg * w1 + effective_bases * w2
+                          + people_agg * w3 + return_score
+                          - variance_penalty)
+
+                    # Только модели без банкротства (return > -5000) могут победить
+                    if bases_agg >= min_b and days_agg >= min_d and return_agg > -5000.0 and sc > best_cand_score:
                         best_cand_score = sc
                         best_cand_path = cp
                 except Exception as ex:

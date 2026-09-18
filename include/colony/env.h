@@ -263,6 +263,12 @@ private:
     // Step log
     std::string step_log_path_;
     std::ofstream step_log_;
+
+    // Potential-based road shaping towards water
+    int target_water_x_ = -1;
+    int target_water_y_ = -1;
+    double min_dist_to_water_ = 1e9;
+    bool water_reached_ = false;
 };
 
 // Batched vectorized environment — N ColonyEnvCpp instances in one process.
