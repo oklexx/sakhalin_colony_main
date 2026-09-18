@@ -92,7 +92,8 @@ def test_fresh_binary_returns_info(fake_colony):
     fake_colony(extension_info=lambda: {
         "version": EXTENSION_MIN_VERSION,
         "features": ["set_curriculum", "curriculum", "resource_curriculum", "minimap",
-                     "action_masks_batch", "obs_v2", "tax_to_debt"],
+                     "action_masks_batch", "obs_v2", "tax_to_debt",
+                     "mechanic_curriculum"],
         "src_sha": "deadbee"})
     info = require_colony()
     assert info["version"] == EXTENSION_MIN_VERSION
@@ -106,7 +107,7 @@ def test_required_features_contract():
     # resource_curriculum (PR 4): a binary that ignores weights must fail loudly.
     assert "resource_curriculum" in REQUIRED_FEATURES
     # P0 (2026-09-17): obs v2 (299) и налог-в-долг — обязательные фичи.
-    assert {"obs_v2", "tax_to_debt"} <= set(REQUIRED_FEATURES)
+    assert {"obs_v2", "tax_to_debt", "mechanic_curriculum"} <= set(REQUIRED_FEATURES)
     assert EXTENSION_MIN_VERSION >= 3
 
 

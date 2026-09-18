@@ -84,6 +84,7 @@ class AsyncTrainer:
         self._ep_returns_maxlen = 10000
         self._ep_lengths: list[int] = []
         self._curriculum_stage = getattr(cfg, "curriculum_stage", 0)
+        self._curriculum_progress_step = 0
 
         # Loop detection
         self.loop_detector = (
@@ -182,11 +183,25 @@ class AsyncTrainer:
                       .cpu().numpy())
 
         with torch.no_grad():
+            # Bootstrap the critic with the same action-availability context
+            # used during rollout/update. This is especially important at a
+            # mechanic unlock: the fixed action head stays 49-wide, but the
+            # value function must see that the manager branch changed.
+            _vec = getattr(self.em, "vec_env", None)
+            _mask_np = getattr(_vec, "action_masks", None) if _vec is not None else None
+            last_masks = (torch.as_tensor(
+                np.asarray(_mask_np, dtype=np.float32),
+                device=self.device, dtype=torch.float32
+            ) if _mask_np is not None else None)
             if getattr(self.em, "obs_mode", "flat") == "hybrid":
                 last_flat, last_minimap = obs
-                last_value = self.em.ppo.model.get_value(last_flat, last_minimap)
+                last_value = (self.em.ppo.model.get_value(last_flat, last_minimap, last_masks)
+                              if last_masks is not None else
+                              self.em.ppo.model.get_value(last_flat, last_minimap))
             else:
-                last_value = self.em.ppo.model.get_value(obs)
+                last_value = (self.em.ppo.model.get_value(obs, last_masks)
+                              if last_masks is not None else
+                              self.em.ppo.model.get_value(obs))
             last_done = torch.tensor(terminated, dtype=torch.bool, device=self.device)
 
         return {
@@ -297,9 +312,14 @@ class AsyncTrainer:
             "curriculum_stage_at_best": int(self._curriculum_stage),
             "unlock_ids": self.cfg.effective_unlock_ids(),
             "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
+            "curriculum_resources": str(getattr(self.cfg, "curriculum_resources", "") or ""),
+            "tax_to_debt": bool(getattr(self.cfg, "tax_to_debt", True)),
             # PR 5: without this the eval-dir meta reads as legacy v0 and the
             # stored-vs-env check fails mid-training on a v1 run.
             "obs_version": int(getattr(self.cfg, "obs_version", 2)),
+            "disabled_mechanics": list(getattr(self.cfg, "disabled_mechanics", [])),
+            "mechanics_unlock_schedule": getattr(self.cfg, "mechanics_unlock_schedule", []),
+            "enabled_mechanics": list(self.cfg.enabled_mechanics_at(self._curriculum_progress_step)),
         }
 
     def _curriculum_kwargs(self) -> Dict[str, Any]:
@@ -311,6 +331,8 @@ class AsyncTrainer:
             # PR 5: run_eval's version is explicit-only, so a --obs-version 0
             # training run must thread it here or in-training eval errors out.
             "obs_version": int(getattr(self.cfg, "obs_version", 2)),
+            "tax_to_debt": bool(getattr(self.cfg, "tax_to_debt", True)),
+            "enabled_mechanics": list(self.cfg.enabled_mechanics_at(self._curriculum_progress_step)),
         }
 
     def _update_best_meta_curriculum(self, save_dir: Path) -> None:
@@ -689,7 +711,14 @@ class AsyncTrainer:
                         json.dump({
                             "curriculum_stage": int(self._curriculum_stage),
                             "total_timesteps": total_done,
+                            "unlock_ids": self.cfg.effective_unlock_ids(),
+                            "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
+                            "curriculum_resources": str(getattr(self.cfg, "curriculum_resources", "") or ""),
                             "obs_version": int(getattr(self.cfg, "obs_version", 2)),
+                            "tax_to_debt": bool(getattr(self.cfg, "tax_to_debt", True)),
+                            "enabled_mechanics": list(self.cfg.enabled_mechanics_at(self._curriculum_progress_step)),
+                            "disabled_mechanics": list(getattr(self.cfg, "disabled_mechanics", [])),
+                            "mechanics_unlock_schedule": getattr(self.cfg, "mechanics_unlock_schedule", []),
                         }, mf)
                 except Exception:
                     pass
@@ -703,6 +732,16 @@ class AsyncTrainer:
                         self._curriculum_stage = stage
                         self._log(f"[Curriculum] Stage -> {stage} at step {total_done:,}")
                         break
+
+            # Mechanic unlocks are an additive allow-list over the fixed action
+            # head. Apply only when the schedule actually changes it; unlike a
+            # stage replacement this can never re-lock an action mid-episode.
+            target_mechanics = self.cfg.enabled_mechanics_at(total_done)
+            current_mechanics = self.cfg.enabled_mechanics_at(self._curriculum_progress_step)
+            if target_mechanics != current_mechanics:
+                self.em.set_curriculum_progress(total_done)
+                self._log(f"[Curriculum] Mechanics -> {list(target_mechanics)} at step {total_done:,}")
+            self._curriculum_progress_step = total_done
 
             # Run eval
             if eval_every > 0 and rollout_idx % eval_every == 0:
@@ -777,6 +816,10 @@ class AsyncTrainer:
                                 cdata = json.load(cmf)
                                 if "curriculum_stage" in cdata:
                                     eval_curriculum["curriculum_stage"] = int(cdata["curriculum_stage"])
+                                if "enabled_mechanics" in cdata:
+                                    eval_curriculum["enabled_mechanics"] = list(cdata["enabled_mechanics"])
+                                if "tax_to_debt" in cdata:
+                                    eval_curriculum["tax_to_debt"] = bool(cdata["tax_to_debt"])
                         except Exception:
                             pass
 

@@ -441,3 +441,41 @@ def test_resolve_state_obs_version_explicit_only(tmp_path):
         "curriculum_stage_at_best": 0, "obs_version": 0})
     assert resolve_state(tmp_path).obs_version == 1
     assert resolve_state(tmp_path, obs_version=0).obs_version == 0
+
+# ── mechanic curriculum: fixed action head, additive unlocks ────────────────
+
+def test_mechanics_schedule_is_monotonic_and_round_trips():
+    from rl.curriculum import CurriculumState, mechanics_enabled_at_step
+
+    schedule = [
+        [200_000, ["improve_land", "preservation"]],
+        [500_000, ["credit"]],
+    ]
+    assert mechanics_enabled_at_step(0, ["improve_land", "preservation", "credit"], schedule) == ()
+    assert mechanics_enabled_at_step(200_000, ["improve_land", "preservation", "credit"], schedule) == (
+        "improve_land", "preservation"
+    )
+    assert mechanics_enabled_at_step(500_000, ["improve_land", "preservation", "credit"], schedule) == (
+        "improve_land", "preservation", "credit"
+    )
+    with pytest.raises(ValueError, match="sorted thresholds"):
+        mechanics_enabled_at_step(0, [], [[20, ["credit"]], [10, ["improve_land"]]])
+
+    st = CurriculumState.all()
+    st = CurriculumState(
+        st.all_builds, st.allowed_builds, st.all_resources, st.resource_weights,
+        st.stage_report, st.obs_version, ("preservation",),
+    )
+    assert CurriculumState.from_dict(st.to_dict()).enabled_mechanics == ("preservation",)
+
+
+def test_default_config_starts_with_manager_mechanics_disabled():
+    from rl.config import Config
+
+    cfg = Config()
+    assert cfg.enabled_mechanics_at(0) == ()
+    assert cfg.enabled_mechanics_at(200_000) == ("improve_land", "preservation")
+    assert cfg.enabled_mechanics_at(500_000) == (
+        "improve_land", "preservation", "credit"
+    )
+    assert cfg.curriculum_state().enabled_mechanics == ()

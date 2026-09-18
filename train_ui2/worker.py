@@ -280,12 +280,9 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
     try:
         from rl.curriculum import RESOURCE_NAMES as _RES_NAMES
         from rl.curriculum import allowed_ids as _allowed_ids
-        from rl.curriculum import build_state as _build_state
-
         _manual = cfg.effective_unlock_ids()
         _allowed = _allowed_ids(cfg.curriculum_stage, _manual, True)
-        _st = _build_state(cfg.curriculum_stage, _manual, True,
-                           cfg.curriculum_resources)
+        _st = cfg.curriculum_state()
         if _st.all_resources:
             _prio = "all"
         else:
@@ -294,7 +291,8 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
             _prio = f"{','.join(_picked)} (weights={_w})"
         log("info", f"[Worker] curriculum: stage={cfg.curriculum_stage} "
                     f"manual={_manual or '—'} checkbox={bool(cfg.use_curriculum_tab)} "
-                    f"→ {len(_allowed)} buildings allowed, priority={_prio}")
+                    f"→ {len(_allowed)} buildings allowed, priority={_prio}; "
+                    f"mechanics={list(_st.enabled_mechanics)} tax_to_debt={cfg.tax_to_debt}")
     except Exception as _ex:  # noqa: BLE001 — не роняем обучение из-за лога
         log("warn", f"[Worker] curriculum log failed: {type(_ex).__name__}: {_ex}")
     log("info", f"[Worker] model_dir={cfg.model_dir}")
@@ -327,7 +325,7 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         if _flat_w is not None:
             check_policy_obs_compat(
                 _flat_w, int(em.obs_size), ckpt_path=resume_model)
-        em.model.load_state_dict(clean)
+        em.model.load_state_dict(clean, strict=False)
         log("info", f"[Worker] loaded weights from {resume_model}")
 
         if "optimizer_state" in ckpt:

@@ -32,6 +32,7 @@ def _reported(env_cpp) -> dict:
         "all_builds": bool(got["all_builds"]),
         "allowed_builds": sorted(got.get("allowed_builds", [])),
         "obs_version": int(got.get("obs_version", -1)),
+        "enabled_mechanics": list(got.get("enabled_mechanics", [])),
     }
 
 
@@ -394,3 +395,14 @@ def test_water_relative_coordinates():
         assert -1.0 <= dy <= 1.0
     finally:
         env.close()
+
+
+def test_mechanic_allow_list_is_reported_across_transport():
+    from rl.curriculum import build_state
+
+    st = build_state(0, None, True, None, 2, enabled_mechanics=[])
+    payload = st.to_dict()
+    assert payload["enabled_mechanics"] == []
+    assert "improve_land" not in payload["enabled_mechanics"]
+    assert "preservation" not in payload["enabled_mechanics"]
+    assert "credit" not in payload["enabled_mechanics"]

@@ -114,6 +114,7 @@ class CppColonyEnv(gym.Env):
         disable_daily_income: bool = False,
         reward_config: Optional[Dict[str, float]] = None,
         difficulty: str = "normal",
+        tax_to_debt: bool = True,
     ):
         super().__init__()
         # PR 3: fail fast on a stale binary (escape: COLONY_ALLOW_STALE_PYD=1).
@@ -187,6 +188,7 @@ class CppColonyEnv(gym.Env):
             curriculum=curr_dict,
             reward=rc,
             difficulty=difficulty,
+            tax_to_debt=tax_to_debt,
         )
         
         # Spaces (use clipped observation space as SB3 expects)

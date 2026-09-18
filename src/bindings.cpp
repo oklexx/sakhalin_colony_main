@@ -26,7 +26,7 @@ using namespace colony;
 #define COLONY_GIT_SHA "unknown"
 #endif
 #ifndef COLONY_EXTENSION_VERSION
-#define COLONY_EXTENSION_VERSION 3
+#define COLONY_EXTENSION_VERSION 4
 #endif
 
 namespace {
@@ -100,6 +100,18 @@ Curriculum curriculum_from_dict(const py::dict& d) {
     }
     // PR 5: obs layout version (absent = 0, legacy layout).
     if (d.contains("obs_version")) c.obs_version = d["obs_version"].cast<int>();
+    // Mechanic allow-list: absent keeps legacy/all-enabled behaviour.
+    if (d.contains("enabled_mechanics")) {
+        c.enabled_mechanics = {false, false, false};
+        for (const auto& v : d["enabled_mechanics"]) {
+            const std::string name = v.cast<std::string>();
+            if (name == "all") c.enabled_mechanics = {true, true, true};
+            else if (name == "improve_land") c.enabled_mechanics[0] = true;
+            else if (name == "preservation") c.enabled_mechanics[1] = true;
+            else if (name == "credit") c.enabled_mechanics[2] = true;
+            else throw std::runtime_error("curriculum dict: unknown mechanic " + name);
+        }
+    }
     return c;
 }
 
@@ -114,6 +126,11 @@ py::dict curriculum_to_dict(const Curriculum& c) {
     std::vector<double> w(c.resource_weights.begin(), c.resource_weights.end());
     d["resource_weights"] = w;
     d["obs_version"] = c.obs_version;
+    std::vector<std::string> mechanics;
+    if (c.enabled_mechanics[0]) mechanics.emplace_back("improve_land");
+    if (c.enabled_mechanics[1]) mechanics.emplace_back("preservation");
+    if (c.enabled_mechanics[2]) mechanics.emplace_back("credit");
+    d["enabled_mechanics"] = mechanics;
     return d;
 }
 
@@ -157,6 +174,7 @@ PYBIND11_MODULE(colony_cpp, m) {
             "action_masks_batch",  // ColonyVecEnvCpp.action_masks_batch()
             "obs_v2",              // P0: obs v2 = 299-dim (+dx/dy ближайших ресурсов)
             "tax_to_debt",         // P0: налог → долг, календарь не замирает
+            "mechanic_curriculum", // fixed manager logits, monotonic allow-list
         };
         d["src_sha"] = COLONY_GIT_SHA;
         return d;

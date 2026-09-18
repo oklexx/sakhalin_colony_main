@@ -331,18 +331,32 @@ def main():
     print(f"Creating env (map_size={args.map_size})")
     # Read reward config from model's meta.json to match training parameters
     reward_cfg = None
-    for meta_name in ("best_model.meta.json", "meta.json"):
-        meta_path = model_dir / meta_name
-        if meta_path.exists():
-            try:
-                import json as _json
-                meta = _json.loads(meta_path.read_text(encoding="utf-8"))
-                reward_cfg = meta.get("config", {}).get("reward")
-                if reward_cfg:
-                    print(f"Loaded reward config from {meta_name}")
-                    break
-            except (Exception,):
-                pass
+    tax_to_debt = True
+    meta = {}
+    meta_paths = [model_path.with_suffix(".meta.json"),
+                  model_dir / "best_model.meta.json", model_dir / "meta.json"]
+    for meta_path in meta_paths:
+        if not meta_path.exists():
+            continue
+        try:
+            import json as _json
+            loaded = _json.loads(meta_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                continue
+            for key, value in loaded.items():
+                if key not in meta:
+                    meta[key] = value
+            cfg_meta = loaded.get("config", {})
+            if reward_cfg is None and isinstance(cfg_meta, dict):
+                reward_cfg = cfg_meta.get("reward")
+            if "tax_to_debt" in loaded:
+                tax_to_debt = bool(loaded["tax_to_debt"])
+            elif isinstance(cfg_meta, dict) and "tax_to_debt" in cfg_meta:
+                tax_to_debt = bool(cfg_meta["tax_to_debt"])
+            if reward_cfg:
+                print(f"Loaded reward config from {meta_path.name}")
+        except (Exception,):
+            pass
 
     # Curriculum: the watched env MUST have the same allowed-buildings set as
     # training. Previously the manual set from the «Курикулум» tab was lost here
@@ -360,8 +374,9 @@ def main():
     # Версия obs: явный --obs-version → раскладка чекпойнта → текущий дефолт.
     # Без этого старые модели (289) не смотрелись бы на новом дефолте (299):
     # UI не передаёт --obs-version, значит версия обязана следовать за моделью.
-    stored_v = stored_obs_version(model_dir)
-    obs_version = resolve_obs_version(args.obs_version, model_dir)
+    # `meta` was merged with the checkpoint sidecar taking priority above.
+    stored_v = stored_obs_version(None, meta)
+    obs_version = resolve_obs_version(args.obs_version, None, meta)
     _vsrc = ("--obs-version" if args.obs_version is not None
              else "meta модели" if stored_v is not None
              else f"дефолт {CURRENT_OBS_VERSION}")
@@ -372,7 +387,7 @@ def main():
         emit_log(_vmsg)
 
     resolved = resolve_curriculum(
-        model_dir,
+        None, meta=meta,
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
         resources=args.curriculum_resources,
@@ -380,7 +395,7 @@ def main():
     # PR 1: the env takes ONE computed state; the resolved dict stays for
     # logging and the GUI safety-net mask.
     st = resolve_state(
-        model_dir,
+        None, meta=meta,
         curriculum_stage=args.curriculum_stage,
         unlock_ids=args.unlock_ids,
         resources=args.curriculum_resources,
@@ -394,6 +409,7 @@ def main():
         map_size=args.map_size,
         reward_config=reward_cfg,
         curriculum=st,
+        tax_to_debt=tax_to_debt,
     )
     # PR 5: obs-layout compatibility (same rule as eval: the version is
     # explicit, a stored mismatch errors out instead of misaligning).
@@ -593,7 +609,7 @@ def main():
             curriculum=st,
             reward_config_path=reward_cfg_path,
             minimap_radius=resolved_minimap_radius,
-            tax_to_debt=True,
+            tax_to_debt=tax_to_debt,
         )
 
         for f in (actions_file, state_file):
@@ -622,7 +638,7 @@ def main():
                 curriculum=st,
                 reward_config_path=reward_cfg_path,
                 minimap_radius=resolved_minimap_radius,
-                tax_to_debt=True,
+                tax_to_debt=tax_to_debt,
             )
             write_action(actions_file, 0)
             return p

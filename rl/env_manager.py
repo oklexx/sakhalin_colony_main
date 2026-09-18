@@ -40,6 +40,7 @@ def _make_vec_env(cfg: Config):
         reward_config=reward_cfg,
         seed=cfg.seed,
         difficulty=cfg.difficulty,
+        tax_to_debt=cfg.tax_to_debt,
     )
     # minimap / hybrid need minimap observation plumbing
     if cfg.obs_mode in ("minimap", "hybrid"):
@@ -168,6 +169,7 @@ class EnvManager:
 
     def __init__(self, cfg: Config, device: torch.device):
         self.cfg = cfg
+        self._curriculum_progress_step = 0
         self.device = device
 
         _ensure_python_path()
@@ -343,6 +345,13 @@ class EnvManager:
             assert want_w == have_w, (
                 f"курикулум не применён: resource_weights env={have_w} "
                 f"expected={want_w}")
+        # Mechanic gating is an allow-list over fixed manager logits. A stale
+        # extension that drops this field would silently reopen early actions.
+        want_mechanics = list(st.enabled_mechanics)
+        have_mechanics = list(got.get("enabled_mechanics", []))
+        assert have_mechanics == want_mechanics, (
+            f"курикулум не применён: enabled_mechanics env={have_mechanics} "
+            f"expected={want_mechanics} (rebuild colony_cpp)")
 
     @property
     def action_names(self) -> List[str]:
@@ -382,24 +391,22 @@ class EnvManager:
             except Exception:
                 return []
 
-    def set_curriculum_stage(self, stage: int) -> None:
-        self.cfg.curriculum_stage = stage
-        # PR 1: recompute ONE state (stage preset + manual set) and apply it in
-        # a single call — the «stage switch wipes the manual set» bug is dead
-        # by construction (C++ holds no separate stage/manual anymore).
-        from rl.curriculum import build_state
-        st = build_state(
-            stage,
-            self.cfg.unlock_ids,
-            self.cfg.use_curriculum_tab,
-            self.cfg.curriculum_resources,
-            self.cfg.obs_version,
-        )
+    def set_curriculum_progress(self, step: int) -> None:
+        """Apply building stage and additive mechanic unlocks atomically."""
+        self._curriculum_progress_step = max(0, int(step))
+        st = self.cfg.curriculum_state(self._curriculum_progress_step)
         try:
             venv = self.vec_env.venv  # type: ignore[attr-defined]
         except AttributeError:
             return
         venv.set_curriculum(st.to_dict())
+        self._assert_curriculum_parity(st)
+
+    def set_curriculum_stage(self, stage: int) -> None:
+        self.cfg.curriculum_stage = stage
+        # PR 1 + mechanic gating: recompute ONE state (stage/manual/resources
+        # plus the monotonic mechanic allow-list) and apply it in one call.
+        self.set_curriculum_progress(getattr(self, "_curriculum_progress_step", 0))
 
     def close(self) -> None:
         try:

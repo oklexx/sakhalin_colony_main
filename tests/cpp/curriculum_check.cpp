@@ -596,11 +596,44 @@ int main() {
         check(masked, "flag on: all 31 locked catalog rows are zero");
         check(kept, "flag on: the allowed row is preserved");
 
+        // ── mechanic curriculum: fixed manager slots, hard rejection ──
+        Curriculum early;
+        early.enabled_mechanics = {false, false, false};
+        ColonyEnvCpp gated(bd, ed, 31, 280, early);
+        gated.reset(31);
+        const int manager_base = A_BUILD0 + gated.n_build();
+        const int64_t day0 = gated.game().days_alive;
+        const int64_t money0 = gated.game().money;
+        const int64_t credit0 = gated.game().credit;
+        auto early_mask = gated.action_mask();
+        for (int i : {0, 4, 5, 8, 9}) {
+            check(early_mask[(size_t)(manager_base + i)] == 0.0f,
+                  "early curriculum masks improve/preserve/credit manager action");
+            auto refused = gated.step(manager_base + i);
+            check(refused.days == day0 && gated.game().days_alive == day0,
+                  "disabled manager action does not advance calendar");
+            check(gated.game().money == money0 && gated.game().credit == credit0,
+                  "disabled manager action does not mutate money/credit");
+        }
+        Curriculum open;
+        gated.set_curriculum(open);
+        ColonyEnvCpp twin(bd, ed, 31, 280, open);
+        twin.reset(31);
+        auto open_mask = gated.action_mask();
+        auto twin_mask = twin.action_mask();
+        for (int i : {0, 4, 5, 8, 9})
+            check(open_mask[(size_t)(manager_base + i)] == twin_mask[(size_t)(manager_base + i)],
+                  "enabled mechanic restores exact applicability mask");
+
         // from_json transport.
         Curriculum fj = Curriculum::from_json("{\"obs_version\": 1}");
         check(fj.obs_version == 1, "from_json reads obs_version");
         Curriculum fj0 = Curriculum::from_json("{}");
         check(fj0.obs_version == 0, "from_json defaults obs_version to 0");
+        Curriculum fm = Curriculum::from_json(
+            "{\"enabled_mechanics\":[\"improve_land\",\"preservation\"]}");
+        check(fm.enabled_mechanics[0] && fm.enabled_mechanics[1] && !fm.enabled_mechanics[2],
+              "from_json transports mechanic allow-list");
     }
 
     printf("\n%s (%d failure(s))\n",

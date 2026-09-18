@@ -41,6 +41,127 @@ BUILD_ALIASES: Dict[str, str] = {
 
 _FULL_WEIGHTS = (1.0,) * 9  # PR 4: neutral resource weights (all resources)
 
+# Manager mechanics are kept in the fixed action space, but can be masked by
+# curriculum.  This is deliberately an allow-list rather than a variable
+# action space: checkpoints keep the same 49 logits while early training can
+# focus on build/day decisions.
+MECHANIC_NAMES = ("improve_land", "preservation", "credit")
+_MECHANIC_ALIASES = {
+    "improve": "improve_land",
+    "improve_land": "improve_land",
+    "land": "improve_land",
+    "preserve": "preservation",
+    "preservation": "preservation",
+    "preserve_buildings": "preservation",
+    "unpreserve": "preservation",
+    "preserve_building": "preservation",
+    "credit": "credit",
+    "loan": "credit",
+    "loans": "credit",
+    "take_loan": "credit",
+    "repay_loan": "credit",
+}
+
+
+def parse_mechanic_ids(raw) -> List[str]:
+    """Parse a comma/list mechanic set and fail closed on unknown names."""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, str):
+        items = [x.strip().lower() for x in raw.split(",") if x.strip()]
+    else:
+        items = [str(x).strip().lower() for x in raw if str(x).strip()]
+    if any(x == "all" for x in items):
+        return list(MECHANIC_NAMES)
+    if any(x == "none" for x in items):
+        items = [x for x in items if x != "none"]
+    out: List[str] = []
+    unknown: List[str] = []
+    for item in items:
+        name = _MECHANIC_ALIASES.get(item)
+        if name is None:
+            unknown.append(item)
+        elif name not in out:
+            out.append(name)
+    if unknown:
+        raise ValueError(
+            f"unknown mechanic(s): {unknown}; available: {', '.join(MECHANIC_NAMES)}"
+        )
+    return [name for name in MECHANIC_NAMES if name in out]
+
+
+def normalize_enabled_mechanics(raw=None) -> tuple[str, ...]:
+    """Return canonical enabled mechanics; missing means legacy/all enabled."""
+    if raw is None or raw == "":
+        return MECHANIC_NAMES
+    if isinstance(raw, str) and raw.strip().lower() == "all":
+        return MECHANIC_NAMES
+    if isinstance(raw, str) and raw.strip().lower() == "none":
+        return ()
+    return tuple(parse_mechanic_ids(raw))
+
+
+def enabled_from_disabled(raw=None) -> tuple[str, ...]:
+    """Convert Config.disabled_mechanics into the canonical allow-list."""
+    disabled = set(parse_mechanic_ids(raw))
+    return tuple(name for name in MECHANIC_NAMES if name not in disabled)
+
+def mechanics_enabled_at_step(
+    step: int,
+    disabled_mechanics=None,
+    unlock_schedule=None,
+) -> tuple[str, ...]:
+    """Return the monotonic mechanic allow-list at a training step.
+
+    ``unlock_schedule`` is a list of ``[step, mechanics]`` entries.  Entries
+    are additions, never replacements: this prevents a later config typo from
+    re-locking preservation or manual credit in an already-running episode.
+    The function accepts tuples and dict entries (``{"step": ...,
+    "mechanics": [...]}``) so JSON/CLI and tests can use the same contract.
+    """
+    try:
+        current_step = max(0, int(step))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"mechanics schedule step must be an integer, got {step!r}") from exc
+    enabled = set(enabled_from_disabled(disabled_mechanics))
+    previous_threshold = -1
+    previous_enabled = set(enabled)
+    if unlock_schedule is None:
+        entries = []
+    elif isinstance(unlock_schedule, dict):
+        entries = list(unlock_schedule.items())
+    else:
+        entries = list(unlock_schedule)
+    for entry in entries:
+        if isinstance(entry, dict):
+            if "step" not in entry and "at_step" not in entry:
+                raise ValueError(f"mechanics schedule entry needs step: {entry!r}")
+            threshold = entry.get("step", entry.get("at_step"))
+            additions_raw = entry.get("mechanics", entry.get("enabled", entry.get("unlock", [])))
+        else:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                raise ValueError(
+                    "mechanics_unlock_schedule entries must be [step, mechanics]"
+                )
+            threshold, additions_raw = entry
+        try:
+            threshold_i = int(threshold)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"mechanics schedule threshold must be integer: {threshold!r}") from exc
+        if threshold_i < 0 or threshold_i < previous_threshold:
+            raise ValueError("mechanics_unlock_schedule must have non-negative sorted thresholds")
+        previous_threshold = threshold_i
+        additions = set(parse_mechanic_ids(additions_raw))
+        if threshold_i <= current_step:
+            enabled.update(additions)
+        # Monotonicity is structural: enabled can only grow. Keep the local
+        # variable explicit because this is also the invariant used by tests.
+        if not previous_enabled.issubset(enabled):
+            raise AssertionError("mechanics schedule attempted to re-lock a mechanic")
+        previous_enabled = set(enabled)
+    return tuple(name for name in MECHANIC_NAMES if name in enabled)
+
+
 # Канон порядка сундука: обязан совпадать с Sunduk::resource_name
 # (src/resources.cpp) и train_ui2/constants.py RESOURCE_IDS (регресс-тест).
 RESOURCE_NAMES = ("gold", "food", "coal", "iron", "oil", "stone", "water", "wood", "energy")
@@ -68,11 +189,14 @@ class CurriculumState:
     resource_weights: tuple[float, ...] = _FULL_WEIGHTS
     stage_report: int = 0
     obs_version: int = 2
+    # Appended after the legacy positional fields to keep old callers valid.
+    enabled_mechanics: tuple[str, ...] = MECHANIC_NAMES
 
     @classmethod
     def all(cls, stage_report: int = 0) -> "CurriculumState":
         """Unrestricted state (conventionally carries ALL_IDS for logging)."""
-        return cls(True, tuple(ALL_IDS), True, _FULL_WEIGHTS, stage_report, 1)
+        return cls(True, tuple(ALL_IDS), True, _FULL_WEIGHTS, stage_report, 2,
+                   MECHANIC_NAMES)
 
     def to_dict(self) -> dict:
         """Transport form for C++ set_curriculum() and the GUI --curriculum JSON."""
@@ -83,6 +207,7 @@ class CurriculumState:
             "resource_weights": [float(w) for w in self.resource_weights],
             "stage": int(self.stage_report),
             "obs_version": int(self.obs_version),
+            "enabled_mechanics": list(self.enabled_mechanics),
         }
 
     @classmethod
@@ -98,6 +223,7 @@ class CurriculumState:
             if weights is not None else _FULL_WEIGHTS,
             stage_report=int(d.get("stage", d.get("stage_report", 0))),
             obs_version=int(d.get("obs_version", 2)),
+            enabled_mechanics=normalize_enabled_mechanics(d.get("enabled_mechanics")),
         )
 
 
@@ -209,6 +335,7 @@ def build_state(
     use_curriculum_tab: bool = True,
     resources: str | List[str] | None = None,
     obs_version: int = 2,
+    enabled_mechanics=None,
 ) -> CurriculumState:
     """Compute the CurriculumState from (stage, manual set, checkbox).
 
@@ -237,9 +364,10 @@ def build_state(
     weights = parse_resources(resources)
     all_res = weights is None or all(w == 1.0 for w in weights)
     res_tuple = _FULL_WEIGHTS if all_res else tuple(weights)  # type: ignore[arg-type]
+    mechanics = normalize_enabled_mechanics(enabled_mechanics)
     if set(ids) == _ALL_IDS_SET:
-        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i, obs_i)
-    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i, obs_i)
+        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i, obs_i, mechanics)
+    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i, obs_i, mechanics)
 
 
 def allowed_ids(
@@ -270,7 +398,9 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     if not isinstance(meta, dict):
         return {"curriculum_stage": None, "unlock_ids": None,
                 "use_curriculum_tab": None, "resources": None,
-                "obs_version": None}
+                "obs_version": None, "enabled_mechanics": None,
+                "disabled_mechanics": None, "mechanics_unlock_schedule": None,
+                "mechanics_step": None}
     nested = meta.get("config")
     if not isinstance(nested, dict):
         nested = {}
@@ -287,12 +417,20 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     use_tab = pick("use_curriculum_tab")
     resources = pick("curriculum_resources")
     obs_version = pick("obs_version")
+    enabled_mechanics = pick("enabled_mechanics", "mechanics")
+    disabled_mechanics = pick("disabled_mechanics")
+    mechanics_unlock_schedule = pick("mechanics_unlock_schedule")
+    mechanics_step = pick("curriculum_step", "total_timesteps", "steps_at_checkpoint")
     return {
         "curriculum_stage": int(stage) if stage is not None else None,
         "unlock_ids": None if manual is None else str(manual),
         "use_curriculum_tab": None if use_tab is None else bool(use_tab),
         "resources": None if resources is None else str(resources),
         "obs_version": int(obs_version) if obs_version is not None else None,
+        "enabled_mechanics": enabled_mechanics,
+        "disabled_mechanics": disabled_mechanics,
+        "mechanics_unlock_schedule": mechanics_unlock_schedule,
+        "mechanics_step": int(mechanics_step) if mechanics_step is not None else None,
     }
 
 
@@ -316,6 +454,10 @@ def read_curriculum_meta(model_dir) -> Dict[str, object]:
         "use_curriculum_tab": None,
         "resources": None,
         "obs_version": None,
+        "enabled_mechanics": None,
+        "disabled_mechanics": None,
+        "mechanics_unlock_schedule": None,
+        "mechanics_step": None,
     }
     model_dir = Path(model_dir)
     for meta_name in _META_NAMES:
@@ -378,6 +520,7 @@ def resolve_state(
     use_curriculum_tab: bool | None = None,
     resources: str | List[str] | None = None,
     obs_version: int = 2,
+    enabled_mechanics=None,
 ) -> CurriculumState:
     """resolve_curriculum + build_state in one call (eval/watch paths).
 
@@ -397,6 +540,25 @@ def resolve_state(
         use_curriculum_tab=use_curriculum_tab,
         resources=resources,
     )
+    stored_meta = read_curriculum_meta(model_dir) if model_dir is not None else {}
+    meta_values = curriculum_from_meta(meta) if meta else {}
+    stored_mechanics = stored_meta.get("enabled_mechanics")
+    meta_mechanics = meta_values.get("enabled_mechanics")
+    mechanics_raw = (enabled_mechanics if enabled_mechanics is not None
+                     else stored_mechanics if stored_mechanics is not None
+                     else meta_mechanics)
+    if mechanics_raw is None:
+        # New run metadata may carry the declarative disabled/schedule fields
+        # without a snapshot allow-list. Reconstruct the snapshot at the
+        # checkpoint step; genuinely old metadata has neither and remains
+        # legacy/all-enabled.
+        source = meta_values if meta_values.get("disabled_mechanics") is not None else stored_meta
+        if source.get("disabled_mechanics") is not None or source.get("mechanics_unlock_schedule") is not None:
+            mechanics_raw = mechanics_enabled_at_step(
+                int(source.get("mechanics_step") or 0),
+                source.get("disabled_mechanics"),
+                source.get("mechanics_unlock_schedule"),
+            )
     # manual_csv is already checkbox-filtered, so the tab is trivially True here.
     # resources fall back to the stored run scenario (explicit args win).
     return build_state(
@@ -405,6 +567,7 @@ def resolve_state(
         True,
         resolved["resources"],  # type: ignore[arg-type]
         obs_version,
+        mechanics_raw,
     )
 
 

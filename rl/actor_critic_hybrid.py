@@ -75,12 +75,14 @@ class ActorCriticHybrid(ActorCriticBase):
         joint_out = prev if layers else combined
         self.actor_head = nn.Linear(joint_out, n_actions).to(device)
         self.critic_head = nn.Linear(joint_out, 1).to(device)
+        self.critic_mask_proj = nn.Linear(n_actions, 1, bias=False).to(device)
         # Legacy aliases expected by some tests / older checkpoints.
         self.flat_proj = self.flat_trunk[0] if isinstance(self.flat_trunk, nn.Sequential) else self.flat_trunk
         self.actor = self.actor_head
         self.critic = self.critic_head
 
         self._init_weights()
+        nn.init.constant_(self.critic_mask_proj.weight, 0.0)
 
     def _init_weights(self) -> None:
         for m in self.modules():
@@ -90,7 +92,10 @@ class ActorCriticHybrid(ActorCriticBase):
             else:
                 orthogonal_init(m, gain=1.0)
 
-    def forward(self, flat: Any, minimap: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, flat: Any, minimap: Optional[torch.Tensor] = None,
+        action_masks: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         if isinstance(flat, dict):
             flat_in = flat.get("flat", flat)
             mini = flat.get("minimap")
@@ -112,20 +117,27 @@ class ActorCriticHybrid(ActorCriticBase):
 
         if hasattr(self, "joint"):
             h = self.joint(h)
-        return self.actor_head(h), self.critic_head(h)
+        values = self.critic_head(h)
+        if action_masks is not None:
+            values = values + self.critic_mask_proj(action_masks.float())
+        return self.actor_head(h), values
 
     def get_action_and_value(
         self,
         flat: Any,
         minimap: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
+        action_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits, values = self.forward(flat, minimap)
+        logits, values = self.forward(flat, minimap, action_masks)
         action, log_probs, _ = self._categorical_log_prob(logits, action)
         return action, log_probs, values.squeeze(-1)
 
-    def get_value(self, flat: Any, minimap: Optional[torch.Tensor] = None) -> torch.Tensor:
-        _, values = self.forward(flat, minimap)
+    def get_value(
+        self, flat: Any, minimap: Optional[torch.Tensor] = None,
+        action_masks: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        _, values = self.forward(flat, minimap, action_masks)
         return values.squeeze(-1)
 
     def act(self, flat: Any, minimap: Optional[torch.Tensor] = None, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
