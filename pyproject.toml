@@ -1,0 +1,55 @@
+# Настройки инструментов для AI-ассистентов и локальной разработки.
+# Зависимости проекта — в requirements.txt (этот файл НЕ build-конфигурация).
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+src = ["rl", "python", "train_ui2", "tests"]
+extend-exclude = ["raylib", "saved", "build"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # длина строки — не критично для читаемости
+    "B008",  # вызовы в дефолтных аргументах (PySide6-паттерны)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "S101"]
+"train_ui2/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+disallow_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+# C-расширения и библиотеки без stubs:
+[[tool.mypy.overrides]]
+module = [
+    "colony_cpp.*",
+    "colony_cpp_api",
+    "PySide6.*",
+    "pyqtgraph.*",
+    "torch.*",
+    "gymnasium.*",
+    "stable_baselines3.*",
+    "tensorboard.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["train_ui2.*"]
+# UI-код на PySide6 пока не доведён до strict — без полного запрета
+disallow_untyped_defs = false
