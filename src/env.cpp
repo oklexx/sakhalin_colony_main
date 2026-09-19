@@ -306,7 +306,7 @@ std::string ColonyEnvCpp::degenerate_report() {
         std::string reason = "неизвестно (маска и отчёт разошлись — баг)";
         if (g.money < d->price) {
             reason = "price " + std::to_string(d->price) + " > money " + std::to_string(g.money);
-        } else if (!find_lot(d->need_earth, d->no_near_base)) {
+        } else if (!find_lot(*d)) {
             reason = "нет подходящего лота (need_earth=" + std::to_string(d->need_earth) +
                      ", занятость/связность карты)";
         }
@@ -453,9 +453,8 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(int need_earth, bool n
         }
     }
 
-    while (!frontier.empty()) {
-        auto [x, y] = std::move(frontier.front());
-        frontier.erase(frontier.begin());
+    for (size_t head = 0; head < frontier.size(); ++head) {
+        auto [x, y] = frontier[head];
         for (int i = 0; i < 4; i++) {
             int nx = x + dx4[i], ny = y + dy4[i];
             if (!g.earth.in_bounds(nx, ny)) continue;
@@ -494,6 +493,131 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(int need_earth, bool n
     }
     
     return std::nullopt;
+}
+
+
+std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(const BaseData& d) {
+    const Game& g = game_;
+    const int ms = g.map_size();
+    const int32_t* idx_map = g.base_index_map().data();
+
+    auto is_traversable_base = [&](int x, int y) -> bool {
+        size_t idx = (size_t)y * ms + x;
+        int32_t bidx = idx_map[idx];
+        return bidx >= 0 && bidx < (int32_t)g.bases.size();
+    };
+
+    std::vector<std::pair<int, int>> frontier;
+    std::vector<char> visited((size_t)ms * ms, 0);
+    const int dx4[4] = {1, -1, 0, 0};
+    const int dy4[4] = {0, 0, 1, -1};
+
+    auto consider = [&](int nx, int ny) -> std::optional<std::pair<int, int>> {
+        if (is_traversable_base(nx, ny)) {
+            frontier.push_back({nx, ny});
+            return std::nullopt;
+        }
+        if (g.can_build_at(d, nx, ny).first)
+            return std::make_pair(nx, ny);
+        return std::nullopt;
+    };
+
+    for (const auto& b : g.bases) {
+        for (int i = 0; i < 4; i++) {
+            int nx = b.x + dx4[i], ny = b.y + dy4[i];
+            if (!g.earth.in_bounds(nx, ny)) continue;
+            size_t nidx = (size_t)ny * ms + nx;
+            if (visited[nidx]) continue;
+            visited[nidx] = 1;
+            auto result = consider(nx, ny);
+            if (result) return result;
+        }
+    }
+
+    for (size_t head = 0; head < frontier.size(); ++head) {
+        auto [x, y] = frontier[head];
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx4[i], ny = y + dy4[i];
+            if (!g.earth.in_bounds(nx, ny)) continue;
+            size_t nidx = (size_t)ny * ms + nx;
+            if (visited[nidx]) continue;
+            visited[nidx] = 1;
+            auto result = consider(nx, ny);
+            if (result) return result;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(const BaseData& d,
+                                                              int dx, int dy) {
+    const Game& g = game_;
+    const int ms = g.map_size();
+    const int32_t* idx_map = g.base_index_map().data();
+
+    auto is_traversable_base = [&](int x, int y) -> bool {
+        size_t idx = (size_t)y * ms + x;
+        int32_t bidx = idx_map[idx];
+        return bidx >= 0 && bidx < (int32_t)g.bases.size();
+    };
+
+    double cx = 0.0, cy = 0.0;
+    if (g.bases.empty()) {
+        cx = g.earth.init_sel_x;
+        cy = g.earth.init_sel_y;
+    } else {
+        for (const auto& b : g.bases) { cx += b.x; cy += b.y; }
+        cx /= (double)g.bases.size();
+        cy /= (double)g.bases.size();
+    }
+
+    std::vector<std::pair<int, int>> frontier, candidates;
+    std::vector<char> visited((size_t)ms * ms, 0);
+    const int dx4[4] = {1, -1, 0, 0};
+    const int dy4[4] = {0, 0, 1, -1};
+
+    auto consider = [&](int nx, int ny) {
+        if (is_traversable_base(nx, ny)) {
+            frontier.push_back({nx, ny});
+            return;
+        }
+        if (g.can_build_at(d, nx, ny).first)
+            candidates.push_back({nx, ny});
+    };
+
+    for (const auto& b : g.bases) {
+        for (int i = 0; i < 4; i++) {
+            int nx = b.x + dx4[i], ny = b.y + dy4[i];
+            if (!g.earth.in_bounds(nx, ny)) continue;
+            size_t nidx = (size_t)ny * ms + nx;
+            if (visited[nidx]) continue;
+            visited[nidx] = 1;
+            consider(nx, ny);
+        }
+    }
+
+    for (size_t head = 0; head < frontier.size(); ++head) {
+        auto [x, y] = frontier[head];
+        for (int i = 0; i < 4; i++) {
+            int nx = x + dx4[i], ny = y + dy4[i];
+            if (!g.earth.in_bounds(nx, ny)) continue;
+            size_t nidx = (size_t)ny * ms + nx;
+            if (visited[nidx]) continue;
+            visited[nidx] = 1;
+            consider(nx, ny);
+        }
+    }
+    if (candidates.empty()) return std::nullopt;
+
+    std::pair<int, int> best = candidates[0];
+    double best_score = -1e18;
+    for (auto c : candidates) {
+        double along = (double)(c.first - cx) * dx + (double)(c.second - cy) * dy;
+        double lateral = std::fabs((double)(c.first - cx) * dy - (double)(c.second - cy) * dx);
+        double score = along - 0.01 * lateral;
+        if (score > best_score) { best_score = score; best = c; }
+    }
+    return best;
 }
 
 // Directional sibling of find_lot: identical legality rules, but instead of
@@ -855,7 +979,7 @@ std::vector<float> ColonyEnvCpp::action_mask() {
             continue;
 
         // find_lot check (BFS — also validates connectivity via base neighbor/road)
-        auto cell = find_lot(d->need_earth, d->no_near_base);
+        auto cell = find_lot(*d);
         if (!cell)
             continue;
 
@@ -962,8 +1086,7 @@ std::vector<float> ColonyEnvCpp::action_mask() {
         const BaseData* rd = build_data_[road_build_idx_];
         if (build_allowed(rd->id) && g.money >= rd->price) {
             for (int dir = 0; dir < N_ROAD_DIRS; ++dir) {
-                if (find_lot_dir(rd->need_earth, rd->no_near_base,
-                                 ROAD_DIR_DX[dir], ROAD_DIR_DY[dir]))
+                if (find_lot_dir(*rd, ROAD_DIR_DX[dir], ROAD_DIR_DY[dir]))
                     mask[road_dir_base() + dir] = 1.0f;
             }
         }
@@ -1220,9 +1343,8 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             return out;
         }
         auto cell = road_dir_hint_
-                        ? find_lot_dir(d->need_earth, d->no_near_base,
-                                       road_dir_hint_->first, road_dir_hint_->second)
-                        : find_lot(d->need_earth, d->no_near_base);
+                        ? find_lot_dir(*d, road_dir_hint_->first, road_dir_hint_->second)
+                        : find_lot(*d);
         bool built = false;
         std::string build_error;
         if (cell) {
@@ -1732,13 +1854,6 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     // терминалы
     steps_ += 1;
-    // R4: finite-гвард ДО накопления — иначе -inf/NaN (например, из log1p)
-    // разносится в ep_return_ и last_reward_ навсегда (метрики, дашборд).
-    // Повторный гвард перед out.rew ниже остаётся: терминальный штраф и
-    // survival/idle добавляются после этого места.
-    if (!std::isfinite(rew)) rew = 0.0;
-    ep_return_ += rew;
-    last_reward_ = rew;
     bool terminated = false, truncated = false;
     auto ov = g.game_over();
 
@@ -1784,7 +1899,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             if (d->id == ROAD_ID) continue;
             if (!build_allowed(d->id)) continue;
             if (g.money < d->price) continue;
-            if (!find_lot(d->need_earth, d->no_near_base)) continue;
+            if (!find_lot(*d)) continue;
             any_build_available = true;
             break;
         }
@@ -1833,8 +1948,11 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     // Guard against NaN/Inf in raw reward (from log, division, etc.)
     if (!std::isfinite(rew)) rew = 0.0;
-    // Clip raw reward before normalization
+    // Clip raw reward before normalization, then accumulate the same reward
+    // value that is returned to the agent.
     rew = std::clamp(rew, cfg_.clip_reward_min, cfg_.clip_reward_max);
+    ep_return_ += rew;
+    last_reward_ = rew;
 
     // Fill episode metrics
     episode_metrics_.total_reward = ep_return_;
@@ -1898,8 +2016,10 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
           size_t hw = std::thread::hardware_concurrency();
           if (hw == 0) hw = 4;
           int desired = n_threads > 0 ? n_threads : n_envs;
-          return (size_t)std::min(desired, (int)hw);
+          return (size_t)std::max(1, std::min(desired, (int)hw));
       }()) {
+    if (n_envs <= 0)
+        throw std::invalid_argument("ColonyVecEnvCpp: n_envs must be > 0");
     // Create N envs from shared (immutable) data
     envs_.reserve(n_envs);
     for (int i = 0; i < n_envs; ++i) {
@@ -1935,6 +2055,8 @@ void ColonyVecEnvCpp::do_reset(int i, int64_t seed) {
 }
 
 void ColonyVecEnvCpp::reset_batch(const std::vector<int64_t>& seeds) {
+    if ((int)seeds.size() != n_envs_)
+        throw std::invalid_argument("reset_batch: seeds.size() != n_envs");
     for (int i = 0; i < n_envs_; ++i) {
         do_reset(i, seeds[i]);
     }
@@ -1958,6 +2080,8 @@ void ColonyVecEnvCpp::do_step(int i, int action) {
 }
 
 void ColonyVecEnvCpp::step_async_batch(const std::vector<int>& actions) {
+    if ((int)actions.size() != n_envs_)
+        throw std::invalid_argument("step_async_batch: actions.size() != n_envs");
     std::vector<std::future<void>> futures;
     futures.reserve(n_envs_);
     for (int i = 0; i < n_envs_; ++i) {
@@ -1966,12 +2090,14 @@ void ColonyVecEnvCpp::step_async_batch(const std::vector<int>& actions) {
             do_step(i, action);
         }));
     }
-    // Wait for all tasks to complete
-    for (auto& f : futures) {
+    // Wait for all tasks to complete; worker exceptions must fail fast instead
+    // of silently leaving stale observations/rewards in the batch.
+    for (int i = 0; i < (int)futures.size(); ++i) {
         try {
-            f.get();
-        } catch (const std::exception&) {
-            // Step failed — leave obs/reward as-is for this env
+            futures[(size_t)i].get();
+        } catch (const std::exception& e) {
+            throw std::runtime_error("ColonyVecEnvCpp::step_async_batch failed in env " +
+                                     std::to_string(i) + ": " + e.what());
         }
     }
 }

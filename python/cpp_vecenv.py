@@ -217,7 +217,12 @@ class CppVecEnv(VecEnv):
             else:
                 info = {}
             if dones[i]:
-                info["terminal_observation"] = obs[i].copy()
+                if "terminal_observation" in info:
+                    info["terminal_observation"] = np.asarray(
+                        info["terminal_observation"], dtype=np.float32
+                    )
+                else:
+                    info["terminal_observation"] = obs[i].copy()
                 info["TimeLimit.truncated"] = bool(trunceds[i] and not terminateds[i])
             infos.append(info)
 

@@ -101,7 +101,10 @@ public:
     // Возврат: [8, 2R+1, 2R+1] float32 (0/1), значения за границей карты = 0.
     int minimap_radius() const { return minimap_radius_; }
     int minimap_channels() const { return 8; }
+    // Deprecated compatibility no-op for callers that still configure a local minimap window.
+    // The minimap is a global 32x32 grid; this value is retained only for ABI/API compatibility.
     void set_minimap_radius(int r) { minimap_radius_ = r; }
+    int minimap_grid_size() const { return 32; }
     std::vector<float> minimap() const;
 
     struct EpisodeMetrics {
@@ -177,12 +180,14 @@ public:
 public:
     // Debug helpers
     std::optional<std::pair<int, int>> find_lot(int need_earth, bool no_near_base);
+    std::optional<std::pair<int, int>> find_lot(const BaseData& d);
     // Same legality rules as find_lot, but among ALL reachable legal cells
     // returns the one furthest along (dx, dy) measured from the colony
     // centroid -- i.e. "extend the frontier that way". Returns nullopt when
     // no legal cell exists.
     std::optional<std::pair<int, int>> find_lot_dir(int need_earth, bool no_near_base,
                                                     int dx, int dy);
+    std::optional<std::pair<int, int>> find_lot_dir(const BaseData& d, int dx, int dy);
     bool lot_ok(int x, int y, int need_earth, bool no_near_base) const;
     double debug_net_worth() const { return net_worth(game_); }
     std::string dump_obs() const;

@@ -52,6 +52,11 @@ public:
             if (other.items_[i] > items_[i]) return false;
         return true;
     }
+    bool non_negative() const {
+        for (int i = 0; i < SUNDUK_SIZE; i++)
+            if (items_[i] < 0) return false;
+        return true;
+    }
     bool can_consume(const Sunduk& other) const {
         for (int i = 0; i < SUNDUK_SIZE; i++)
             if (other.items_[i] < 0 && -other.items_[i] > items_[i]) return false;

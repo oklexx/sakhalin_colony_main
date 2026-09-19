@@ -189,13 +189,8 @@ static int sel_bx = -1, sel_by = -1;
 
 // build a building (id = A_BUILD0 + i) into either a committed selection area
 // or a single cell; called from the right-click building popup
-static bool has_neighbor_building(const Game& g, int x, int y) {
-    for (int dy = -1; dy <= 1; dy++)
-        for (int dx = -1; dx <= 1; dx++) {
-            if (dx == 0 && dy == 0) continue;
-            if (g.base_in_box(x + dx, y + dy)) return true;
-        }
-    return false;
+static bool can_build_cell(const Game& g, const BaseData& bd, int x, int y) {
+    return g.can_build_at(bd, x, y).first;
 }
 static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
                           int x0, int y0, int x1, int y1, int px, int py,
@@ -223,7 +218,7 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
     std::vector<Cell> frontier, remaining;
     if (!g.bases.empty()) {
         for (auto& c : cells)
-            if (has_neighbor_building(g, c.x, c.y)) frontier.push_back(c);
+            if (can_build_cell(g, *bd, c.x, c.y)) frontier.push_back(c);
             else remaining.push_back(c);
         if (frontier.empty()) { status = "Нужно строить рядом с существующими зданиями"; return; }
     } else {
@@ -233,16 +228,15 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
     // Build: always add cells adjacent to already-built to the frontier
     int built = 0, skipped = 0;
     std::string fail_reason;  // PR 2: первая ошибка — гейт виден как гейт
-    while (!frontier.empty()) {
-        Cell c = frontier[0];
-        frontier.erase(frontier.begin());
+    for (size_t frontier_head = 0; frontier_head < frontier.size(); ++frontier_head) {
+        Cell c = frontier[frontier_head];
         auto r = g.build(bid, c.x, c.y);
         if (r.first) {
             built++;
             stat_built[bd->caption]++;
             // Add neighbors from remaining that are now adjacent to a building
             for (auto it = remaining.begin(); it != remaining.end();) {
-                if (has_neighbor_building(g, it->x, it->y)) {
+                if (can_build_cell(g, *bd, it->x, it->y)) {
                     frontier.push_back(*it);
                     it = remaining.erase(it);
                 } else it++;
@@ -434,7 +428,7 @@ static long long market_qty[9] = {0};
 static char bank_buf[32] = {0};
 static int dlg_season = 0;
 static char mess_title[64] = "Сообщение";
-static char mess_text[256] = "";
+static char mess_text[1024] = "";
 static bool want_close = false;
 
 // ═══ Headless AI mode (policy-driven) ═══

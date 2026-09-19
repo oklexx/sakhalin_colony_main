@@ -60,6 +60,8 @@ py::list sunduk_to_list(const Sunduk& s) {
 }
 
 Sunduk sunduk_from_list(const py::list& l) {
+    if ((int)l.size() != SUNDUK_SIZE)
+        throw std::runtime_error("Sunduk list must contain exactly 9 items");
     Sunduk s;
     for (int i = 0; i < SUNDUK_SIZE; i++) s[i] = l[i].cast<int64_t>();
     return s;

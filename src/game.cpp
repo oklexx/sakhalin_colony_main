@@ -248,9 +248,8 @@ bool Game::cell_connected(int x, int y) const {
             q.push_back({nx, ny});
         }
     }
-    while (!q.empty()) {
-        auto [cx, cy] = q.front();
-        q.erase(q.begin());
+    for (size_t head = 0; head < q.size(); ++head) {
+        auto [cx, cy] = q[head];
         for (int i = 0; i < 4; i++) {
             int nx = cx + dx4[i], ny = cy + dy4[i];
             if (!earth.in_bounds(nx, ny)) continue;
@@ -388,16 +387,20 @@ bool Game::increment_date() {
 }
 
 void Game::delete_base(Base& b) {
-    destroyed_lots[(size_t)b.y * map_size_ + b.x] = 12;
-    size_t idx = (size_t)(&b - bases.data());
-    size_t last = bases.size() - 1;
+    const int removed_x = b.x;
+    const int removed_y = b.y;
+    destroyed_lots[(size_t)removed_y * map_size_ + removed_x] = 12;
+
+    const size_t idx = (size_t)(&b - bases.data());
+    const size_t last = bases.size() - 1;
     if (idx != last) {
-        Base& moving = bases[last];
         std::swap(bases[idx], bases[last]);
-        base_index_map_[(size_t)moving.y * map_size_ + moving.x] = (int32_t)idx;
+        const Base& moved = bases[idx];
+        base_index_map_[(size_t)moved.y * map_size_ + moved.x] = (int32_t)idx;
     }
     bases.pop_back();
-    base_index_map_[(size_t)b.y * map_size_ + b.x] = -1;
+    base_index_map_[(size_t)removed_y * map_size_ + removed_x] = -1;
+    occupied[(size_t)removed_y * map_size_ + removed_x] = 0;
     invalidate_caches();
 }
 
@@ -553,22 +556,51 @@ std::optional<Game::GameOverInfo> Game::game_over() const {
 }
 
 // ---------------------------------------------------------------- действия
+std::pair<bool, std::string> Game::can_build_at(const BaseData& d, int x, int y) const {
+    if (!earth.in_bounds(x, y)) return {false, "Вне карты."};
+    if (base_in_box(x, y)) return {false, "Это место занято."};
+
+    const size_t idx = (size_t)y * map_size_ + x;
+    if (destroyed_lots[idx] > 0) return {false, "Нельзя строить на сгоревшем участке."};
+
+    const int8_t cur = earth.lot(x, y);
+    if (!(cur >= LT_NORMAL && cur < LT_LAST))
+        return {false, "Нельзя строить на этом типе земли."};
+    if (d.need_earth != LT_EVERYWHERE && cur != d.need_earth)
+        return {false, "Неподходящий тип земли для этой постройки."};
+
+    if (d.no_near_base) {
+        const int dx4[4] = {1, -1, 0, 0};
+        const int dy4[4] = {0, 0, 1, -1};
+        for (int i = 0; i < 4; i++) {
+            const Base* nb = base_in_box(x + dx4[i], y + dy4[i]);
+            if (nb != nullptr && nb->data->id != ROAD_ID)
+                return {false, "Эту постройку нельзя строить рядом со зданием."};
+        }
+    }
+
+    if (!cell_connected(x, y))
+        return {false, "Здание должно примыкать к другой постройке или быть связано с ней дорогой."};
+    return {true, ""};
+}
+
 std::pair<bool, std::string> Game::build(const std::string& data_id, int x, int y) {
     // PR 2: гейт — первой строкой, до любых других проверок.
     if (gate_ && !gate_(gate_ctx_, data_id))
         return {false, "Постройка закрыта курикулумом."};
-    if (!earth.in_bounds(x, y)) return {false, "Вне карты."};
-    if (base_in_box(x, y)) return {false, "Это место занято."};
     const BaseData* d = find_data(data_id);
-    if (d == nullptr) throw std::runtime_error("unknown base id: " + data_id);
+    if (d == nullptr) return {false, "Неизвестная постройка: " + data_id};
     if (money < d->price) return {false, "Недостаточно денег."};
-    if (!cell_connected(x, y))
-        return {false, "Здание должно примыкать к другой постройке или быть связано с ней дорогой."};
+    auto legal = can_build_at(*d, x, y);
+    if (!legal.first) return legal;
+
     save_undo();
     money -= d->price;
     bases.emplace_back(d, x, y, false);
     bases.back().uid = take_uid();
-    base_index_map_[(size_t)y * map_size_ + x] = (int32_t)bases.size() - 1;
+    const size_t idx = (size_t)y * map_size_ + x;
+    base_index_map_[idx] = (int32_t)bases.size() - 1;
+    occupied[idx] = 1;
     invalidate_caches();
     return {true, ""};
 }
@@ -722,6 +754,7 @@ std::pair<bool, std::string> Game::good_earth(int x, int y) {
 
 // ---------------------------------------------------------------- рынок/банк
 Game::MarketOut Game::market_buy(const Sunduk& counts) {
+    if (!counts.non_negative()) return {false, "Количество ресурсов не может быть отрицательным.", 0};
     int64_t total = 0;
     for (int i = 0; i < SUNDUK_SIZE; i++) total += counts[i] * BUY_SUNDUK[i];
     if (total <= 0) return {false, "", 0};
@@ -734,6 +767,7 @@ Game::MarketOut Game::market_buy(const Sunduk& counts) {
 }
 
 Game::MarketOut Game::market_sell(const Sunduk& counts) {
+    if (!counts.non_negative()) return {false, "Количество ресурсов не может быть отрицательным.", 0};
     if (!sunduk.include(counts)) return {false, "Нет указанных ресурсов для продажи", 0};
     int64_t total = 0;
     for (int i = 0; i < SUNDUK_SIZE; i++) total += counts[i] * SALE_SUNDUK[i];
