@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 
 namespace colony {
 
@@ -59,6 +60,8 @@ std::vector<double> value_noise(int size, MtRandom& rng, int coarse) {
 }  // namespace
 
 Earth::Earth(uint64_t seed, int size) : size_(size), seed_(seed) {
+    if (size < 40)
+        throw std::invalid_argument("Earth: map size must be >= 40 for current generator");
     lots_.assign((size_t)size * size, 0);
     subtype_.assign((size_t)size * size, 0);
     init_sel_x = size / 2;
@@ -156,8 +159,12 @@ void Earth::generate() {
 
     // Гарантированно суша в центре (после всех вырезаний).
     // Python: lots[size/2-6 : size/2+7, ...] -> строки/столбцы 134..146 (13 шт)
-    for (int y = size / 2 - 6; y < size / 2 + 7; y++) {
-        for (int x = size / 2 - 6; x < size / 2 + 7; x++) {
+    const int clear_y0 = std::max(0, size / 2 - 6);
+    const int clear_y1 = std::min(size, size / 2 + 7);
+    const int clear_x0 = std::max(0, size / 2 - 6);
+    const int clear_x1 = std::min(size, size / 2 + 7);
+    for (int y = clear_y0; y < clear_y1; y++) {
+        for (int x = clear_x0; x < clear_x1; x++) {
             lots_[(size_t)y * size + x] = LT_NORMAL;
         }
     }

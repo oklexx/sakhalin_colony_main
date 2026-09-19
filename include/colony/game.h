@@ -159,6 +159,7 @@ public:
     // По умолчанию nullptr — песочница (colony_cpp.Game напрямую) строит что хочет.
     using BuildGate = bool (*)(const void* ctx, const std::string& id);
     void set_build_gate(BuildGate fn, const void* ctx) { gate_ = fn; gate_ctx_ = ctx; }
+    std::pair<bool, std::string> can_build_at(const BaseData& d, int x, int y) const;
     std::pair<bool, std::string> build(const std::string& data_id, int x, int y);
     struct RestoreOut { bool ok; std::string msg; int64_t price, days; };
     RestoreOut restore(int x, int y);
