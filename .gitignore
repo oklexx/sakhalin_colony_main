@@ -1,33 +1,77 @@
-# Build directories
+# ── Build ───────────────────────────────────────────────────────────────────
 build/
+Release/
+python/Release/
 ALL_BUILD.vcxproj
-ZERO_CHECK.dir/
-ALL_BUILD.dir/
-Release/colony_cpp.pyd
 *.vcxproj
 *.vcxproj.filters
-# Python cache
-__pycache__/
-*.py[cod]
-*.class
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-# OS files
-.DS_Store
-Thumbs.db
-# Logs and temp
-*.log
-*.tmp
-*.vcxproj
-# PR3: compiled artifacts must never be committed — a stale binary in git
-# silently shadows fixed C++ sources (see python/colony_cpp_api.py).
+*.sln
+*.dir/
+
+# ── Compiled artifacts — a stale binary in git silently shadows fixed C++
+# ── sources (see python/colony_cpp_api.py). NEVER commit:
 *.pyd
 *.so
 *.exp
 *.lib
 !raylib/**/*.lib
+*.dll
+!raylib/**/*.dll
 *.exe
-python/Release/
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+.env/
+
+# ── Python cache ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# ── ML artifacts / checkpoints (артефакты живут в ~/colony_runs/) ────────────
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.safetensors
+*.npy
+*.npz
+colony_runs/
+runs/
+tb_logs/
+saved/models/*
+!saved/models/best_model.meta.json
+
+# ── Heavy assets / audio / archives ──────────────────────────────────────────
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.m4a
+*.zip
+*.7z
+*.rar
+
+# ── Secrets (см. config.example.json) ────────────────────────────────────────
+.env
+*.env.local
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS files ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Logs and temp ────────────────────────────────────────────────────────────
+*.log
+*.tmp

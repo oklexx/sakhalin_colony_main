@@ -2,7 +2,22 @@
 
 Обучение агента PPO игре в экономическую стратегию «колония на Сахалине» (1890 год): агент строит здания, manages ресурсы, платит налоги и выживает до 10 000 игровых дней. Среда — C++ (`colony_cpp.pyd` через pybind11), обучение — PyTorch на GPU, есть GUI-дашборд на PySide6.
 
-> **Отчёты по проекту:** [REPORT.md](REPORT.md), [REPORT_2026_09.md](REPORT_2026_09.md), [TRAINING_REPORT.md](TRAINING_REPORT.md), [REVIEW_REPORT.md](REVIEW_REPORT.md).
+Отчёты/диагностики лежат в [docs/](docs/) (`RL_DIAGNOSIS_2026_09.md`, `AUDIT_REWARD_2026_09.md`, `REVIEW_WATER_MODES_2026_09.md` и др.).
+
+## 0. Файлы контекста (читать в первую очередь)
+
+| Файл | Назначение |
+|---|---|
+| [STATE.md](STATE.md) | Текущие задачи и актуальные баги |
+| [RULES.md](RULES.md) | Правила написания кода (синхронизация наград/курикулума/obs, тесты) |
+| [CHANGELOG.md](CHANGELOG.md) | История изменений (завершённые задачи) |
+| [config.example.json](config.example.json) | Структура настроек прогона обучения |
+| [Makefile](Makefile) | Команды: `make build`, `make test`, `make gui`, `make watch`, `make tb` |
+| [requirements.txt](requirements.txt) | Python-стек (torch, numpy, PySide6, …) |
+| [pyproject.toml](pyproject.toml) | Конфигурация ruff/mypy (стандарты для кода) |
+| [tests/](tests/) | ~40 тестов: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
+
+> **Отчёты по проекту:** [REPORT.md](REPORT.md), [REPORT_2026_09.md](REPORT_2026_09.md), [TRAINING_REPORT.md](TRAINING_REPORT.md), [REVIEW_REPORT.md](REVIEW_REPORT.md) — в текущем состоянии репозитория отсутствуют (см. [STATE.md](STATE.md), п. 4); актуальные материалы — в `docs/`.
 
 ---
 
@@ -44,11 +59,9 @@ python watch_champion.py --model-dir ~/colony_runs/models/my_run
 ```
 sakhalin_colony_main/
 ├── train.py                  # CLI-точка входа обучения (аргументы -> Config -> EnvManager -> AsyncTrainer)
-├── auto_trainer.py           # Optuna-поиск гиперпараметров (objective = best_score из best_model.meta.json)
-├── training_cycle.py         # Пакетный цикл: 30 прогонов × 10M шагов с отчётом
-├── observe.py                # Прогон чекпойнта с подробным логом шагов/наблюдений
 ├── watch_champion.py         # Визуальный просмотр игры чемпиона в реальном времени
-├── sweep2..sweep7_*.py, reward_sweep.py  # Пакетные свипы наград через train_ui2/worker.py
+# ⚠ auto_trainer.py, training_cycle.py, observe.py, sweep2..sweep7_*.py
+#   упоминались в старых версиях, но в репозитории сейчас НЕТ (см. STATE.md п. 4)
 ├── CMakeLists.txt            # Сборка colony_cpp (.pyd кладётся в python/)
 ├── requirements.txt
 │
@@ -85,7 +98,8 @@ sakhalin_colony_main/
 ├── configs/
 │   ├── bases.json            #   33 здания: цена, время стройки, рабочие, сезоны, потребление/прибыль
 │   ├── events.json           #   Случайные события (аварии на шахтах/нефтянках)
-│   ├── reward_v3.json        #   ★ Канонический профиль наград (= дефолты кода)
+│   ├── reward_v4.json        #   ★ Канонический профиль наград (= дефолты кода, см. rl/config.py)
+│   ├── reward_v3.json        #   Исторический профиль (только явный --reward-config)
 │   ├── reward.json, reward_v2.json  # Исторические профили (только явный --reward-config)
 │   └── exp_25/26/27_*.json   #   Экспериментальные наборы гиперпараметров (minimap/hybrid)
 │
@@ -188,7 +202,13 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 
 ## 6. Система наград — ПОЛНАЯ карта
 
-### 6.1 Конфигурируемые веса (RewardConfig: rl/config.py, src/env.h, configs/reward_v3.json — все источники СОГЛАСОВАНЫ; номера строк env.cpp приблизительные)
+### 6.1 Конфигурируемые веса (RewardConfig: rl/config.py, src/env.h, configs/reward_v4.json — все источники СОГЛАСОВАНЫ; номера строк env.cpp приблизительные)
+
+> Таблица ниже — профиль **v3** (исторический). Канон — **`configs/reward_v4.json`**
+> (v4: `build_bonus 1.2`, `build_cost_penalty 0.00004`, `novelty 3.0`, `loan_penalty 2.0`,
+> `death_penalty 12`, `survival_coeff 0.0005`, клип [−100, +100], плюс
+> `goal_survival_coeff` / `main_tax_cash_bonus` / `main_tax_pressure_coeff`).
+> См. `docs/AUDIT_REWARD_2026_09.md`.
 
 | Вес | Дефолт | Где применяется (env.cpp) | Формула |
 |---|---|---|---|
@@ -221,15 +241,15 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 | clip_reward_min/max | ±50 | :1146 | клип сырой награды |
 
 ### 6.2 Бывшие хардкоды — теперь настраиваются (RewardConfig)
-**Неуплата налога (P0 2026-09):** в RL-среде долг оформляется автоматически — платится сколько есть, остаток уходит в `credit` (`tax_debt_penalty` + проценты), календарь не замирает; `tax_fail_penalty` остаётся только для «диалоговой» политики GUI (`tax_to_debt=false`). Неуплата налога −5/день (tax_fail_penalty) · долг −0.1×credit/1000 (debt_coeff) · рождение/прибытие +1 (born_bonus) · **смерть −20** (death_penalty) · потеря базы −30 (base_lost_penalty) · переполнение жилья −2 (home_overflow_penalty) · жильё при нехватке 3×log1p (housing_need_bonus) · еда/вода от нехватки 2×log1p (food/water_need_bonus).
+**Неуплата налога (P0 2026-09):** в RL-среде долг оформляется автоматически — платится сколько есть, остаток уходит в `credit` (`tax_debt_penalty` + проценты), календарь не замирает; `tax_fail_penalty` остаётся только для «диалоговой» политики GUI (`tax_to_debt=false`). Неуплата налога −5/день (tax_fail_penalty) · долг: v4 — `debt_coeff=0` (двойной процент отменён; в v3 было −0.1×credit/1000) · рождение/прибытие +2 (born_bonus, v4) · **смерть −12** (death_penalty, v4; в v3 было −20) · потеря базы −30 (base_lost_penalty) · переполнение жилья −2 (home_overflow_penalty) · жильё при нехватке 3×log1p (housing_need_bonus) · еда/вода от нехватки 2×log1p (food/water_need_bonus).
 
 ### 6.3 Пайплайн награды
 ```
-сырая награда (таблицы выше) → клип ±50 (env.cpp:1146)
+сырая награда (таблицы выше) → клип ±clip_reward_max (v4: ±100, env.cpp:1146)
 → rew_rms_.normalize_reward, клип ±10 (env.cpp:1303-1310, SB3-конвенция)
-→ RolloutBuffer → GAE (gamma=0.99999, lambda=0.98 по дефолту)
+→ RolloutBuffer → GAE (gamma=0.999, lambda=0.99 по дефолту)
 ```
-Настройка весов: дефолт — `configs/reward_v3.json` (подхватывается автоматически); кастомный — `train.py --reward-config <файл>` (можно частичный: отсутствующие ключи берутся из v3).
+Настройка весов: дефолт — `configs/reward_v4.json` (подхватывается автоматически); кастомный — `train.py --reward-config <файл>` (можно частичный: отсутствующие ключи берутся из канона).
 
 ---
 
@@ -255,7 +275,7 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 | n_envs / n_steps | 8 / 4096 | буфер = 32 768 шагов (flat ≈ 35 МБ VRAM) |
 | batch_size / n_epochs | 8192 / 10 | 10 эпох — много; рекомендуется 4–6 + target_kl |
 | learning_rate | 3e-4 | cosine decay до ~10% (LambdaLR в PPO) |
-| gamma / gae_lambda | 0.99999 / 0.98 | горизонт эпизода (10 000 дней) — см. `docs/RL_DIAGNOSIS_2026_09.md` |
+| gamma / gae_lambda | 0.999 / 0.99 | горизонт ~1000 дней (полураспад 693) — см. `docs/RL_DIAGNOSIS_2026_09.md` |
 | ent_coef / vf_coef | 0.01 / 0.5 | |
 | use_amp / amp_dtype | true / bfloat16 | для MLP 131K выгоды нет, можно off |
 | eval_freq / eval_episodes | 100 000 / 20 | рекомендуется 500 000 / 10×3 сида |
@@ -324,7 +344,7 @@ python tests/bench_per_step.py      # бенчмарк шага среды
 
 | Хочу… | Файл |
 |---|---|
-| поменять веса наград | configs/reward_v3.json → rl/config.py (датакласс) → include/colony/env.h (C++) — держать синхронно |
+| поменять веса наград | configs/reward_v4.json → rl/config.py (датакласс) → include/colony/env.h (C++) — держать синхронно (см. RULES.md) |
 | добавить здание | configs/bases.json (+ порядок = индекс действия!) |
 | понять, за что начислена награда | src/env.cpp:700-1150 (step), лог STEP с компонентами (:1112) |
 | изменить наблюдение | src/env.cpp:461 (obs) / :651 (minimap) + пересборка |
