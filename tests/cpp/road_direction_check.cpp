@@ -21,6 +21,25 @@
 
 using namespace colony;
 
+// Направление на ближайшую к городу воду — с карты, а не из хвоста obs:
+// в obs v2 (канонический дефолт) хвост — направления к дереву/углю/.../золоту.
+static void water_dir_from_map(const ColonyEnvCpp& e, double& out_dx, double& out_dy) {
+    const Game& g = e.game();
+    const int ms = g.map_size();
+    const int8_t* lots = g.earth.lots().data();
+    const double bx = g.earth.init_sel_x, by = g.earth.init_sel_y;
+    double best_sq = -1.0; int wx = -1, wy = -1;
+    for (int y = 0; y < ms; ++y)
+        for (int x = 0; x < ms; ++x)
+            if (lots[(size_t)y * ms + x] == LT_WATER) {
+                double d2 = (x - bx) * (x - bx) + (y - by) * (y - by);
+                if (best_sq < 0 || d2 < best_sq) { best_sq = d2; wx = x; wy = y; }
+            }
+    if (best_sq < 0) { out_dx = out_dy = 0.0; return; }
+    out_dx = (wx - bx) / (double)ms;
+    out_dy = (wy - by) / (double)ms;
+}
+
 static int failures = 0;
 static void check(bool ok, const std::string& what) {
     printf("%s  %s\n", ok ? "[ok]  " : "[FAIL]", what.c_str());
@@ -110,9 +129,8 @@ int main() {
             int rdb = e.road_dir_base();
             int roads = 0, built = 0;
             for (int k = 0; k < 400; k++) {
-                auto o = e.obs();
-                int n = (int)o.size();
-                double wdx = o[n - 2], wdy = o[n - 1];
+                double wdx = 0.0, wdy = 0.0;
+                water_dir_from_map(e, wdx, wdy);
                 auto m = e.action_mask();
                 int act = 0;
                 if (m[A_BUILD0 + wc] != 0.0f) {

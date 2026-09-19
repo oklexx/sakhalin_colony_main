@@ -90,7 +90,10 @@ def test_curriculum_from_meta_missing_is_none():
 
     assert cur == {"curriculum_stage": None, "unlock_ids": None,
                      "use_curriculum_tab": None, "resources": None,
-                     "obs_version": None}
+                     "obs_version": None, "enabled_mechanics": None,
+                     "disabled_mechanics": None,
+                     "mechanics_unlock_schedule": None,
+                     "mechanics_step": None}
 
 
 def test_read_curriculum_meta_merges_both_files(tmp_path):
@@ -233,7 +236,7 @@ def test_run_eval_builds_env_with_restored_curriculum(tmp_path, monkeypatch):
         "curriculum_stage_at_best": 0,
         "unlock_ids": "WaterChannel",
         "use_curriculum_tab": True,
-        "obs_version": 1,
+        "obs_version": 2,
     }), encoding="utf-8")
 
     ev.run_eval(model_path, episodes=1, max_days=2, seed=1, normalization_path=None)
@@ -305,7 +308,7 @@ def test_run_eval_explicit_curriculum_overrides_meta(tmp_path, monkeypatch):
         "curriculum_stage_at_best": 3,
         "unlock_ids": "Goldmine",
         "use_curriculum_tab": True,
-        "obs_version": 1,
+        "obs_version": 2,
     }), encoding="utf-8")
 
     ev.run_eval(model_path, episodes=1, max_days=2, seed=1, normalization_path=None,
@@ -330,7 +333,12 @@ def test_trainer_passes_curriculum_to_eval():
 
     src = inspect.getsource(AsyncTrainer)
     assert "_curriculum_kwargs" in src
-    assert src.count("**self._curriculum_kwargs()") >= 2, \
+    # Канонический вызов — **self._curriculum_kwargs(); в турнире kwargs
+    # сначала копируются в eval_curriculum (чтобы подмешать стадию из meta
+    # чекпоинта) и разворачиваются как **eval_curriculum. Оба call-site
+    # обязаны передавать курикулум.
+    n_calls = src.count("**self._curriculum_kwargs()") + src.count("**eval_curriculum")
+    assert n_calls >= 2, \
         "both eval and tournament run_eval calls must pass the curriculum"
 
 

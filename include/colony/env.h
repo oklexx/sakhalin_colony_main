@@ -28,7 +28,11 @@ struct Curriculum {
     bool all_resources = true;                 // PR 4: false => resource_weights активны
     std::array<double, SUNDUK_SIZE> resource_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     int stage_report = 0;                      // только для obs-фичи и дампов
-    int obs_version = 0;  // 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim (P0: +dx/dy to nearest lots)
+    // Дефолт obs v2 (299) — канонический для всего стека: rl/curriculum
+    // CurriculumState.obs_version=2, python-обёртки (cpp_env/cpp_vecenv)
+    // передают 2 явно. 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim (P0:
+    // +dx/dy к ближайшим ресурсным тайлам).
+    int obs_version = 2;
     // Fixed manager slots: improve_land, preservation (preserve + unpreserve),
     // credit (take + repay). Missing transport field keeps legacy/all-enabled behaviour.
     std::array<bool, 3> enabled_mechanics{true, true, true};

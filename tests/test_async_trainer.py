@@ -391,7 +391,9 @@ def test_env_manager_action_names_match_env_order():
     em = EnvManager(cfg, torch.device("cpu"))
     try:
         names = em.action_names
-        assert len(names) == em.n_actions == 45
+        # 49 = 2 (DAY/WEEK) + 32 build slots + 11 managers + 4 road directions
+        # (include/colony/constants.h: N_ROAD_DIRS добавил ROAD_E/W/S/N)
+        assert len(names) == em.n_actions == 49
         assert names[0] == "DAY" and names[1] == "WEEK"
         assert names.index("BUILD_GOLDMINE") == 9
         assert names.index("BUILD_ROAD") == 12

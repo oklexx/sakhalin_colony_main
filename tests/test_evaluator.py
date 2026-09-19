@@ -58,6 +58,9 @@ def _fake_env_class():
         def __init__(self, **kw):
             self._step = 0
             self.normalizer = _FakeNormalizer()
+            # run_eval читает env.action_space.n для имён действий
+            import types
+            self.action_space = types.SimpleNamespace(n=45)
 
         def reset(self, seed=None):
             self._step = 0
@@ -118,7 +121,10 @@ def test_run_eval_returns_stats(tmp_path, monkeypatch):
 
     ckpt = _make_actor_critic_checkpoint(tmp_path)
     fake_env = _fake_env_class()
-    monkeypatch.setattr(ev, "CppColonyEnv", fake_env, raising=False)
+    # run_eval импортирует CppColonyEnv локально (from cpp_env import ...),
+    # поэтому патчить нужно модуль cpp_env, а не train_ui2.evaluator.
+    import cpp_env as cpp_env_mod
+    monkeypatch.setattr(cpp_env_mod, "CppColonyEnv", fake_env, raising=False)
 
     class FakePolicy:
         def __call__(self, obs):
@@ -174,7 +180,9 @@ def test_run_eval_with_normalization(tmp_path, monkeypatch):
 
     class FakePolicy:
         def __call__(self, obs):
-            return torch.zeros(1, 45), torch.zeros(1, 1)
+            # 49 = 2 + 32 builds + 11 managers + 4 road dirs — реальная
+            # среда под маской отдаёт ровно столько элементов
+            return torch.zeros(1, 49), torch.zeros(1, 1)
 
     monkeypatch.setattr(ev, "_load_policy", lambda *a, **kw: FakePolicy())
 
@@ -205,12 +213,12 @@ def _make_hybrid_checkpoint(tmp_path: Path, grid_size: int = 57,
         obs_size = int(cpp_env_mod.CppColonyEnv(
             map_size=100).observation_space.shape[0])
     m = ActorCriticHybrid(obs_size=obs_size, n_channels=8, grid_size=grid_size,
-                          n_actions=45, hidden_sizes=[64], device="cpu")
+                          n_actions=49, hidden_sizes=[64], device="cpu")
     ckpt_path = tmp_path / "hybrid_model.pt"
     torch.save({
         "model_state": m.state_dict(),
         "obs_size": obs_size,
-        "n_actions": 45,
+        "n_actions": 49,
         "hidden_sizes": [64],
         "n_channels": 8,
         "grid_size": grid_size,
@@ -252,11 +260,11 @@ def test_run_eval_flat_untouched_by_radius_fix(tmp_path, monkeypatch):
     real_obs = int(cpp_env_mod.CppColonyEnv(map_size=100).observation_space.shape[0])
     from rl.actor_critic import ActorCritic
 
-    m = ActorCritic(obs_size=real_obs, n_actions=45, hidden_sizes=[64],
+    m = ActorCritic(obs_size=real_obs, n_actions=49, hidden_sizes=[64],
                     device=torch.device("cpu"))
     ckpt = tmp_path / "flat_model.pt"
     torch.save({"model_state": m.state_dict(), "obs_size": real_obs,
-                "n_actions": 45, "hidden_sizes": [64]}, str(ckpt))
+                "n_actions": 49, "hidden_sizes": [64]}, str(ckpt))
 
     created = []
     RealEnv = cpp_env_mod.CppColonyEnv
@@ -277,7 +285,7 @@ def test_run_eval_flat_untouched_by_radius_fix(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not ENV_OK, reason="env not available")
 def test_run_eval_obs_mismatch_raises(tmp_path):
-    """A v0-sized policy on the default v1 env must fail with 'obs mismatch'."""
+    """A v0-sized policy on the default v2 env must fail with 'obs mismatch'."""
     from rl.actor_critic import ActorCritic
     from train_ui2.evaluator import run_eval
 
@@ -298,11 +306,11 @@ def test_run_eval_obs_version_0_runs_v0_policy(tmp_path):
     from rl.actor_critic import ActorCritic
     from train_ui2.evaluator import run_eval
 
-    m = ActorCritic(obs_size=248, n_actions=45, hidden_sizes=[64],
+    m = ActorCritic(obs_size=248, n_actions=49, hidden_sizes=[64],
                     device=torch.device("cpu"))
     ckpt = tmp_path / "v0_model.pt"
     torch.save({"model_state": m.state_dict(), "obs_size": 248,
-                "n_actions": 45, "hidden_sizes": [64], "obs_version": 0},
+                "n_actions": 49, "hidden_sizes": [64], "obs_version": 0},
                str(ckpt))
     result = run_eval(ckpt, episodes=1, max_days=2, seed=1, device="cpu",
                       map_size=100, obs_version=0)

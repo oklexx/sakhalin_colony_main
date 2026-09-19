@@ -17,12 +17,12 @@ def test_milestone_config_defaults():
     """Verify milestone config fields have correct defaults."""
     from rl.config import RewardConfig
     rc = RewardConfig()
-    assert rc.milestone_base_bonus == 30.0
+    assert rc.milestone_base_bonus == 10.0
     assert rc.milestone_people_bonus == 2.0
     assert rc.milestone_day_bonus == 2.0
     assert rc.milestone_year_bonus == 5.0
     d = rc.to_dict()
-    assert d["milestone_base_bonus"] == 30.0
+    assert d["milestone_base_bonus"] == 10.0
     assert d["milestone_people_bonus"] == 2.0
     assert d["milestone_day_bonus"] == 2.0
     assert d["milestone_year_bonus"] == 5.0
@@ -31,7 +31,7 @@ def test_milestone_config_defaults():
 def test_milestone_cpp_bindings():
     """Verify milestone fields work in C++ RewardConfig."""
     rc = colony_cpp.RewardConfig()
-    assert rc.milestone_base_bonus == 30.0
+    assert rc.milestone_base_bonus == 10.0
     assert rc.milestone_people_bonus == 2.0
     assert rc.milestone_day_bonus == 2.0
     assert rc.milestone_year_bonus == 5.0

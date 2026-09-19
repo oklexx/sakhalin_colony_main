@@ -3,6 +3,50 @@
 Формат: `## [дата]` + список изменений. Завершённые задачи из [STATE.md](STATE.md)
 переносятся сюда. Источники: `docs/*_2026_09.md`, аудиты, README §11.
 
+## [2026-09-19]
+
+### Исправлено
+- **Синхронизация дефолтов наград с каноном (золотое правило RULES.md)**:
+  C++ `RewardConfig` (include/colony/reward_config.h) отставал от
+  `configs/reward_v4.json`/`rl/config.py` и оставался на v3-значениях —
+  11 полей приведены к v4: `build_bonus` 2.0→1.2, `build_cost_penalty`
+  0.0001→0.00004, `loan_penalty` 0.5→2.0, `novelty` 5.0→3.0,
+  `survival_coeff` 0→0.0005, `milestone_base_bonus` 30→10, клип ±50→±100,
+  `death_penalty` 20→12, `born_bonus` 1→2, `debt_coeff` 0.1→0.
+  Консольные/GUI-сборки и сырые биндинги теперь считают в каноническом v4,
+  как и RL-путь (который всегда переопределял поля явно).
+- **Дефолт obs — v2 (299) на всех границах**: `Curriculum::obs_version` и
+  `Curriculum::from_json` теперь по умолчанию 2 (было 0 — сырой C++ env
+  молча отдавал 248-мерный obs). rl/curriculum и python-обёртки и так
+  передавали 2 явно; расхождение было классом «тихий рассинхрон границ».
+
+### Тесты
+- Полный `pytest` зелёный: **318 passed, 2 skipped** (было 19 failed + INTERNALERROR
+  от `test_smoke_fixes.py`). Прогон впервые выполнен под Linux (сборка
+  colony_cpp.so через CMake + pybind11; см. STATE.md).
+- **Добавлен `tests/test_review_plan_regressions.py`** — регрессии Этапа 0
+  плана ревью: `delete_base` не портит spatial-индекс (нет фантомов «занято»),
+  единый валидатор `Game::build` (не та земля / сгоревший участок / занятая
+  клетка), market buy/sell отвергает отрицательные количества, размер Sunduk
+  в биндингах, `ep_return` == сумма возвращённых reward, VecEnv fail-fast
+  (n_envs=0, размеры seeds/actions), python-обёртка не затирает
+  `terminal_observation` из C++-info.
+- Обновлены устаревшие тесты, отставшие от легитимных изменений:
+  - профиль наград v3→v4 (`test_reward_default_profile`, `test_smoke_fixes`,
+    `test_build_cost`, `test_milestones`, `test_reward_clip`,
+    `test_colony_robustness` — 42→47 ключа);
+  - 45→49 действий (ROAD_E/W/S/N): `test_async_trainer`, `test_evaluator`
+    (там же починен неэффективный monkeypatch `CppColonyEnv`);
+  - дефолт obs v1→v2: `test_curriculum_contract`, `test_curriculum_scope`
+    (включая счётчик call-site'ов передачи курикулума в run_eval — поведение
+    верное, проверка источника стала точнее).
+- C++-пробы (tests/cpp) выровнены с каноном: `reward_regressions` R5 теперь
+  берёт направление на воду с карты (хвост obs v2 — направления к дереву/углю/
+  …/золоту, не вода), `p0_p1_check` проверяет механизм клипа на явных границах,
+  `road_direction_check` D4 — greedy к воде с карты, `curriculum_check` —
+  избирательность гейта проверяется на Road, а WaterChannel на суше ожидаемо
+  отвергается валидатором размещения (не гейтом). Все пробы — 0 fail.
+
 ## [2026-09-17]
 
 ### Добавлено

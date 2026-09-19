@@ -437,9 +437,10 @@ def test_ckpt_flat_width():
 
 def test_resolve_state_obs_version_explicit_only(tmp_path):
     # A stored v0 must NOT silently rebuild the eval env — explicit wins.
+    # (Default resolution returns the CURRENT project default: obs v2.)
     _write_meta(tmp_path / "best_model.meta.json", {
         "curriculum_stage_at_best": 0, "obs_version": 0})
-    assert resolve_state(tmp_path).obs_version == 1
+    assert resolve_state(tmp_path).obs_version == 2
     assert resolve_state(tmp_path, obs_version=0).obs_version == 0
 
 # ── mechanic curriculum: fixed action head, additive unlocks ────────────────
