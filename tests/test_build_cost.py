@@ -18,17 +18,17 @@ def test_build_cost_penalty_config():
     from rl.config import RewardConfig
     rc = RewardConfig()
     assert hasattr(rc, "build_cost_penalty")
-    assert rc.build_cost_penalty == 0.0001
+    assert rc.build_cost_penalty == 0.00004
     d = rc.to_dict()
-    assert d["build_cost_penalty"] == 0.0001
+    assert d["build_cost_penalty"] == 0.00004
     rc2 = RewardConfig.from_dict(d)
-    assert rc2.build_cost_penalty == 0.0001
+    assert rc2.build_cost_penalty == 0.00004
 
 
 def test_build_cost_penalty_cpp():
     """Verify build_cost_penalty works in C++ RewardConfig."""
     rc = colony_cpp.RewardConfig()
-    assert rc.build_cost_penalty == 0.0001
+    assert rc.build_cost_penalty == 0.00004
     rc.build_cost_penalty = 0.05
     assert rc.build_cost_penalty == 0.05
 

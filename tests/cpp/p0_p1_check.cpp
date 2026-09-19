@@ -151,7 +151,13 @@ int main() {
         const std::string log_path = "/tmp/p0_p1_steplog.txt";
         std::remove(log_path.c_str());
         const int64_t seed = 42;
-        ColonyEnvCpp e(bd, ed, seed, 200, Curriculum(), RewardConfig(), DIFFICULTY_NORMAL);
+        // Канонический профиль v4 расширил клип до [-100, +100] — в этом
+        // сценарии кламп просто не срабатывал бы. Проверяем МЕХАНИЗМ клипа,
+        // поэтому границы заданы явно и узко.
+        RewardConfig rc_clip;
+        rc_clip.clip_reward_min = -50.0;
+        rc_clip.clip_reward_max = 50.0;
+        ColonyEnvCpp e(bd, ed, seed, 200, Curriculum(), rc_clip, DIFFICULTY_NORMAL);
         e.set_step_log(log_path);
         e.reset(seed);
         const int farm = find_id(e, "Farm");

@@ -8,7 +8,10 @@ from rl.config import RewardConfig, Config
 def test_reward_config_completeness():
     cfg = RewardConfig()
     d = cfg.to_dict()
-    assert len(d) == 42, f"Expected 42 reward keys, got {len(d)}"
+    # v4-профиль расширил набор ключей (goal_survival_coeff,
+    # main_tax_cash_bonus, main_tax_pressure_coeff, survival_coeff,
+    # mask_managers_by_applicability и др.)
+    assert len(d) == 47, f"Expected 47 reward keys, got {len(d)}"
 
 
 def test_curriculum_stage_progression():

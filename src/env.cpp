@@ -96,8 +96,9 @@ Curriculum Curriculum::from_json(const std::string& text) {
     }
     // Obs layout version: 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim
     // (P0: + dx/dy к ближайшим wood/coal/iron/oil/gold). Дефолт C++ — 0,
-    // Python/RL передаёт 2 (см. rl/config.py: obs_version).
-    c.obs_version = j.value("obs_version", 0);
+    // Python/RL передаёт 2 (см. rl/config.py: obs_version). Дефолт тоже 2 —
+    // канонический obs-лейаут (совпадает с Curriculum::obs_version в env.h).
+    c.obs_version = j.value("obs_version", 2);
     if (j.contains("enabled_mechanics")) {
         if (!j["enabled_mechanics"].is_array())
             throw std::runtime_error("bad --curriculum JSON: enabled_mechanics must be an array");

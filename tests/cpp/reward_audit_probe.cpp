@@ -1,6 +1,6 @@
 // Наградной аудит: замер вклада каждого члена награды (через step_log) у
-// нескольких репрезентативных политик. Дефолтный профиль reward_v3,
-// tax_to_debt=true (политика RL).
+// нескольких репрезентативных политик. Дефолтный профиль reward_v4
+// (канонический), tax_to_debt=true (политика RL).
 //
 // Build (repo root):
 //   g++ -std=c++17 -O1 -Iinclude -Iinclude/third_party -o /tmp/reward_audit \

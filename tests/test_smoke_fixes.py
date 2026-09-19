@@ -47,10 +47,10 @@ known = reward_keys_from_cpp_vecenv()
 missing = known - exported
 check("to_dict exports all cpp_vecenv keys", not missing, f"missing={sorted(missing)}")
 
-# ── 2. defaults == reward_v3.json ──────────────────────────────
-v3 = json.loads((ROOT / "configs" / "reward_v3.json").read_text(encoding="utf-8"))
-diff_v3 = {k: (getattr(rc, k), v3[k]) for k in v3 if k != "_comment" and getattr(rc, k) != v3[k]}
-check("dataclass defaults == reward_v3.json", not diff_v3, str(diff_v3))
+# ── 2. defaults == reward_v4.json (канонический профиль) ──────
+v4 = json.loads((ROOT / "configs" / "reward_v4.json").read_text(encoding="utf-8"))
+diff_v4 = {k: (getattr(rc, k), v4[k]) for k in v4 if k != "_comment" and getattr(rc, k) != v4[k]}
+check("dataclass defaults == reward_v4.json", not diff_v4, str(diff_v4))
 
 # ── 3. worker-style config round-trip keeps every field ─────────────────
 ui_cfg = {

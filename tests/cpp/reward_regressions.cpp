@@ -24,6 +24,28 @@
 using namespace colony;
 
 static int failures = 0;
+
+// Направление на ближайшую к городу клетку воды — считаем с карты (как
+// ColonyEnvCpp при reset). Хвост obs v0/v1 действительно кончается парой
+// (dx,dy) воды, но в obs v2 (канонический дефолт) последними идут направления
+// к дереву/углю/железу/нефти/золоту — чтение хвоста там даёт ЗОЛОТО, а не воду
+// (R5 при этом начинал вести дороги к золоту и «падал»).
+static void water_dir_from_map(const ColonyEnvCpp& e, double& out_dx, double& out_dy) {
+    const Game& g = e.game();
+    const int ms = g.map_size();
+    const int8_t* lots = g.earth.lots().data();
+    const double bx = g.earth.init_sel_x, by = g.earth.init_sel_y;
+    double best_sq = -1.0; int wx = -1, wy = -1;
+    for (int y = 0; y < ms; ++y)
+        for (int x = 0; x < ms; ++x)
+            if (lots[(size_t)y * ms + x] == LT_WATER) {
+                double d2 = (x - bx) * (x - bx) + (y - by) * (y - by);
+                if (best_sq < 0 || d2 < best_sq) { best_sq = d2; wx = x; wy = y; }
+            }
+    if (best_sq < 0) { out_dx = out_dy = 0.0; return; }
+    out_dx = (wx - bx) / (double)ms;
+    out_dy = (wy - by) / (double)ms;
+}
 static void check(bool ok, const std::string& what) {
     printf("%s  %s\n", ok ? "[ok]  " : "[FAIL]", what.c_str());
     if (!ok) failures++;
@@ -261,9 +283,8 @@ int main() {
         e_day.reset(42);
         auto s_day = e_day.step(A_DAY);
 
-        auto o = e.obs();
-        double wdx = o[o.size() - 2];
-        double wdy = o[o.size() - 1];
+        double wdx = 0.0, wdy = 0.0;
+        water_dir_from_map(e, wdx, wdy);
         int best_dir = -1; double best_dot = -1e9;
         int worst_dir = -1; double worst_dot = 1e9;
         for (int d = 0; d < 4; d++) {
@@ -297,8 +318,8 @@ int main() {
                 reached = true;
                 break;
             }
-            auto ow = e_walk.obs();
-            double dx = ow[ow.size() - 2], dy = ow[ow.size() - 1];
+            double dx = 0.0, dy = 0.0;
+            water_dir_from_map(e_walk, dx, dy);
             int d_best = -1; double bs = -1e18;
             for (int d = 0; d < N_ROAD_DIRS; d++) {
                 if (m[rdb + d] == 0.0f) continue;

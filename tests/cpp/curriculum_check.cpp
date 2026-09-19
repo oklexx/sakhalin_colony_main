@@ -200,16 +200,22 @@ int main() {
     // Direct g.build() on a gated env refuses a locked id with the gate message.
     ColonyEnvCpp e(bd, ed, 7, 280);
     e.reset(7);
-    e.set_curriculum(restricted({"WaterChannel"}));
+    // Разрешены WaterChannel и Road: избирательность гейта проверяем на Road
+    // (проходит и гейт, и валидатор размещения на сухопутной клетке), а
+    // WaterChannel на суше после централизации валидации размещения
+    // законно отвергается уже НЕ гейтом (нужна вода, need_earth=2).
+    e.set_curriculum(restricted({"WaterChannel", "Road"}));
     {
         Game& g = e.game();
         int n0 = (int)g.bases.size();  // 1: the Depot
         int bx = g.bases[0].x, by = g.bases[0].y;
         const int dx[4] = {1, -1, 0, 0}, dy[4] = {0, 0, 1, -1};
-        int fx = -1, fy = -1;
+        int fx = -1, fy = -1, gx = -1, gy = -1;
         for (int k = 0; k < 4; k++) {
             int nx = bx + dx[k], ny = by + dy[k];
-            if (!g.base_in_box(nx, ny)) { fx = nx; fy = ny; break; }
+            if (!g.base_in_box(nx, ny)) {
+                if (fx < 0) { fx = nx; fy = ny; } else { gx = nx; gy = ny; break; }
+            }
         }
         check(fx >= 0, "free neighbour cell next to the Depot");
         g.money = 0;  // broke AND locked: the gate message must win (gate is first)
@@ -219,9 +225,16 @@ int main() {
         check((int)g.bases.size() == n0, "refused direct build adds no base");
         // …while an allowed id goes through (selective, not a blanket refuse)
         g.money = 5'000'000;
-        auto r2 = g.build("WaterChannel", fx, fy);
-        check(r2.first, "direct g.build(WaterChannel) passes the gate");
+        auto r2 = g.build("Road", fx, fy);
+        check(r2.first, "direct g.build(Road) passes the gate and placement");
         check((int)g.bases.size() == n0 + 1, "allowed direct build adds a base");
+        // Разрешённому id по-прежнему действует единый валидатор размещения:
+        // WaterChannel на суше отклоняет размещение, а не курикулум.
+        if (gx >= 0) {
+            auto r3 = g.build("WaterChannel", gx, gy);
+            check(!r3.first && r3.second.find("курикулум") == std::string::npos,
+                  "allowed WaterChannel on land is refused by placement, not by the gate (msg: " + r3.second + ")");
+        }
     }
 
     // reset() recreates the Game — the gate must survive it (re-seated)
@@ -438,7 +451,11 @@ int main() {
 
     // ── PR 5: obs v1 — the «frame» (resource weights + build_allowed bits) ──
     {
-        ColonyEnvCpp e0(bd, ed, 7, 280);  // default Curriculum(): obs_version=0
+        // Секция проверяет РАСКЛАДКИ v0/v1 — версии заданы явно. Дефолт
+        // Curriculum — obs v2 (канонический, 299), см. include/colony/env.h.
+        Curriculum c0;
+        c0.obs_version = 0;
+        ColonyEnvCpp e0(bd, ed, 7, 280, c0);
         e0.reset(7);
         check(e0.obs_size() == 248, "v0 obs_size is 248");
         check((int)e0.obs().size() == 248, "v0 obs() has 248 floats");
@@ -629,7 +646,7 @@ int main() {
         Curriculum fj = Curriculum::from_json("{\"obs_version\": 1}");
         check(fj.obs_version == 1, "from_json reads obs_version");
         Curriculum fj0 = Curriculum::from_json("{}");
-        check(fj0.obs_version == 0, "from_json defaults obs_version to 0");
+        check(fj0.obs_version == 2, "from_json defaults obs_version to 2 (canonical v4/obs-v2 default)");
         Curriculum fm = Curriculum::from_json(
             "{\"enabled_mechanics\":[\"improve_land\",\"preservation\"]}");
         check(fm.enabled_mechanics[0] && fm.enabled_mechanics[1] && !fm.enabled_mechanics[2],

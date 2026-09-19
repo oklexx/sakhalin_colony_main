@@ -1,4 +1,4 @@
-"""Единый источник дефолтов наград: канонический профиль configs/reward_v3.json.
+"""Единый источник дефолтов наград: канонический профиль configs/reward_v4.json.
 
 Проверяет, что все «слои» согласованы (защита от «параметры не долетают»):
   1. профиль-файл существует и полный;
@@ -27,8 +27,8 @@ try:
 except Exception:
     ENV_OK = False
 
-V3_KEYS = ("first_extraction_bonus", "extraction_daily", "need_fill_bonus", "loan_penalty")
-PROFILE = ROOT / "configs" / "reward_v3.json"
+V4_KEYS = ("first_extraction_bonus", "extraction_daily", "need_fill_bonus", "loan_penalty")
+PROFILE = ROOT / "configs" / "reward_v4.json"
 
 
 def _profile():
@@ -49,17 +49,18 @@ def _config_module():
 
 
 def test_profile_file_exists_and_complete():
-    assert PROFILE.exists(), "configs/reward_v3.json — единственный профиль по умолчанию"
+    assert PROFILE.exists(), "configs/reward_v4.json — канонический профиль по умолчанию"
     d = _profile()
-    for k in V3_KEYS + ("error_penalty", "debt_coeff", "preserve_penalty",
-                        "build_bonus", "game_over_penalty", "debt_coeff"):
+    for k in V4_KEYS + ("error_penalty", "debt_coeff", "preserve_penalty",
+                        "build_bonus", "game_over_penalty", "goal_survival_coeff",
+                        "main_tax_cash_bonus", "main_tax_pressure_coeff"):
         assert k in d, f"{k} отсутствует в профиле"
     assert d["first_extraction_bonus"] == 3.0
     assert d["extraction_daily"] == 0.3
     assert d["need_fill_bonus"] == 1.5
-    assert d["loan_penalty"] == 0.5
+    assert d["loan_penalty"] == 2.0
     assert d["error_penalty"] == -2.0
-    assert d["debt_coeff"] == 0.1
+    assert d["debt_coeff"] == 0.0
 
 
 def test_load_default_reward_config_returns_profile():
@@ -68,9 +69,9 @@ def test_load_default_reward_config_returns_profile():
     assert rc.first_extraction_bonus == 3.0
     assert rc.extraction_daily == 0.3
     assert rc.need_fill_bonus == 1.5
-    assert rc.loan_penalty == 0.5
+    assert rc.loan_penalty == 2.0
     assert rc.error_penalty == -2.0
-    assert rc.debt_coeff == 0.1
+    assert rc.debt_coeff == 0.0
 
 
 def test_dataclass_defaults_mirror_profile():
@@ -87,7 +88,7 @@ def test_from_dict_partial_fills_from_profile():
     assert rc.build_bonus == 99.0
     # ключи, которых в dict нет, — из профиля (не «голые» дефолты)
     assert rc.first_extraction_bonus == 3.0
-    assert rc.loan_penalty == 0.5
+    assert rc.loan_penalty == 2.0
 
 
 @pytest.mark.skipif(not ENV_OK, reason="colony_cpp not available")
@@ -116,9 +117,9 @@ def test_ui_reward_specs_cover_profile():
         assert k in ui_keys, (
             f"{k} нет в REWARD_SPECS — поле не в UI, и _collect_config "
             f"выбросит его при старте обучения («параметры не долетают»)")
-    # новые v3-поля подписаны (непустая русская подпись)
+    # новые поля профиля подписаны (непустая русская подпись)
     for s in REWARD_SPECS:
-        if s.key in V3_KEYS:
+        if s.key in V4_KEYS:
             assert s.label and any("\u0400" <= ch <= "\u04ff" for ch in s.label), \
                 f"у {s.key} нет русской подписи: {s.label!r}"
     # дефолт спецификации = значение профиля
