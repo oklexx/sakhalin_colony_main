@@ -76,7 +76,11 @@ jobs:
         continue-on-error: true
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -v -rf 2>&1 | tee pytest.log
+        # pipefail обязателен: без него код возврата даёт tee, а не pytest,
+        # и упавшие тесты выглядят зелёными.
+        run: |
+          set -o pipefail
+          python -m pytest -v -rf 2>&1 | tee pytest.log
 
       # Логи job'а лежат на отдельном CDN и из части окружений недоступны,
       # поэтому хвост прогона дублируется комментарием в PR.
