@@ -1,0 +1,30 @@
+{
+  "_comment": "УМЕНЬШЕННЫЙ вариант основного эксперимента exp_26 под 12 ГБ VRAM: n_envs 1024 -> 64. obs_mode=hybrid: flat-вектор 299 (экономика + water_dx/water_dy) + миникарта 8x32x32. minimap_radius мёртв: миникарта всегда глобальная 32x32. Буфер rollout: 64*2048*(299+8192)*4B = 4.5 ГБ (+ ~1 ГБ прочее).",
+  "name": "exp_26_hybrid_n64",
+  "_vram_budget_gb": 12,
+  "_buffer_gb_estimate": 4.45,
+  "use_amp": true,
+  "torch_compile": false,
+  "total_timesteps": 10000000,
+  "n_envs": 64,
+  "n_steps": 2048,
+  "batch_size": 32768,
+  "n_epochs": 10,
+  "learning_rate": 0.0003,
+  "gamma": 0.999,
+  "gae_lambda": 0.99,
+  "clip_range": 0.2,
+  "ent_coef": 0.01,
+  "vf_coef": 1.0,
+  "max_grad_norm": 1.0,
+  "net_arch": [
+    512
+  ],
+  "seed": 42,
+  "map_size": 200,
+  "obs_mode": "hybrid",
+  "minimap_radius": 14,
+  "curriculum_stage": 0,
+  "curriculum_schedule": [],
+  "obs_version": 2
+}
