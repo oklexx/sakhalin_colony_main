@@ -61,6 +61,30 @@ if errorlevel 1 goto :fail
 
 cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
     /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\lot_finder.cpp" ^
+    /Fo"%OBJDIR%\lot_finder.obj"
+if errorlevel 1 goto :fail
+
+cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\action_mask.cpp" ^
+    /Fo"%OBJDIR%\action_mask.obj"
+if errorlevel 1 goto :fail
+
+cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\observation.cpp" ^
+    /Fo"%OBJDIR%\observation.obj"
+if errorlevel 1 goto :fail
+
+cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\vec_env.cpp" ^
+    /Fo"%OBJDIR%\vec_env.obj"
+if errorlevel 1 goto :fail
+
+cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
     "%ROOT%\src\main.cpp" ^
     /Fo"%OBJDIR%\main.obj"
 if errorlevel 1 goto :fail
@@ -74,6 +98,10 @@ cl.exe /nologo ^
     "%OBJDIR%\earth.obj" ^
     "%OBJDIR%\game.obj" ^
     "%OBJDIR%\env.obj" ^
+    "%OBJDIR%\lot_finder.obj" ^
+    "%OBJDIR%\action_mask.obj" ^
+    "%OBJDIR%\observation.obj" ^
+    "%OBJDIR%\vec_env.obj" ^
     /Fe"%ROOT%\sakhalin_colony.exe" ^
     /link /SUBSYSTEM:CONSOLE
 if errorlevel 1 goto :fail

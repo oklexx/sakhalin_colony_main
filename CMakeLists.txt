@@ -21,6 +21,10 @@ add_library(colony_cpp MODULE
     src/game.cpp
     src/rewards.cpp
     src/env.cpp
+    src/lot_finder.cpp
+    src/action_mask.cpp
+    src/observation.cpp
+    src/vec_env.cpp
     src/bindings.cpp
 )
 

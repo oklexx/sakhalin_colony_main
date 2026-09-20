@@ -185,10 +185,15 @@ public:
     // Debug helpers
     std::optional<std::pair<int, int>> find_lot(int need_earth, bool no_near_base);
     std::optional<std::pair<int, int>> find_lot(const BaseData& d);
-    // Same legality rules as find_lot, but among ALL reachable legal cells
-    // returns the one furthest along (dx, dy) measured from the colony
-    // centroid -- i.e. "extend the frontier that way". Returns nullopt when
-    // no legal cell exists.
+    // Same legality rules as find_lot, but the cell is chosen for DIRECTIONAL
+    // road placement (ROAD_E/W/S/N). Goal-oriented (2026-09-20, «наведение на
+    // воду»): among reachable legal cells strictly in the requested direction
+    // (measured from the colony centroid) the one CLOSEST to the nearest water
+    // (the road-shaping target from reset()) wins; ties fall back to "further
+    // along the direction, more compact". When the map has no water the legacy
+    // "furthest along (dx, dy)" rule applies to all candidates. Returns nullopt
+    // when no legal cell exists in the requested direction — the mask for that
+    // ROAD_* action stays closed (нечего строить в ту сторону).
     std::optional<std::pair<int, int>> find_lot_dir(int need_earth, bool no_near_base,
                                                     int dx, int dy);
     std::optional<std::pair<int, int>> find_lot_dir(const BaseData& d, int dx, int dy);

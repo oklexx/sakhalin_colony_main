@@ -8,7 +8,7 @@
 // т.е. отвечает на вопрос «маска корректна, или она слишком жёсткая и режет
 // далёкую воду?».
 //
-// Проверяется (W1..W6):
+// Проверяется (W1..W9):
 //   W1  бит маски == ∃ легальная клетка (полный перебор) на каждом шаге
 //   W2  причина маскирования атрибутирована: курикулум / деньги / нет клетки
 //   W3  на старте легальных водных клеток 0, и маска открывается за ≤ N дорог
@@ -16,6 +16,12 @@
 //   W5  find_lot() не теряет легальные клетки, которые видит перебор
 //   W6  дорога на воде: сколько водных тайлов съедается дорогами (Road
 //       need_earth = LT_EVERYWHERE, т.е. дорогу МОЖНО поставить на воду)
+//   W7  разбор (а не фиксация) сида, где маска так и не открылась: если
+//       регрессия вернёт такой сид, трассировка покажет причину и check упадёт
+//   W8  замер: у masked-random вода не строится (политика, а не маска)
+//   W9  регрессия «наведения на воду» (цель-ориентированный find_lot_dir,
+//       2026-09-20): водоканал на всех сидах, в т.ч. seed 100, число дорог
+//       ограничено дистанцией до воды (старый жадный: 205 дорог, бюджет 0)
 //
 // Build (from the repo root, Linux/macOS) — одна строка, без продолжений:
 //   g++ -std=c++17 -O1 -Iinclude -Iinclude/third_party -o /tmp/water_mask
@@ -88,6 +94,8 @@ static double nearest_water_dist(const ColonyEnvCpp& e) {
 }
 
 // Направление к ближайшей воде — с карты (в obs v2 хвост занят ресурсами).
+// Возвращает доминирующую ось (0=E, 1=W, 2=S, 3=N) — как раньше; для оценки
+// «какое из открытых направлений лучше» используйте water_dir_vec().
 static void water_dir_from_map(const ColonyEnvCpp& e, int& out_dir) {
     const Game& g = e.game();
     const int ms = g.map_size();
@@ -108,6 +116,27 @@ static void water_dir_from_map(const ColonyEnvCpp& e, int& out_dir) {
     else out_dir = dy >= 0 ? 2 : 3;                                  // S / N
 }
 
+// Направление к ближайшей воде как нормированный вектор (dx, dy) — ровно то,
+// что политика видит в obs (water_dx/water_dy): так можно оценить, какое из
+// открытых направленных действий ближе к цели.
+static void water_dir_vec(const ColonyEnvCpp& e, double& out_dx, double& out_dy) {
+    const Game& g = e.game();
+    const int ms = g.map_size();
+    const int8_t* lots = g.earth.lots().data();
+    const double bx = g.earth.init_sel_x, by = g.earth.init_sel_y;
+    double best_sq = -1.0;
+    int wx = -1, wy = -1;
+    for (int y = 0; y < ms; ++y)
+        for (int x = 0; x < ms; ++x)
+            if (lots[(size_t)y * ms + x] == LT_WATER) {
+                double d2 = (x - bx) * (x - bx) + (y - by) * (y - by);
+                if (best_sq < 0 || d2 < best_sq) { best_sq = d2; wx = x; wy = y; }
+            }
+    if (best_sq < 0) { out_dx = out_dy = 0.0; return; }
+    out_dx = (wx - bx) / (double)ms;
+    out_dy = (wy - by) / (double)ms;
+}
+
 struct RolloutStats {
     int steps = 0;
     int mask_open = 0;            // шагов, где бит WaterChannel открыт
@@ -122,19 +151,22 @@ struct RolloutStats {
     int waterchannel_built = 0;
     int roads = 0;
     int steps_to_first_open = -1;
+    long long money_at_first_open = -1;  // бюджет в момент открытия маски (W9)
     double reward = 0.0;
 };
 
 // Смешанный роллаут: жадно тянем дорогу к воде, между дорогами — DAY; как только
 // маска открыла WaterChannel — ставим его. Каждый шаг маска сверяется с перебором.
+// Политика направлений — та, что доступна обученной модели по obs: из ОТКРЫТЫХ
+// ROAD_* берётся ближайшее к water_dx/water_dy (цель-ориентированный выбор
+// КЛЕТКИ внутри направления делает ядро в find_lot_dir, 2026-09-20).
 static RolloutStats run_rollout(ColonyEnvCpp& e, int wc_idx, int max_steps,
                                 bool stop_at_channel) {
     RolloutStats st;
     const BaseData* wc = find_data(e, "WaterChannel");
     const BaseData* rd = find_data(e, "Road");
     const int rdb = e.road_dir_base();
-    int dir = 0;
-    water_dir_from_map(e, dir);
+    const int road_idx = find_idx(e, "Road");
 
     for (int s = 0; s < max_steps; ++s) {
         const Game& g = e.game();
@@ -143,7 +175,10 @@ static RolloutStats run_rollout(ColonyEnvCpp& e, int wc_idx, int max_steps,
         st.steps++;
         if (open) {
             st.mask_open++;
-            if (st.steps_to_first_open < 0) st.steps_to_first_open = st.steps;
+            if (st.steps_to_first_open < 0) {
+                st.steps_to_first_open = st.steps;
+                st.money_at_first_open = g.money;
+            }
         }
 
         // ── W1/W2/W5: маска против полного перебора ─────────────────────────
@@ -176,10 +211,21 @@ static RolloutStats run_rollout(ColonyEnvCpp& e, int wc_idx, int max_steps,
         // ── выбор действия ──────────────────────────────────────────────────
         int act;
         if (open && stop_at_channel) act = A_BUILD0 + wc_idx;
-        else if (mask[rdb + dir] != 0.0f) act = rdb + dir;
-        else if (mask[A_BUILD0 + find_idx(e, "Road")] != 0.0f)
-            act = A_BUILD0 + find_idx(e, "Road");
-        else act = A_DAY;
+        else {
+            double wdx = 0.0, wdy = 0.0;
+            water_dir_vec(e, wdx, wdy);
+            int best = -1;
+            double bs = -1e18;
+            for (int d = 0; d < N_ROAD_DIRS; d++) {
+                if (mask[rdb + d] == 0.0f) continue;
+                double sc = -(std::fabs(wdx - ROAD_DIR_DX[d] * 0.05) +
+                              std::fabs(wdy - ROAD_DIR_DY[d] * 0.05));
+                if (sc > bs) { bs = sc; best = d; }
+            }
+            if (best >= 0) act = rdb + best;
+            else if (mask[A_BUILD0 + road_idx] != 0.0f) act = A_BUILD0 + road_idx;
+            else act = A_DAY;
+        }
 
         const int roads_before = (int)std::count_if(
             g.bases.begin(), g.bases.end(),
@@ -210,7 +256,7 @@ static RolloutStats run_rollout(ColonyEnvCpp& e, int wc_idx, int max_steps,
             if (b.data->id == "WaterChannel") st.waterchannel_built++;
         if (out.terminated || out.truncated) break;
         if (open && stop_at_channel) break;
-        if (s % 40 == 39) water_dir_from_map(e, dir);  // цель могла сместиться
+        // (направление к воде пересчитывается каждый шаг — water_dir_vec)
     }
     return st;
 }
@@ -248,6 +294,9 @@ int main() {
     int min_open = -1, max_open = -1;
     double far_dist = -1.0;
     int far_roads = -1;
+    // W9: худшее по сиду отношение «дорог до воды / дистанция до воды»
+    // (излишек = маневрирование вокруг рельефа; 1.0 = идеальный прямой путь).
+    double worst_road_ratio = -1.0;
 
     for (int64_t seed : {1, 7, 21, 42, 100, 777, 31337, 2026}) {
         ColonyEnvCpp e(bd, ed, seed, 200);
@@ -276,6 +325,8 @@ int main() {
                                     : std::min(min_open, st.steps_to_first_open);
             max_open = std::max(max_open, st.steps_to_first_open);
             if (wd > far_dist) { far_dist = wd; far_roads = st.roads; }
+            double ratio = (wd > 0.0) ? (double)st.roads / wd : 0.0;
+            if (ratio > worst_road_ratio) worst_road_ratio = ratio;
         }
 
         printf("%-6lld %-6d %-7d %-8d %-8d %-8d %-7d %-7d %-8d %-8d\n",
@@ -283,8 +334,10 @@ int main() {
                st.mask0_money, st.mask0_nocell, st.find_lot_missed, st.roads,
                st.roads_on_water, st.waterchannel_built);
         printf("[info]   seed %-6lld water_tiles=%-5d nearest_water=%.1f legal_at_reset=%d "
-               "first_open_step=%d reward=%.1f\n",
-               (long long)seed, wt, wd, legal_at_reset, st.steps_to_first_open, st.reward);
+               "first_open_step=%d roads_to_open=%d money_at_open=%lld reward=%.1f\n",
+               (long long)seed, wt, wd, legal_at_reset, st.steps_to_first_open,
+               st.steps_to_first_open >= 0 ? st.roads : -1,
+               (long long)st.money_at_first_open, st.reward);
     }
 
     printf("\n[summary] steps=%lld mask_open=%lld (%.2f%%) mismatches=%lld\n",
@@ -314,6 +367,41 @@ int main() {
           "W3 водоканал реально строится минимум на 6/8 семян");
     check(far_roads >= 0 && far_dist > 10.0,
           "W4 есть карты с водой дальше 10 клеток — и маска на них всё равно открывается");
+
+    // ── W9: «наведение на воду» — цель-ориентированный find_lot_dir ─────────
+    // Регрессия старого жадного выбора (максимум смещения по оси): seed 100
+    // (диагональная вода 14.4 клетки, могила из LT_NONE вокруг) — дорога
+    // «проезжала» цель, фронт вставал в 7.8 клеток, 205 дорог × 400 съедали
+    // весь бюджет 82 000, и маска за 400 шагов не открылась ни разу. Теперь
+    // клетка выбирается по «минимум дистанции до воды среди кандидатов в
+    // запрошенную сторону» (src/env.cpp, pick_dir_cell): водоканал строится
+    // на всех сидах, число дорог ограничено рельефом, а не бессмысленным
+    // «уезжанием дальше по оси».
+    printf("\n=== W9: наведение на воду (цель-ориентированный find_lot_dir) ===\n");
+    printf("[info] худшее отношение дорог/дистанции по сидам: %.2f (1.0 = прямой путь)\n",
+           worst_road_ratio);
+    check(seeds_with_wc == n_seeds,
+          "W9 водоканал построен на всех 8/8 семян (старый жадный: 7/8, seed 100 не дошёл)");
+    check(worst_road_ratio > 0.0 && worst_road_ratio <= 3.0,
+          "W9 число дорог ограничено: дороги ≤ 3× дистанции до воды на каждом сиде");
+    {
+        // Трудный сид измеряется ЯВНО, а не как «первый упавший»: регрессия
+        // должна остаться видимой, даже если начнут падать другие сиры первыми.
+        const int64_t s100 = 100;
+        ColonyEnvCpp e(bd, ed, s100, 200);
+        e.reset(s100);
+        const double wd100 = nearest_water_dist(e);
+        auto st = run_rollout(e, find_idx(e, "WaterChannel"), 400, true);
+        printf("[info] seed 100: nearest_water=%.1f first_open_step=%d roads=%d "
+               "money_at_open=%lld wc_built=%d\n",
+               wd100, st.steps_to_first_open, st.roads,
+               (long long)st.money_at_first_open, st.waterchannel_built);
+        check(st.steps_to_first_open >= 1 && st.steps_to_first_open < 400 &&
+              st.waterchannel_built >= 1,
+              "W9 seed 100: дорога доходит до воды, маска открывается за <400 шагов, водоканал построен");
+        check(st.roads <= (int)(wd100 * 3.0) + 10,
+              "W9 seed 100: дорога не «уезжает» (число дорог ограничено дистанцией до воды)");
+    }
 
     // ── W6: дорога на воде не должна делать водоканал недостижимым ──────────
     printf("\n=== W6: дорога на воде (Road need_earth = LT_EVERYWHERE) ===\n");
@@ -429,23 +517,31 @@ int main() {
                r_nocell, r_money);
         // Намеренно без check(): это замер, а не инвариант. Он фиксирует, что
         // корректная маска не равна доступному действию: у случайной политики
-        // вода не открывается вообще, и главная причина — бюджет (случайные
-        // действия сливают деньги быстрее, чем дорога доходит до воды).
-        printf("[info] вывод: у masked-random вода не открывается ни разу; причина — "
-               "бюджет (%.0f%% шагов), затем правило связности (%.0f%%)\n",
+        // дорога к воде почти не складывается (направления выбираются наугад),
+        // а главная причина закрытой маски — бюджет: случайные действия сливают
+        // деньги быстрее, чем жадная цель-ориентированная дорога доходит до воды.
+        printf("[info] вывод: у masked-random водоканал %s; маска=0 — бюджет (%.0f%% шагов), "
+               "затем правило связности (%.0f%%)\n",
+               built > 0 ? "всё же строится (редкая удача направлений)"
+                         : "не строится: случайная политика не ведёт дорогу к воде",
                100.0 * (double)r_money / (double)std::max<long long>(1, steps),
                100.0 * (double)r_nocell / (double)std::max<long long>(1, steps));
     }
 
-    printf("\n=== ВЕРДИКТ по P0-1 (жёсткая маска legality для далёкой воды) ===\n");
+    printf("\n=== ВЕРДИКТ по P0-1 (жёсткая маска legality) + «наведение на воду» ===\n");
     printf("Маска КОРРЕКТНА: бит BUILD:WaterChannel совпал с полным перебором\n");
     printf("Game::can_build_at во всех %lld состояниях (расхождений %lld), find_lot()\n",
            tot_steps, tot_mismatch);
     printf("не потерял и не выдумал ни одной клетки. «Далёкая вода» маской не режется:\n");
     printf("она закрыта правилом связности (вода должна примыкать к дороге/зданию)\n");
-    printf("и деньгами — обе причины легитимны. Остаточный риск — не маска, а\n");
-    printf("кредитное присваивание: жадная дорога по одной оси проезжает мимо\n");
-    printf("диагональной воды (seed 100: фронт встал в 7.8 кл., 205 дорог, деньги 0).\n");
+    printf("и деньгами — обе причины легитимны.\n");
+    printf("Наведение (2026-09-20): цель-ориентированный find_lot_dir доводит жадную\n");
+    printf("дорогу до воды на %d/%d сидах (маска открылась на шаге %d..%d), включая\n",
+           seeds_with_wc, n_seeds, min_open, max_open);
+    printf("seed 100 — регрессию старого «уезжания по оси» (205 дорог, бюджет 0, вода\n");
+    printf("в 14.4 клетки осталась недоступной). Остаточный риск — не маска и не\n");
+    printf("наведение, а политика: у masked-random вода не строится (см. W8), потому\n");
+    printf("что случайные действия не складываются в дорогу к воде.\n");
 
     printf("\n%s (%d failure(s))\n", failures == 0 ? "ALL CHECKS PASSED" : "FAILURES", failures);
     return failures == 0 ? 0 : 1;

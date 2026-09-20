@@ -25,7 +25,7 @@ REWARD_STEPS=${REWARD_STEPS:-4000}
 CXXFLAGS="-std=c++17 -O1 -Wall -Iinclude -Iinclude/third_party"
 
 # Общие объекты ядра (bindings.cpp не нужен — он про pybind11).
-SHARED_SRC="src/rng.cpp src/resources.cpp src/data.cpp src/earth.cpp src/game.cpp src/rewards.cpp src/env.cpp"
+SHARED_SRC="src/rng.cpp src/resources.cpp src/data.cpp src/earth.cpp src/game.cpp src/rewards.cpp src/env.cpp src/lot_finder.cpp src/action_mask.cpp src/observation.cpp src/vec_env.cpp"
 
 # Проверки с кодом возврата (упала — CI красный).
 CHECKS="curriculum_check reward_regressions road_direction_check water_mask_check p0_p1_check gui_watch_check reward_v4_longrun"
