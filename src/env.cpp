@@ -20,6 +20,72 @@ namespace {
 
 const char* SEASON_NAMES_ENV[4] = {"spring", "summer", "autumn", "winter"};
 
+// «Наведение на воду» (2026-09-20, docs/REMAINING_WORK_2026_09.md, п.2 P0-1).
+// Выбор клетки для направленного действия ROAD_E/W/S/N из кандидатов BFS.
+//
+// Прежнее поведение (баг, зафиксирован зондом на seed 100): максимизировать
+// смещение по оси от центроида колонии — «как можно дальше вдоль (dx, dy)»,
+// БЕЗ понятия цели. Дорога «проезжала» диагональную воду: дистанция до неё
+// колебалась (13.6 → 9.22 → 11.66 → 7.81 → 19.42) вместо монотонного спуска,
+// и бюджет (205 дорог × 400) кончался до того, как вода становилась легальной
+// для WaterChannel.
+//
+// Новое поведение (только для карт С водой; цели — тот же target, что у
+// potential-based road shaping, target_water_x_/y_ из reset()):
+//   1) фильтр направления: клетка обязана строго продвигать фронт в
+//      запрошенную сторону (along > 0 от центроида колонии). ROAD_E и ROAD_W
+//      никогда не выберут одну и ту же клетку, а при отсутствии клеток в
+//      сторону действие маскируется (нечего там строить);
+//   2) наведение: среди клеток в запрошенной сторону побеждает та, что
+//      МИНИМИЗИРУЕТ дистанцию до ближайшей воды. Дистанции сравниваются
+//      точным целочисленным dist_sq (sqrt-монотонность), без float-эпсилон:
+//      масштаб ошибки не зависит от того, насколько вода далека;
+//   3) тай-брейки: дальше вдоль запрошенного направления, затем меньшее
+//      боковое смещение (прежнее «плотное плечо фронта»).
+// Если воды на карте нет (target_x < 0) — прежний алгоритм без фильтра:
+// максимум along, минимум lateral. Изменение локализовано на картах с водой.
+std::optional<std::pair<int, int>> pick_dir_cell(
+    const std::vector<std::pair<int, int>>& candidates, double cx, double cy,
+    int dx, int dy, int target_x, int target_y) {
+    if (candidates.empty()) return std::nullopt;
+
+    if (target_x < 0) {
+        // Без воды на карте — легаси: максимально вдоль (dx, dy), при равенстве —
+        // плотнее к центроиду (фронт растёт компактным плечом, а не рассыпается).
+        std::pair<int, int> best = candidates[0];
+        double best_score = -1e18;
+        for (const auto& c : candidates) {
+            double along = (double)(c.first - cx) * dx + (double)(c.second - cy) * dy;
+            double lateral = std::fabs((double)(c.first - cx) * dy - (double)(c.second - cy) * dx);
+            double score = along - 0.01 * lateral;
+            if (score > best_score) { best_score = score; best = c; }
+        }
+        return best;
+    }
+
+    std::optional<std::pair<int, int>> best;
+    long long best_dist_sq = 0;
+    double best_along = 0.0, best_lateral = 0.0;
+    for (const auto& c : candidates) {
+        double along = (double)(c.first - cx) * dx + (double)(c.second - cy) * dy;
+        if (along <= 0.0) continue;  // фильтр: строго в запрошенную сторону
+        long long ddx = (long long)c.first - (long long)target_x;
+        long long ddy = (long long)c.second - (long long)target_y;
+        long long dist_sq = ddx * ddx + ddy * ddy;
+        double lateral = std::fabs((double)(c.first - cx) * dy - (double)(c.second - cy) * dx);
+        if (!best.has_value()) {
+            best = c; best_dist_sq = dist_sq; best_along = along; best_lateral = lateral;
+            continue;
+        }
+        if (dist_sq > best_dist_sq) continue;
+        if (dist_sq < best_dist_sq || along > best_along ||
+            (along == best_along && lateral < best_lateral)) {
+            best = c; best_dist_sq = dist_sq; best_along = along; best_lateral = lateral;
+        }
+    }
+    return best;
+}
+
 }  // namespace
 
 ColonyEnvCpp::ColonyEnvCpp(const std::vector<BaseData>& base_data,
@@ -604,24 +670,17 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(const BaseData& d,
             consider(nx, ny);
         }
     }
-    if (candidates.empty()) return std::nullopt;
-
-    std::pair<int, int> best = candidates[0];
-    double best_score = -1e18;
-    for (auto c : candidates) {
-        double along = (double)(c.first - cx) * dx + (double)(c.second - cy) * dy;
-        double lateral = std::fabs((double)(c.first - cx) * dy - (double)(c.second - cy) * dx);
-        double score = along - 0.01 * lateral;
-        if (score > best_score) { best_score = score; best = c; }
-    }
-    return best;
+    // Направление → клетка: см. pick_dir_cell (наведение на воду, 2026-09-20).
+    return pick_dir_cell(candidates, cx, cy, dx, dy, target_water_x_, target_water_y_);
 }
 
 // Directional sibling of find_lot: identical legality rules, but instead of
-// returning the BFS-first cell it collects every reachable legal cell and
-// returns the one furthest along (dx, dy) from the colony centroid. That gives
-// the ROAD_E/W/S/N actions a meaning the agent can actually steer -- the plain
-// Road action had none, which is why water stayed unreachable.
+// returning the BFS-first cell it collects every reachable legal cell and lets
+// pick_dir_cell choose among them (goal-oriented: closest to the nearest water
+// among the cells strictly in the requested direction; legacy "furthest along"
+// when the map has no water). That gives the ROAD_E/W/S/N actions a meaning the
+// agent can actually steer -- the plain Road action had none, which is why
+// water stayed unreachable.
 std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(int need_earth,
                                                               bool no_near_base,
                                                               int dx, int dy) {
@@ -695,19 +754,8 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(int need_earth,
             consider(nx, ny, true);
         }
     }
-    if (candidates.empty()) return std::nullopt;
-
-    // Furthest along (dx, dy); ties broken by closeness to the centroid so the
-    // frontier grows as a compact arm rather than scattering.
-    std::pair<int, int> best = candidates[0];
-    double best_score = -1e18;
-    for (auto c : candidates) {
-        double along = (double)(c.first - cx) * dx + (double)(c.second - cy) * dy;
-        double lateral = std::fabs((double)(c.first - cx) * dy - (double)(c.second - cy) * dx);
-        double score = along - 0.01 * lateral;
-        if (score > best_score) { best_score = score; best = c; }
-    }
-    return best;
+    // Направление → клетка: см. pick_dir_cell (наведение на воду, 2026-09-20).
+    return pick_dir_cell(candidates, cx, cy, dx, dy, target_water_x_, target_water_y_);
 }
 
 double ColonyEnvCpp::year_production_value(const BaseData& d) const {
