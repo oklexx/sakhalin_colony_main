@@ -3,6 +3,100 @@
 Формат: `## [дата]` + список изменений. Завершённые задачи из [STATE.md](STATE.md)
 переносятся сюда. Источники: `docs/*_2026_09.md`, аудиты, README §11.
 
+## [2026-09-19] — план docs/REMAINING_WORK_2026_09.md: P0, P1, P2
+
+План работ создан в репозитории (`docs/REMAINING_WORK_2026_09.md`) — раньше он
+жил только в переписке. Статус каждого пункта — с измерениями.
+
+### P0 — влияет на обучение
+- **P0-1 Диагностика маски WaterChannel: легальность корректна.** Новый зонд
+  `tests/cpp/water_mask_check.cpp`: бит маски BUILD_WaterChannel совпал с
+  полным перебором 200×200 (`can_build_at`) в **457/457** состояний,
+  `find_lot` не теряет и не выдумывает ячейки. Маска закрыта из-за денег
+  (240 состояний) и отсутствия легальной ячейки (210), курикулум — 0.
+  Найден остаточный дефект **наведения**, а не легальности: на seed 100
+  `find_lot_dir` «перескакивает» цель (дистанция 7.81 → 19.4), 4 направленных
+  действия не покрывают диагональ.
+- **P0-2 Верификация `reward_v4` на длинном прогоне.** Новый зонд
+  `tests/cpp/reward_v4_longrun.cpp` (5 политик × 3 сида × 3 профиля ×
+  4000 шагов): на v4 `greedy_mix` = **+1830.0** против `road_spam` = −297.4 →
+  **v4 ломает road-spam-аргмакс**; 8 водоканалов построено. Исторический +898
+  не воспроизводится ни на одном профиле — дыру закрыл R1 (дороги исключены из
+  `milestone_base_bonus`), а не v4.
+- **Исправлен гибрид в `configs/reward_v3.json`**: профиль не задавал
+  v4-терминалы (`buy_food_penalty`, `goal_survival_coeff`,
+  `main_tax_cash_bonus`, `main_tax_pressure_coeff`) и молча наследовал v4 из
+  дефолтов структуры — A/B «v3 против v4» сравнивал гибрид. Теперь
+  `v3_file == v3_pure` (проверяется зондом).
+- **P0-3 Уменьшенные exp-конфиги** под 12/24 ГБ: `exp_25_minimap_n64`
+  (4.29 ГБ), `exp_26_hybrid_n64` (4.45), `exp_26_hybrid_n128` (8.90),
+  `exp_27_minimap_lr_low_n64` (4.29). Пересчёт показал, что README занижал
+  оценку: оригиналы с `n_envs=1024` — 68.7/71.3 ГБ, а не «56+». Гард —
+  `tests/test_exp_configs.py`.
+
+### P1 — гигиена
+- **P1-4 README**: убраны живые ссылки на удалённые файлы (`auto_trainer.py`),
+  `REPORT.md/REPORT_2026_09.md` → `docs/RL_DIAGNOSIS_2026_09.md`, «42 поля
+  наград / reward_v3.json» → 55 полей / `reward_v4.json`, миникарта
+  `8×29×29 = 6728` → `8×32×32 = 8192` (2 места), «tests/ 28 файлов» → 41 + 21
+  C++-проба, добавлен раздел про CI. Дрейф подписей в `train_ui2/main_window.py`
+  («профиль v3» при каноне v4) устранён: `_reset_rewards_canonical`
+  (алиасы `_v3`/`_v2` сохранены для теста).
+- **P1-5 `tests/test_ui2_smoke.py` починен, а не удалён**: файл был скриптом
+  (проверки при импорте + `sys.exit(1)`) → под pytest падал на сборке и писал в
+  настоящий `~/colony_runs/`. Переведён в pytest-форму (маркер `ui`, `HOME` →
+  `tmp_path`, skip без Qt); `--ignore` из `pytest.ini` убран, причина
+  задокументирована.
+- **P1-6 CI**: `.github/workflows/ci.yml` (job `cpp-probes` — только g++;
+  job `python-tests` — CMake-сборка `colony_cpp`, handshake, полный pytest с
+  Qt-библиотеками и `QT_QPA_PLATFORM=offscreen`) + локальный эквивалент
+  `scripts/cpp_checks.sh` (компиляция всех 21 пробы и 7 проверок с кодом
+  возврата). Добавлен `tests/conftest.py`: `sys.path` больше не зависит от
+  порядка сбора тестов.
+
+### P2 — техдолг плана ревью
+- **P2-8** `set_minimap_radius` (обе привязки) выдаёт `DeprecationWarning`:
+  миникарта глобальная 32×32, радиус на наблюдение не влияет.
+- **P2-9** Магические числа road-shaping вынесены в `RewardConfig`
+  (6 полей: `road_shaping_cap`, `road_shaping_per_cell`, `water_reach_bonus`,
+  `water_reach_radius`, `road_no_progress_penalty`, `road_progress_epsilon`);
+  значения = прежний хардкод, `reward_v4_longrun` даёт те же числа. Поля
+  добавлены в `rl/config.py`, `configs/reward_v4.json`, биндинги и UI
+  (группа «Дороги к воде»).
+- **P2-10** `Environment::lot_ok` делегирует `Game::can_build_at` — устранены
+  два расхождения legacy-версии (`destroyed_lots` и Roads в правиле
+  `no_near_base`).
+- **P2-11** Кеш легальности лота внутри одного вызова `action_mask`
+  (ключ `(need_earth, no_near_base)`): −61 % на reset, −36 % на 50 дорогах,
+  −27 % на 200 дорогах с деньгами, −21 % в среднем (бенч
+  `tests/cpp/action_mask_bench.cpp`, 2000 вызовов, `-O2`); число открытых
+  BUILD-действий идентично до/после (11/14/1/25).
+
+### Тесты
+- `tests/test_reward_field_sync.py` — новая стража золотого правила на уровне
+  исходников: C++ `RewardConfig` ↔ `rl.config.RewardConfig` ↔ биндинги ↔
+  `configs/reward_v4.json` ↔ `configs/reward_v3.json` ↔ UI (`REWARD_SPECS` +
+  `REWARD_FLAGS`). Она же нашла реальный дрейф: два C++-флага-абляции
+  (`priority_count_over_allowed`, `obs_mask_locked_catalog`) отсутствовали в
+  Python-dataclass, поэтому `RewardConfig.from_dict` молча выбрасывал их из
+  reward-JSON — флаги добавлены в dataclass, профиль и UI.
+- `tests/test_reward_default_profile.py::test_ui_reward_specs_cover_profile`
+  больше не скипается молча: импортировал удалённый `train_ui`, переведён на
+  `train_ui2`.
+- `tests/test_colony_robustness.py::test_reward_config_completeness` сверяет
+  dataclass с каноническим профилем по ключам и значениям вместо хардкода
+  «47 полей».
+- Прогон: `./scripts/cpp_checks.sh` — **все проверки прошли** (21 проба
+  скомпилирована, 7 проверок, 0 fail); `pytest` — **228 passed, 66 skipped**,
+  список падений идентичен baseline `a2ee3d0` (22 failed + 2 ошибки сбора —
+  отсутствие собранного `colony_cpp` и CUDA в песочнице; в CI они есть).
+
+### Не сделано
+- **P2-7 распил `src/env.cpp`** — отдельным PR (план и порядок выноса в
+  `docs/REMAINING_WORK_2026_09.md`).
+- Прогон обучения на GPU и первый прогон CI — требуют окружения, которого в
+  песочнице нет (нет GPU, нет заголовков CPython и библиотек Qt).
+
 ## [2026-09-19]
 
 ### Исправлено
