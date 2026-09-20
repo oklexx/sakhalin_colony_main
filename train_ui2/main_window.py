@@ -126,7 +126,7 @@ class MainWindow2(QMainWindow):
         split.setStretchFactor(1, 1)
         split.setSizes([600, 180])
         self.setCentralWidget(split)
-        self.statusBar().showMessage("Готово. Конфиг: v3 (reward_v3.json). Старый UI можно запускать параллельно.")
+        self.statusBar().showMessage("Готово. Канонический профиль наград: v4 (configs/reward_v4.json).")
 
     # ── Tab: Обучение ──
     def _tab_training(self) -> QWidget:
@@ -168,7 +168,7 @@ class MainWindow2(QMainWindow):
         cfg_bar.addWidget(T.button("📂 Загрузить…", self._load_full_config, tooltip="Загрузить полный конфиг из JSON (перезапишет все вкладки)"))
         cfg_bar.addWidget(T.button("↺ Сбросить к v3", self._reset_full_to_v3, tooltip="Сбросить все параметры к дефолтам v3"))
         cfg_bar.addStretch(1)
-        cfg_bar.addWidget(T.label("v3 — единственный канонический профиль (reward_v3.json)", T.DIM))
+        cfg_bar.addWidget(T.label("v4 — канонический профиль наград (configs/reward_v4.json)", T.DIM))
         root.addLayout(cfg_bar)
 
         self.progress = QProgressBar()
@@ -349,11 +349,11 @@ class MainWindow2(QMainWindow):
 
         bar = QHBoxLayout()
         bar.addWidget(T.label(
-            "Профиль v3 = дефолты configs/reward_v3.json (единственный канонический). "
+            "Канонический профиль — configs/reward_v4.json (дефолты rl.config.RewardConfig). "
             "Правки авто-сохраняются.", T.DIM))
         bar.addStretch(1)
-        bar.addWidget(T.button("↺ Сбросить к v3", self._reset_rewards_v3,
-                               tooltip="Вернуть всем наградам дефолты v3 (reward_v3.json)"))
+        bar.addWidget(T.button("↺ Сбросить к v4", self._reset_rewards_canonical,
+                               tooltip="Вернуть всем наградам дефолты канонического профиля v4 (configs/reward_v4.json)"))
         bar.addWidget(T.button("📂 Профиль…", self._load_reward_json, tooltip="Загрузить профиль наград (только награды)"))
         bar.addWidget(T.button("💾 Профиль…", self._save_reward_json, tooltip="Сохранить профиль наград"))
         root.addLayout(bar)
@@ -1137,7 +1137,13 @@ class MainWindow2(QMainWindow):
 
     # ─────────────────────────── rewards tab ───────────────────────────
 
-    def _reset_rewards_v3(self):
+    def _reset_rewards_canonical(self):
+        """Сброс наград к дефолтам rl.config.RewardConfig.
+
+        Дефолты dataclass по золотому правилу совпадают с каноническим профилем
+        (сейчас configs/reward_v4.json), так что «канонический» — это не номер
+        версии, а DEFAULT_REWARD_PROFILE из rl.config.
+        """
         rc = _RC()
         data = rc.to_dict()
         for g in self.rgroups.values():
@@ -1145,11 +1151,14 @@ class MainWindow2(QMainWindow):
         for key, chk in self.rflags.items():
             chk.setChecked(bool(data.get(key, False)))
         self._save_state()
-        self.log("info", "Награды сброшены к профилю v3 (reward_v3.json)")
+        self.log("info", "Награды сброшены к каноническому профилю v4 (configs/reward_v4.json)")
 
-    # keep alias for old callers/tests
+    # keep aliases for old callers/tests (v2/v3 — исторические названия профиля)
+    def _reset_rewards_v3(self):
+        self._reset_rewards_canonical()
+
     def _reset_rewards_v2(self):
-        self._reset_rewards_v3()
+        self._reset_rewards_canonical()
 
     def _load_reward_json(self):
         path, _ = QFileDialog.getOpenFileName(self, "Профиль наград", "",
@@ -1239,7 +1248,7 @@ class MainWindow2(QMainWindow):
         self.config = cfg
         self._restore_state()
         self._save_state()
-        self.log("info", "Все параметры сброшены к v3 (reward_v3.json + дефолты обучения)")
+        self.log("info", "Все параметры сброшены к v4 (configs/reward_v4.json + дефолты обучения)")
 
     # ─────────────────────────── models tab ───────────────────────────
 

@@ -103,20 +103,22 @@ def test_cpp_defaults_mirror_profile():
 
 
 def test_ui_reward_specs_cover_profile():
-    """В REWARD_SPECS — все ключи профиля; иначе UI их не покажет и не соберёт."""
+    """В REWARD_SPECS/REWARD_FLAGS — все ключи профиля; иначе UI их не покажет.
+
+    Импорт из train_ui2 (актуальный UI): старый `train_ui` удалён, и тест молча
+    скипался, хотя «поле не долетело до C++» — ровно тот класс багов, от которого
+    он защищал. Boolean-ключи живут в REWARD_FLAGS (чекбоксы), а не в REWARD_SPECS.
+    """
     try:
-        from train_ui.parameter_widget import REWARD_SPECS
-    except Exception as e:  # нет PySide6/torch в тестовой среде
+        from train_ui2.parameter_widget import REWARD_SPECS
+        from train_ui2.constants import REWARD_FLAGS
+    except Exception as e:  # нет torch в тестовой среде
         pytest.skip(f"UI недоступен: {e}")
-    ui_keys = {s.key for s in REWARD_SPECS}
+    ui_keys = {s.key for s in REWARD_SPECS} | {k for k, _label, _tip in REWARD_FLAGS}
     for k in _profile():
-        # disable_* — флаги, не спиннеры: проходят в C++ через reward-dict
-        # (env_manager → cpp_vecenv _REWARD_KEYS), в UI их нет — это нормально.
-        if k.startswith("disable_"):
-            continue
         assert k in ui_keys, (
-            f"{k} нет в REWARD_SPECS — поле не в UI, и _collect_config "
-            f"выбросит его при старте обучения («параметры не долетают»)")
+            f"{k} нет ни в REWARD_SPECS, ни в REWARD_FLAGS — поля нет в UI, "
+            f"и его нельзя ни увидеть, ни подобрать из вкладки «Награды»")
     # новые поля профиля подписаны (непустая русская подпись)
     for s in REWARD_SPECS:
         if s.key in V4_KEYS:

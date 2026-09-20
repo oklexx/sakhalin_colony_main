@@ -61,12 +61,13 @@ sakhalin_colony_main/
 ├── train.py                  # CLI-точка входа обучения (аргументы -> Config -> EnvManager -> AsyncTrainer)
 ├── watch_champion.py         # Визуальный просмотр игры чемпиона в реальном времени
 # ⚠ auto_trainer.py, training_cycle.py, observe.py, sweep2..sweep7_*.py
-#   упоминались в старых версиях, но в репозитории сейчас НЕТ (см. STATE.md п. 4)
+#   упоминались в старых версиях, но в репозитории сейчас НЕТ — удалены при
+#   чистке 2026-09-11. План работ и статус пунктов — docs/REMAINING_WORK_2026_09.md
 ├── CMakeLists.txt            # Сборка colony_cpp (.pyd кладётся в python/)
 ├── requirements.txt
 │
 ├── rl/                       # ★ Python-слой обучения
-│   ├── config.py             #   Config + RewardConfig (42 поля наград; ДЕФОЛТЫ = C++ = reward_v3.json)
+│   ├── config.py             #   Config (50 полей) + RewardConfig (55 полей наград; ДЕФОЛТЫ = C++ = reward_v4.json)
 │   ├── actor_critic.py       #   MLP 256×256 для flat-obs (131K параметров)
 │   ├── actor_critic_cnn.py   #   CNN для minimap-obs
 │   ├── actor_critic_hybrid.py#   CNN+MLP для hybrid-obs
@@ -79,7 +80,7 @@ sakhalin_colony_main/
 ├── python/                   # ★ Python-обёртки C++
 │   ├── cpp_vecenv.py         #   CppVecEnv: батч из N сред, маски, terminated, нормализация, сиды
 │   ├── cpp_env.py            #   CppColonyEnv: одиночная gym-среда (для eval/UI) + Normalizer
-│   ├── minimap.py            #   MinimapVecEnvWrapper / MinimapSingleEnvWrapper (8×29×29)
+│   ├── minimap.py            #   MinimapVecEnvWrapper / MinimapSingleEnvWrapper (глобальная 8×32×32)
 │   └── colony_cpp.pyd        #   Собранный C++-модуль (результат cmake; НЕ в git — см. build_pyext.bat)
 │
 ├── src/                      # ★ C++-ядро (namespace colony)
@@ -111,8 +112,10 @@ sakhalin_colony_main/
 │   ├── parameter_widget.py   #   ParamSpec всех параметров (дефолты = rl/config.py)
 │   ├── controls.py, charts.py, theme.py, models.py
 │
-└── tests/                    # 28 файлов: test_gae, test_ppo_smoke, test_evaluator, test_reward_clip,
-                              # test_milestones, test_curriculum, test_normalizer, bench_per_step, ...
+└── tests/                    # 41 тест-файл (test_gae, test_ppo_smoke, test_evaluator,
+                              # test_reward_clip, test_milestones, test_curriculum,
+                              # test_exp_configs, test_reward_field_sync, ...) +
+                              # bench_per_step.py и cpp/ — 21 C++-проба (scripts/cpp_checks.sh)
 ```
 
 ---
@@ -280,7 +283,12 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 | use_amp / amp_dtype | true / bfloat16 | для MLP 131K выгоды нет, можно off |
 | eval_freq / eval_episodes | 100 000 / 20 | рекомендуется 500 000 / 10×3 сида |
 
-**Формула VRAM буфера:** `n_envs × n_steps × (obs) × 4B`; minimap obs = 8×29×29 = 6728 float. ⚠ exp-конфиги с n_envs=1024 требуют 56+ ГБ — см. N12.
+**Формула VRAM буфера:** `n_envs × n_steps × (obs) × 4B`; minimap obs = 8×32×32 = 8192 float,
+hybrid = 299 + 8192 = 8491 float. ⚠ Исходные exp-конфиги с `n_envs=1024` — это 68–71 ГБ
+только на rollout-буфер (N12): на 12/24 ГБ берите уменьшенные варианты
+`configs/exp_26_hybrid_n64.json` (4.5 ГБ), `exp_26_hybrid_n128.json` (8.9 ГБ),
+`exp_25_minimap_n64.json` и `exp_27_minimap_lr_low_n64.json` (4.3 ГБ). Расчёт и
+границы бюджета проверяет `tests/test_exp_configs.py`.
 
 ### 8.2 Файлы прогона (`~/colony_runs/models/<name>/`)
 ```
@@ -296,7 +304,9 @@ normalization.json             # пишется при старте и кажд�
 * `episodes × max_days=10000`, сиды `seed+500000+ep`; метрики: days/people/bases/return (медиана по эпизодам и сидам).
 * Score: `days×0.10 + bases×1.0 + people×0.10 + max(0,return)×1e-4 − штраф за дисперсию` (веса — `eval_score_weights`).
 * Пороги: медиана `bases ≥ 5` (и p25 ≥ 70% от порога) и `days ≥ 730`; при улучшении score — сохранение best_model + meta. В конце обучения — турнир всех чекпойнтов.
-* `auto_trainer.py` (Optuna) использует best_score как objective (fallback: best_reward).
+* ~~`auto_trainer.py` (Optuna)~~ — файла в репозитории нет (удалён 2026-09-11); исторически
+  использовал best_score как objective. Сейчас отбор чемпиона — турнир чекпойнтов в
+  `rl/async_trainer.py::_eval`.
 
 ---
 
@@ -318,8 +328,21 @@ python tests/test_milestones.py     # milestone-бонусы
 python tests/test_curriculum.py     # стадии/маски
 python tests/test_normalizer.py     # RunningMeanStd save/load
 python tests/bench_per_step.py      # бенчмарк шага среды
-# остальные файлы — по именам (tax, proximity, hybrid, minimap_radius, ui_full, ...)
+./scripts/cpp_checks.sh             # C++-пробы без Python (compile-all + проверки)
+pytest -m "not ui"                  # без Qt-тестов (окружение без графики)
+# остальные файлы — по именам (tax, proximity, hybrid, minimap_radius, ...)
 ```
+
+### 10.1 CI (GitHub Actions)
+
+`.github/workflows/ci.yml` — два job'а на `ubuntu-latest`:
+
+| Job | Что делает | Зависимости |
+|---|---|---|
+| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 21 пробы + прогон 7 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`) | только g++ |
+| `python-tests` | сборка `colony_cpp` через CMake → handshake → полный `pytest` (включая Qt-тесты: `libegl1 libgl1 libxkbcommon0 libdbus-1-3`) | Python 3.11, torch (CPU-индекс), pybind11, PySide6 |
+
+Тот же набор локально: `./scripts/cpp_checks.sh` и `python -m pytest`.
 
 ---
 
@@ -354,4 +377,4 @@ python tests/bench_per_step.py      # бенчмарк шага среды
 | GAE/буфер | rl/rollout_buffer.py (compute_gae) |
 | константы игры | include/colony/constants.h |
 | сиды/детерминизм | python/cpp_vecenv.py:140, src/rng.cpp |
-| почему обучение нестабильно | REPORT.md / REPORT_2026_09.md |
+| почему обучение нестабильно | docs/RL_DIAGNOSIS_2026_09.md (REPORT.md/REPORT_2026_09.md в репозитории нет) |

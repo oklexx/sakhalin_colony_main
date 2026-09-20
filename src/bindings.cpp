@@ -454,7 +454,14 @@ PYBIND11_MODULE(colony_cpp, m) {
         // v4 (2026-09)
         .def_readwrite("goal_survival_coeff", &RewardConfig::goal_survival_coeff)
         .def_readwrite("main_tax_cash_bonus", &RewardConfig::main_tax_cash_bonus)
-        .def_readwrite("main_tax_pressure_coeff", &RewardConfig::main_tax_pressure_coeff);
+        .def_readwrite("main_tax_pressure_coeff", &RewardConfig::main_tax_pressure_coeff)
+        // P2-9 (2026-09-19): road-shaping к воде — раньше хардкод в step()
+        .def_readwrite("road_shaping_cap", &RewardConfig::road_shaping_cap)
+        .def_readwrite("road_shaping_per_cell", &RewardConfig::road_shaping_per_cell)
+        .def_readwrite("water_reach_bonus", &RewardConfig::water_reach_bonus)
+        .def_readwrite("water_reach_radius", &RewardConfig::water_reach_radius)
+        .def_readwrite("road_no_progress_penalty", &RewardConfig::road_no_progress_penalty)
+        .def_readwrite("road_progress_epsilon", &RewardConfig::road_progress_epsilon);
 
     py::class_<ColonyEnvCpp::EpisodeMetrics>(m, "EpisodeMetrics")
         .def_readonly("total_reward", &ColonyEnvCpp::EpisodeMetrics::total_reward)
@@ -506,7 +513,17 @@ PYBIND11_MODULE(colony_cpp, m) {
             return arr;
         })
         .def("minimap_radius", &ColonyEnvCpp::minimap_radius)
-        .def("set_minimap_radius", [](ColonyEnvCpp& env, int r) { env.set_minimap_radius(r); })
+        // P2-8: setter оставлен только ради совместимости — миникарта глобальная
+        // 32x32 (ColonyEnvCpp::minimap_grid_size()), значение ни на что не влияет.
+        .def("set_minimap_radius", [](ColonyEnvCpp& env, int r) {
+            if (PyErr_WarnEx(PyExc_DeprecationWarning,
+                             "set_minimap_radius() is a no-op: the minimap is a global "
+                             "32x32 grid (minimap_grid_size()); the value is stored for "
+                             "compatibility only and does not change the observation.",
+                             1) < 0)
+                throw py::error_already_set();
+            env.set_minimap_radius(r);
+        })
         .def("n_build", &ColonyEnvCpp::n_build)
         .def("tax_to_debt", &ColonyEnvCpp::tax_to_debt)
         .def("last_tax_borrowed", &ColonyEnvCpp::last_tax_borrowed)
@@ -646,7 +663,15 @@ PYBIND11_MODULE(colony_cpp, m) {
             return arr;
         })
         .def("minimap_radius", &ColonyVecEnvCpp::minimap_radius)
-        .def("set_minimap_radius", [](ColonyVecEnvCpp& v, int r) { v.set_minimap_radius(r); })
+        // P2-8: то же, что и для одиночной среды — no-op с DeprecationWarning.
+        .def("set_minimap_radius", [](ColonyVecEnvCpp& v, int r) {
+            if (PyErr_WarnEx(PyExc_DeprecationWarning,
+                             "set_minimap_radius() is a no-op: the minimap is a global "
+                             "32x32 grid; the value is stored for compatibility only.",
+                             1) < 0)
+                throw py::error_already_set();
+            v.set_minimap_radius(r);
+        })
         .def("obs_buffer", [](const ColonyVecEnvCpp& v) {
             const size_t n = (size_t)v.n_envs() * (size_t)v.obs_size();
             const float* src = v.obs_buffer();
