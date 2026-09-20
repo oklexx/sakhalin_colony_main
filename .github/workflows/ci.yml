@@ -13,6 +13,10 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   # ── C++-ядро: проверки, которым не нужен Python ────────────────────────────
   # Один и тот же скрипт, что гоняют локально: ./scripts/cpp_checks.sh
@@ -68,6 +72,28 @@ jobs:
         run: python -c "import sys; sys.path.insert(0, 'python'); import colony_cpp; print(colony_cpp.extension_info())"
 
       - name: pytest
+        id: pytest
+        continue-on-error: true
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -v
+        run: python -m pytest -v -rf 2>&1 | tee pytest.log
+
+      # Логи job'а лежат на отдельном CDN и из части окружений недоступны,
+      # поэтому хвост прогона дублируется комментарием в PR.
+      - name: Хвост pytest в PR (только при падении)
+        if: steps.pytest.outcome == 'failure' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### pytest — хвост прогона (job ${{ github.run_id }})"
+            echo '```'
+            tail -n 150 pytest.log
+            echo '```'
+          } > pytest_summary.md
+          gh pr comment "$PR_NUMBER" --body-file pytest_summary.md
+
+      - name: Провалить job, если pytest упал
+        if: steps.pytest.outcome == 'failure'
+        run: exit 1
