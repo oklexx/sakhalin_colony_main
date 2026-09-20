@@ -170,7 +170,13 @@ def test_ui2_smoke(tmp_path, monkeypatch):
         saved = json.load(f)
     check("state: model_name", saved["model_name"] == "ui2_test")
     check("state: watch_seed", saved["watch_seed"] == 777)
-    check("state: net_arch", saved["net_arch"] == [256, 256, 256], str(saved["net_arch"]))
+    # net_arch в state — это дефолт спинбоксов UI (ширина 256 × 2 слоя) и он же
+    # канонический rl.config.Config.net_arch. Литерал [256, 256, 256] устарел
+    # ещё до того, как файл исключили из pytest (дефолт сети — 2 слоя), поэтому
+    # сверяем с каноном, а не с магическим списком.
+    from rl.config import Config as _Cfg
+    check("state: net_arch", saved["net_arch"] == _Cfg().net_arch,
+          f'в state {saved["net_arch"]}, канон rl.config {_Cfg().net_arch}')
     check("state: reward key present", "sale_bonus" in saved)
     check("state: versioned", saved["config_version"] == 2)
     check("state: disable flags flat bool", saved.get("disable_net_worth") is False
