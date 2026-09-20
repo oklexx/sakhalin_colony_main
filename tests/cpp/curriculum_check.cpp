@@ -614,8 +614,10 @@ int main() {
         check(kept, "flag on: the allowed row is preserved");
 
         // ── mechanic curriculum: fixed manager slots, hard rejection ──
+        // Полный гейтинг (2026-09-21): выключаем ВСЕ механики разом
+        // (раньше здесь был легаси-набор из трёх).
         Curriculum early;
-        early.enabled_mechanics = {false, false, false};
+        early.enabled_mechanics.fill(false);
         ColonyEnvCpp gated(bd, ed, 31, 280, early);
         gated.reset(31);
         const int manager_base = A_BUILD0 + gated.n_build();
@@ -647,9 +649,13 @@ int main() {
         check(fj.obs_version == 1, "from_json reads obs_version");
         Curriculum fj0 = Curriculum::from_json("{}");
         check(fj0.obs_version == 2, "from_json defaults obs_version to 2 (canonical v4/obs-v2 default)");
+        // Полный гейтинг (2026-09-21): 8 механик; легаси-имена парсятся в
+        // свои новые индексы (improve_land=0, preservation=3, credit=6).
         Curriculum fm = Curriculum::from_json(
             "{\"enabled_mechanics\":[\"improve_land\",\"preservation\"]}");
-        check(fm.enabled_mechanics[0] && fm.enabled_mechanics[1] && !fm.enabled_mechanics[2],
+        int fm_on = 0;
+        for (int i = 0; i < N_MECHANICS; i++) fm_on += fm.enabled_mechanics[(size_t)i] ? 1 : 0;
+        check(fm.enabled_mechanics[0] && fm.enabled_mechanics[3] && fm_on == 2,
               "from_json transports mechanic allow-list");
     }
 

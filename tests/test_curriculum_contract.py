@@ -448,16 +448,21 @@ def test_resolve_state_obs_version_explicit_only(tmp_path):
 def test_mechanics_schedule_is_monotonic_and_round_trips():
     from rl.curriculum import CurriculumState, mechanics_enabled_at_step
 
+    # Полный гейтинг (2026-09-21): 8 механик; расписание — только добавления.
+    # «Ничего не включено» = все 8 в disabled (раньше легаси-тройка была полным
+    # списком — теперь механик восемь).
+    all_names = ["improve_land", "repair", "destroy", "preservation",
+                 "sell", "buy_food", "credit", "manual_tax"]
     schedule = [
-        [200_000, ["improve_land", "preservation"]],
-        [500_000, ["credit"]],
+        [200_000, ["repair", "sell"]],
+        [500_000, ["improve_land"]],
     ]
-    assert mechanics_enabled_at_step(0, ["improve_land", "preservation", "credit"], schedule) == ()
-    assert mechanics_enabled_at_step(200_000, ["improve_land", "preservation", "credit"], schedule) == (
-        "improve_land", "preservation"
+    assert mechanics_enabled_at_step(0, all_names, schedule) == ()
+    assert mechanics_enabled_at_step(200_000, all_names, schedule) == (
+        "repair", "sell"
     )
-    assert mechanics_enabled_at_step(500_000, ["improve_land", "preservation", "credit"], schedule) == (
-        "improve_land", "preservation", "credit"
+    assert mechanics_enabled_at_step(500_000, all_names, schedule) == (
+        "improve_land", "repair", "sell"  # канонический порядок MECHANIC_NAMES
     )
     with pytest.raises(ValueError, match="sorted thresholds"):
         mechanics_enabled_at_step(0, [], [[20, ["credit"]], [10, ["improve_land"]]])
@@ -471,12 +476,14 @@ def test_mechanics_schedule_is_monotonic_and_round_trips():
 
 
 def test_default_config_starts_with_manager_mechanics_disabled():
+    """Дефолт нового прогона — минимальный режим «стадии 1» (см.
+    test_stage1_preset.py): из 8 механик включены только sell и credit."""
     from rl.config import Config
 
     cfg = Config()
-    assert cfg.enabled_mechanics_at(0) == ()
-    assert cfg.enabled_mechanics_at(200_000) == ("improve_land", "preservation")
-    assert cfg.enabled_mechanics_at(500_000) == (
-        "improve_land", "preservation", "credit"
-    )
-    assert cfg.curriculum_state().enabled_mechanics == ()
+    assert cfg.enabled_mechanics_at(0) == ("sell", "credit")
+    # расписание по умолчанию пустое: этап 2 настраивается своим конфигом
+    assert cfg.mechanics_unlock_schedule == []
+    assert cfg.enabled_mechanics_at(500_000) == ("sell", "credit")
+    assert cfg.curriculum_state().enabled_mechanics == ("sell", "credit")
+

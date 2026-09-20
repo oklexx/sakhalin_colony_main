@@ -57,6 +57,10 @@ from train_ui2.constants import (
     RESOURCE_CAPTIONS,
     BUILD_IMAGE_INDEX,
     CONFIG_VERSION,
+    MECHANIC_IDS,
+    MECHANIC_CAPTIONS,
+    PRESETS,
+    PRESET_ORDER,
 )
 from train_ui2.icons import (
     building_icon as _building_icon,
@@ -100,6 +104,7 @@ class MainWindow2(QMainWindow):
         # curriculum state
         self._building_checks: Dict[str, QCheckBox] = {}
         self._resource_checks: Dict[str, QCheckBox] = {}
+        self._mechanic_checks: Dict[str, QCheckBox] = {}
 
         self._build_ui()
         self._restore_state()
@@ -393,18 +398,38 @@ class MainWindow2(QMainWindow):
 
         # header
         hdr = QLabel(
-            "<b>Курикулум</b> — поэтапное открытие зданий и ресурсов.<br>"
-            "<span style='color:#8a8a8a'>Этап 0 = все 32 здания доступны. Этап 1 = базовые (14), Этап 2 = средние (11), Этап 3 = тяжёлые (7).<br>"
-            "Можно вручную отметить любые здания/ресурсы → они запишутся в <code>unlock_ids</code> и <code>curriculum_resources</code> и попадут в обучение.</span>"
+            "<b>Курикулум</b> — что из игры открыто ИИ на этом этапе обучения.<br>"
+            "<span style='color:#8a8a8a'>Простое правило: на старте открыто только то, что нужно для выживания. "
+            "Чем меньше лишних действий — тем быстрее ИИ находит правильные. Начните с кнопки «Этап 1» ниже, "
+            "а когда он освоится — дообучите в режиме «Этап 2» (вся игра).</span>"
         )
         hdr.setWordWrap(True)
         hdr.setTextFormat(Qt.RichText)
         root.addWidget(hdr)
 
+        # ── Готовые режимы: одно нажатие настраивает всю вкладку ──
+        preset_box = T.group("Режим обучения — нажмите одну кнопку, остальное настроится само")
+        # QGridLayout группы нельзя передавать родителем в QHBoxLayout —
+        # добавляем layout в layout (как rgroup/agroup ниже); регресс:
+        # tests/test_ui2_smoke.py (пойман CI, PySide6 ругался на тип).
+        prow = QHBoxLayout()
+        preset_box.layout().addLayout(prow, 0, 0)
+        for pid in PRESET_ORDER:
+            p = PRESETS[pid]
+            b = T.button(p["title"],
+                         lambda _=False, pid=pid: self._apply_preset(pid),
+                         "primary" if pid == "stage1" else "")
+            b.setToolTip(p["summary"] + "\n\n" + p["detail"])
+            b.setMinimumHeight(34)
+            prow.addWidget(b)
+        self.lbl_preset_status = T.label("", T.DIM, word_wrap=True)
+        prow.addWidget(self.lbl_preset_status, 1)
+        root.addWidget(preset_box)
+
         # preset buttons
         preset_bar = QHBoxLayout()
         preset_bar.setSpacing(6)
-        preset_bar.addWidget(T.label("Пресеты:", T.DIM))
+        preset_bar.addWidget(T.label("Наборы зданий (старые этапы):", T.DIM))
         preset_bar.addWidget(T.button("Этап 0 (все)", lambda: self._curriculum_preset(0)))
         preset_bar.addWidget(T.button("Этап 1", lambda: self._curriculum_preset(1)))
         preset_bar.addWidget(T.button("Этап 2", lambda: self._curriculum_preset(2)))
@@ -490,6 +515,30 @@ class MainWindow2(QMainWindow):
         rgroup.layout().addLayout(res_btn_bar, 1, 0)
         lay.addWidget(rgroup)
 
+        # Actions group (механики): 11 менеджерских кнопок ИИ в 8 группах.
+        agroup = T.group("Действия ИИ (кроме строительства) — что разрешено")
+        agrid = QGridLayout(); agrid.setSpacing(4)
+        for idx, mid in enumerate(MECHANIC_IDS):
+            r, c = idx // 2, idx % 2
+            cell = QWidget()
+            h = QHBoxLayout(cell); h.setContentsMargins(2,1,2,1); h.setSpacing(4)
+            chk = QCheckBox()
+            cap, tip = MECHANIC_CAPTIONS.get(mid, (mid, mid))
+            chk.setToolTip(tip)
+            chk.stateChanged.connect(self._on_curriculum_changed)
+            self._mechanic_checks[mid] = chk
+            txt = QLabel(cap)
+            txt.setToolTip(tip)
+            h.addWidget(chk)
+            h.addWidget(txt, 1)
+            agrid.addWidget(cell, r, c)
+        agroup.layout().addLayout(agrid, 0, 0)
+        agroup.layout().addWidget(T.label(
+            "Галочка = ИИ может пользоваться действием. «Продать излишки» и «Кредиты банка» нужны для базовой "
+            "экономики; ремонт и консервация пригодятся на этапе 2, когда здания начнут изнашиваться.", 
+            T.DIM, word_wrap=True), 1, 0)
+        lay.addWidget(agroup)
+
         # Schedule group
         sgroup = T.group("Расписание курикулума — на каком шаге какой этап включается")
         sgrid = QGridLayout(); sgrid.setSpacing(6)
@@ -519,7 +568,11 @@ class MainWindow2(QMainWindow):
         root.addWidget(scroll, 1)
 
         # footer hint
-        root.addWidget(T.label("Совет: этап 0 в расписании = все здания. Ручной набор зданий (галочки) применяется только при включённом чекбоксе «Ручной набор из Курикулума» на вкладке «Обучение» — тогда доступны ровно отмеченные здания (плюс здания выбранного этапа).", T.DIM, word_wrap=True))
+        root.addWidget(T.label(
+            "Совет: не знаете, что выбрать — нажмите «Этап 1 · База и ресурсы» сверху. "
+            "Этапы 0–3 ниже — это старые наборы зданий (0 = все 32, 1 = базовые 14, 2 = средние 11, 3 = тяжёлые 7); "
+            "они только меняют галочки зданий. Ручной набор зданий действует при включённом чекбоксе "
+            "«Ручной набор из Курикулума» на вкладке «Обучение».", T.DIM, word_wrap=True))
 
         return page
 
@@ -545,6 +598,80 @@ class MainWindow2(QMainWindow):
         self.chk_use_curriculum_tab.blockSignals(False)
         self._on_curriculum_changed()
         self.log("info", f"Курикулум: пресет этап {stage} → {len(target)} зданий")
+
+    # ── Готовые режимы («Этап 1 · База и ресурсы» / «Этап 2 · Вся экономика») ──
+    def _apply_preset(self, pid: str):
+        """Применить готовый режим: здания, ресурсы, действия ИИ, критерии eval.
+
+        Пресеты описаны в train_ui2/constants.py (PRESETS); состав «Этапа 1»
+        берётся из того же источника, что и CLI --preset stage1
+        (rl/curriculum.py STAGE1_PRESET) — UI и CLI не могут разъехаться.
+        """
+        p = PRESETS.get(pid)
+        if not p:
+            return
+        buildings = set(p["buildings"]) if p["buildings"] else set(ALL_BUILD_IDS)
+        for bid, chk in self._building_checks.items():
+            chk.blockSignals(True)
+            chk.setChecked(bid in buildings)
+            chk.blockSignals(False)
+        resources = set(p["resources"]) if p["resources"] else set(RESOURCE_IDS)
+        for rid, chk in self._resource_checks.items():
+            chk.blockSignals(True)
+            chk.setChecked(rid in resources)
+            chk.blockSignals(False)
+        mechanics = set(p["mechanics"])
+        for mid, chk in self._mechanic_checks.items():
+            chk.blockSignals(True)
+            chk.setChecked(mid in mechanics)
+            chk.blockSignals(False)
+        # ручной набор применяется; этап 0 (пресет сам задаёт точный список)
+        self.chk_use_curriculum_tab.blockSignals(True)
+        self.chk_use_curriculum_tab.setChecked(True)
+        self.chk_use_curriculum_tab.blockSignals(False)
+        self.cmb_stage.blockSignals(True)
+        self.cmb_stage.setCurrentIndex(0)
+        self.cmb_stage.blockSignals(False)
+        # критерии проверки подбираются под задачу этапа
+        if pid == "stage1":
+            eval_rows = self.pgroups.get("Оценка и сохранение")
+            if eval_rows is not None:
+                if "eval_min_days" in eval_rows.rows:
+                    eval_rows.rows["eval_min_days"].set_value(365.0)
+                if "eval_min_bases" in eval_rows.rows:
+                    eval_rows.rows["eval_min_bases"].set_value(3)
+        self._update_preset_status()
+        self._on_curriculum_changed()
+        self.log("info", f"Режим обучения: {p['title']} — {p['summary']}")
+
+    def _detect_preset(self) -> Optional[str]:
+        """Какому пресету соответствует текущее состояние галочек (или None)."""
+        for pid in PRESET_ORDER:
+            p = PRESETS[pid]
+            want_b = set(p["buildings"]) if p["buildings"] else set(ALL_BUILD_IDS)
+            want_r = set(p["resources"]) if p["resources"] else set(RESOURCE_IDS)
+            want_m = set(p["mechanics"])
+            cur_b = {bid for bid, chk in self._building_checks.items() if chk.isChecked()}
+            cur_r = {rid for rid, chk in self._resource_checks.items() if chk.isChecked()}
+            cur_m = {mid for mid, chk in self._mechanic_checks.items() if chk.isChecked()}
+            if (cur_b == want_b and cur_r == want_r and cur_m == want_m
+                    and self.chk_use_curriculum_tab.isChecked()):
+                return pid
+        return None
+
+    def _update_preset_status(self):
+        """Строка состояния под кнопками: что сейчас выбрано, простыми словами."""
+        pid = self._detect_preset()
+        if pid is not None:
+            p = PRESETS[pid]
+            self.lbl_preset_status.setText(f"✓ Включено: {p['title']}. {p['summary']}")
+        else:
+            nb = sum(1 for c in self._building_checks.values() if c.isChecked())
+            nr = sum(1 for c in self._resource_checks.values() if c.isChecked())
+            nm = sum(1 for c in self._mechanic_checks.values() if c.isChecked())
+            self.lbl_preset_status.setText(
+                f"Свой набор: {nb} зданий · {nr} ресурсов с бонусом · {nm} действий ИИ. "
+                "Нажмите «Этап 1» или «Этап 2», чтобы вернуться к готовым настройкам.")
 
     def _curriculum_clear(self):
         for chk in self._building_checks.values():
@@ -641,6 +768,7 @@ class MainWindow2(QMainWindow):
             self.chk_use_curriculum_tab.blockSignals(True)
             self.chk_use_curriculum_tab.setChecked(True)
             self.chk_use_curriculum_tab.blockSignals(False)
+        self._update_preset_status()
         QTimer.singleShot(100, self._save_state)
 
     # ── Tab: Модели ──
@@ -827,6 +955,14 @@ class MainWindow2(QMainWindow):
                 chk.blockSignals(True)
                 chk.setChecked(rid in selected)
                 chk.blockSignals(False)
+        # механики: disabled_mechanics → галочки. Отсутствующее поле = легаси
+        # (все включены), ровно как в Config.from_dict.
+        mech_raw = cfg.get("disabled_mechanics")
+        disabled_mech = {str(m) for m in mech_raw} if isinstance(mech_raw, list) else set()
+        for mid, chk in self._mechanic_checks.items():
+            chk.blockSignals(True)
+            chk.setChecked(mid not in disabled_mech)
+            chk.blockSignals(False)
         # schedule
         sched = cfg.get("curriculum_schedule", [])
         if isinstance(sched, list):
@@ -839,10 +975,12 @@ class MainWindow2(QMainWindow):
         self._extra_cfg = {k: v for k, v in cfg.items() if k not in (
             "model_name","difficulty","obs_mode","minimap_radius","curriculum_stage",
             "unlock_ids","use_curriculum_tab","curriculum_resources","curriculum_schedule",
+            "disabled_mechanics","mechanics_unlock_schedule",
             "net_arch","use_amp","torch_compile","cpp_threads",
             "watch_map_size","watch_seed","watch_visual","watch_speed",
             "config_version"
         ) and k not in self._all_param_keys()}
+        self._update_preset_status()
 
     def _all_param_keys(self):
         keys = set()
@@ -875,6 +1013,9 @@ class MainWindow2(QMainWindow):
             curriculum_resources = ""  # all resources
         else:
             curriculum_resources = ",".join(checked_res)
+        # механики: невыставленные галочки становятся disabled_mechanics
+        # (декларативная форма; allow-list выводится в Config.curriculum_state)
+        checked_mech = [mid for mid, chk in self._mechanic_checks.items() if chk.isChecked()]
         # schedule
         sched = self._collect_curriculum_schedule()
 
@@ -888,6 +1029,10 @@ class MainWindow2(QMainWindow):
             "use_curriculum_tab": self.chk_use_curriculum_tab.isChecked(),
             "curriculum_resources": curriculum_resources,
             "curriculum_schedule": sched,
+            "disabled_mechanics": [m for m in MECHANIC_IDS if m not in checked_mech],
+            # UI не редактирует расписание разблокировки механик: пусто =
+            # «не трогать» (worker/Config применит свой дефолт для новых прогонов).
+            "mechanics_unlock_schedule": [],
             "net_arch": [self.spn_width.value()] * self.spn_layers.value(),
             "use_amp": self.chk_amp.isChecked(),
             "torch_compile": self.chk_compile.isChecked(),

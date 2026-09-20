@@ -104,14 +104,14 @@ Curriculum curriculum_from_dict(const py::dict& d) {
     if (d.contains("obs_version")) c.obs_version = d["obs_version"].cast<int>();
     // Mechanic allow-list: absent keeps legacy/all-enabled behaviour.
     if (d.contains("enabled_mechanics")) {
-        c.enabled_mechanics = {false, false, false};
+        c.enabled_mechanics.fill(false);
         for (const auto& v : d["enabled_mechanics"]) {
             const std::string name = v.cast<std::string>();
-            if (name == "all") c.enabled_mechanics = {true, true, true};
-            else if (name == "improve_land") c.enabled_mechanics[0] = true;
-            else if (name == "preservation") c.enabled_mechanics[1] = true;
-            else if (name == "credit") c.enabled_mechanics[2] = true;
-            else throw std::runtime_error("curriculum dict: unknown mechanic " + name);
+            if (name == "all") { c.enabled_mechanics.fill(true); continue; }
+            const int mi = mechanic_index(name);
+            if (mi < 0)
+                throw std::runtime_error("curriculum dict: unknown mechanic " + name);
+            c.enabled_mechanics[(size_t)mi] = true;
         }
     }
     return c;
@@ -129,9 +129,8 @@ py::dict curriculum_to_dict(const Curriculum& c) {
     d["resource_weights"] = w;
     d["obs_version"] = c.obs_version;
     std::vector<std::string> mechanics;
-    if (c.enabled_mechanics[0]) mechanics.emplace_back("improve_land");
-    if (c.enabled_mechanics[1]) mechanics.emplace_back("preservation");
-    if (c.enabled_mechanics[2]) mechanics.emplace_back("credit");
+    for (int i = 0; i < N_MECHANICS; ++i)
+        if (c.enabled_mechanics[(size_t)i]) mechanics.emplace_back(MECHANIC_NAMES[i]);
     d["enabled_mechanics"] = mechanics;
     return d;
 }

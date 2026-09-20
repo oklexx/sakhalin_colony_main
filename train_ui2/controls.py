@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QGridLayout, QWidget
 
 from train_ui2 import theme as T
 from train_ui2.parameter_widget import PARAM_SPECS, REWARD_SPECS, ParamSpec
+from train_ui2.constants import HUMAN_REWARD_HELP
 
 SPECS: Dict[str, ParamSpec] = {s.key: s for s in PARAM_SPECS + REWARD_SPECS}
 
@@ -37,6 +38,13 @@ class ParamRow(QWidget):
                            tooltip=spec.tooltip)
         self.spin.valueChanged.connect(self._emit)
         lay.addWidget(self.spin, 0, 1, Qt.AlignLeft)
+        # Пояснение простыми словами (глоссарий train_ui2/constants.py):
+        # подписи вроде «Бонус закрытия потребности» звучит программистски,
+        # одна строка серым под параметром снимает вопросы «что это вообще».
+        human = HUMAN_REWARD_HELP.get(key)
+        if human:
+            hint = T.label(human, T.DIM, size=10, word_wrap=True)
+            lay.addWidget(hint, 1, 0, 1, 2)
 
     def _emit(self, v):
         self.value_changed.emit(self.key, self.value())
