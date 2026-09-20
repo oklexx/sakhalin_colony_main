@@ -24,6 +24,7 @@ add_library(colony_cpp MODULE
     src/lot_finder.cpp
     src/action_mask.cpp
     src/observation.cpp
+    src/vec_env.cpp
     src/bindings.cpp
 )
 

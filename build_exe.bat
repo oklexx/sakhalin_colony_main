@@ -79,6 +79,12 @@ if errorlevel 1 goto :fail
 
 cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
     /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\vec_env.cpp" ^
+    /Fo"%OBJDIR%\vec_env.obj"
+if errorlevel 1 goto :fail
+
+cl.exe /O2 /EHsc /std:c++17 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
     "%ROOT%\src\main.cpp" ^
     /Fo"%OBJDIR%\main.obj"
 if errorlevel 1 goto :fail
@@ -95,6 +101,7 @@ cl.exe /nologo ^
     "%OBJDIR%\lot_finder.obj" ^
     "%OBJDIR%\action_mask.obj" ^
     "%OBJDIR%\observation.obj" ^
+    "%OBJDIR%\vec_env.obj" ^
     /Fe"%ROOT%\sakhalin_colony.exe" ^
     /link /SUBSYSTEM:CONSOLE
 if errorlevel 1 goto :fail
