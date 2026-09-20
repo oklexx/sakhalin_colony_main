@@ -25,10 +25,17 @@ REWARD_GROUPS = {
     "Добыча (v3)": ["first_extraction_bonus", "extraction_daily",
                     "need_fill_bonus", "loan_penalty"],
     "Экономика": ["daily_income", "sale_bonus", "tax_daily_bonus",
-                  "manual_tax_penalty", "debt_coeff", "tax_debt_penalty"],
+                  "manual_tax_penalty", "debt_coeff", "tax_debt_penalty",
+                  "main_tax_cash_bonus", "main_tax_pressure_coeff"],
     "Выживание": ["survival_bonus", "survival_coeff", "game_over_penalty",
                   "death_penalty", "tax_fail_penalty", "base_lost_penalty",
-                  "born_bonus", "home_overflow_penalty"],
+                  "born_bonus", "home_overflow_penalty", "goal_survival_coeff"],
+    # P2-9 (2026-09-19): potential-based shaping дороги к воде — раньше эти
+    # числа были хардкодом в src/env.cpp и в UI их нельзя было ни увидеть, ни
+    # подобрать.
+    "Дороги к воде": ["road_shaping_cap", "road_shaping_per_cell",
+                      "water_reach_bonus", "water_reach_radius",
+                      "road_no_progress_penalty", "road_progress_epsilon"],
     "Потребности": ["housing_need_bonus", "food_need_bonus", "water_need_bonus",
                     "buy_food_penalty"],
     "Дисциплина": ["error_penalty", "preserve_penalty", "demolish_penalty",
@@ -45,6 +52,12 @@ REWARD_FLAGS = [
     ("mask_managers_by_applicability", "Маска по применимости",
      "Маскировать менеджеров по применимости (BUY_FOOD без нужды, REPAY без долга, "
      "IMPROVE без денег и т.п. — иначе это чистый error_penalty)"),
+    ("priority_count_over_allowed", "Потребители только по разрешённым",
+     "Считать потребителей ресурсов (n_consumers в каталоге) только по постройкам, "
+     "разрешённым курикулумом. Выключено = считать по всем 32 (старые прогоны)"),
+    ("obs_mask_locked_catalog", "Занулять каталог закрытых построек",
+     "В наблюдении занулять строки каталога (4 числа на постройку) для построек, "
+     "закрытых курикулумом. Выключено = каталог гейт игнорирует"),
 ]
 
 # ── curriculum (single source: rl/curriculum.py) ─────────────────────────────

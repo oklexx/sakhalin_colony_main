@@ -94,12 +94,32 @@ class RewardConfig:
     clip_reward_min: float = -100.0
     clip_reward_max: float = 100.0
 
+    # P2-9 (2026-09-19): potential-based road shaping к воде. Раньше числа были
+    # захардкожены в ColonyEnvCpp::step()/::reset() (1.5 / 1.0 / +3.0 / -0.1),
+    # теперь это такие же поля профиля, как остальные. Дефолты = прежний хардкод,
+    # поэтому старые прогоны не меняются.
+    road_shaping_cap: float = 1.5          # потолок бонуса за одну дорогу
+    road_shaping_per_cell: float = 1.0     # бонус за клетку приближения к воде
+    water_reach_bonus: float = 3.0         # разовый бонус «дорога дошла до воды»
+    water_reach_radius: float = 1.5        # что считать «дошли» (клеток до воды)
+    road_no_progress_penalty: float = 0.1  # штраф за дорогу без приближения
+    road_progress_epsilon: float = 0.25    # гистерезис: считать ли приближение
+
     # flags (ablations)
     disable_net_worth: bool = False
     disable_daily_income: bool = False
     disable_provider_bonus: bool = False
     # P1: маскировать менеджеров по применимости (не по формальной легальности)
     mask_managers_by_applicability: bool = True
+    # Абляции, которые раньше жили ТОЛЬКО в C++ (include/colony/reward_config.h)
+    # и потому были недостижимы из Python: RewardConfig.from_dict молча выбрасывал
+    # неизвестные ключи, и значение из reward-JSON не долетало до среды.
+    # priority_count_over_allowed — считать потребителей ресурсов в compute_catalog
+    #   только по разрешённым курикулумом постройкам (false = по всем 32).
+    # obs_mask_locked_catalog — занулять строки каталога закрытых построек в obs
+    #   (false = каталог гейт игнорирует; counts/idle_by_type не фильтруются).
+    priority_count_over_allowed: bool = False
+    obs_mask_locked_catalog: bool = False
 
     # formerly hardcoded C++ weights — must be exported or C++ keeps defaults
     tax_fail_penalty: float = 5.0
@@ -218,6 +238,9 @@ class Config:
     # DEPRECATED / dead: ColonyEnvCpp::minimap() emits a fixed global 32x32 and
     # _make_model() passes grid_size=32 explicitly, so this value is ignored
     # (the nets rewrite it to 15). Kept so old configs still load.
+    # DEPRECATED (P2-8): миникарта давно глобальная 32x32 (ColonyEnvCpp::
+    # minimap_grid_size()), поле ни на что не влияет и сохранено только чтобы
+    # старые конфиги/чекпойнты читались. Сеттер в C++ выдаёт DeprecationWarning.
     minimap_radius: int = 14
 
     # ── training / eval ──

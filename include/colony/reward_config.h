@@ -56,6 +56,20 @@ struct RewardConfig {
     double clip_reward_min = -100.0;
     double clip_reward_max = 100.0;
 
+    // Potential-based road shaping к воде (P2-9, 2026-09-19): раньше эти числа
+    // были захардкожены в ColonyEnvCpp::step() и ::reset() (1.5 / 1.0 / +3.0 /
+    // -0.1), поэтому их нельзя было ни подобрать, ни аблировать, ни увидеть в
+    // профиле наград. Значения = прежний хардкод бит-в-бит, так что старые
+    // прогоны не меняются. Смысл: дорога не приносит дохода, пока не дойдёт до
+    // воды (7-14 клеток), поэтому за приближение даём потенциальный бонус, а за
+    // дорогу «не туда» — маленький штраф.
+    double road_shaping_cap = 1.5;         // потолок бонуса за одну дорогу
+    double road_shaping_per_cell = 1.0;    // бонус за клетку приближения к воде
+    double water_reach_bonus = 3.0;        // разовый бонус «дорога дошла до воды»
+    double water_reach_radius = 1.5;       // что считать «дошли» (клеток до воды)
+    double road_no_progress_penalty = 0.1; // штраф за дорогу без приближения
+    double road_progress_epsilon = 0.25;   // гистерезис: считать ли приближение
+
     // flags (ablations)
     bool disable_net_worth = false;
     bool disable_daily_income = false;

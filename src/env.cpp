@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 #include <json.hpp>
 
@@ -276,7 +277,7 @@ void ColonyEnvCpp::reset(int64_t seed) {
             }
         }
         min_dist_to_water_ = (best_sq >= 0) ? std::sqrt(best_sq) : 1e9;
-        water_reached_ = (min_dist_to_water_ <= 1.5);
+        water_reached_ = (min_dist_to_water_ <= cfg_.water_reach_radius);
     }
 
     // PR 6: вырожденный сценарий виден сразу, а не как «курикулум не работает»
@@ -344,23 +345,18 @@ int ColonyEnvCpp::road_count() const {
     return n;
 }
 
+// P2-10: legacy-вход (используется только debug-биндингом debug_lot_ok).
+// Раньше здесь была ВТОРАЯ копия правил размещения, и она расходилась с
+// Game::can_build_at в двух местах: не знала про сгоревшие участки
+// (destroyed_lots) и в no_near_base считала соседством ЛЮБУЮ постройку, включая
+// дорогу (единый валидатор дорогу исключает). Теперь делегируем ему: то, что
+// показывает отладка, совпадает с тем, что реально проверяет Game::build.
 bool ColonyEnvCpp::lot_ok(int x, int y, int need_earth, bool no_near_base) const {
-    const Game& g = game_;
-    if (!g.earth.in_bounds(x, y)) return false;
-    if (g.base_in_box(x, y) != nullptr) return false;
-    int8_t cur = g.earth.lot(x, y);
-    if (!(cur >= LT_NORMAL && cur < LT_LAST)) return false;
-    if (need_earth != LT_EVERYWHERE && cur != need_earth) return false;
-    if (no_near_base) {
-        const int dx4[4] = {1, -1, 0, 0};
-        const int dy4[4] = {0, 0, 1, -1};
-        for (int i = 0; i < 4; i++) {
-            if (g.earth.in_bounds(x + dx4[i], y + dy4[i]) &&
-                g.base_in_box(x + dx4[i], y + dy4[i]) != nullptr)
-                return false;
-        }
-    }
-    return g.cell_connected(x, y);
+    BaseData probe;
+    probe.id = "__lot_probe__";
+    probe.need_earth = need_earth;
+    probe.no_near_base = no_near_base;
+    return game_.can_build_at(probe, x, y).first;
 }
 
 std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(int need_earth, bool no_near_base) {
@@ -966,6 +962,23 @@ std::vector<float> ColonyEnvCpp::action_mask() {
     mask[A_WEEK] = 1.0f;
 
     // BUILD actions
+    //
+    // P2-11: find_lot() — это BFS по карте (O(bases + дороги) на вызов), а
+    // результат зависит ТОЛЬКО от (need_earth, no_near_base): остальные входные
+    // данные (карта, занятость, destroyed_lots) в рамках одного вызова маски
+    // неизменны. Из 32 построек 20+ имеют need_earth = LT_EVERYWHERE, т.е.
+    // раньше один и тот же BFS выполнялся десятки раз на шаг. Кеш живёт ровно
+    // один вызов action_mask() (локальная переменная), поэтому протухнуть не
+    // может. Замер: tests/cpp/action_mask_bench.cpp.
+    std::unordered_map<int64_t, bool> lot_cache;
+    auto has_lot = [&](const BaseData* d) -> bool {
+        const int64_t key = ((int64_t)d->need_earth << 1) | (d->no_near_base ? 1 : 0);
+        auto it = lot_cache.find(key);
+        if (it != lot_cache.end()) return it->second;
+        const bool ok = (bool)find_lot(*d);
+        lot_cache.emplace(key, ok);
+        return ok;
+    };
     for (int i = 0; i < n_build_; ++i) {
         int act = A_BUILD0 + i;
         const BaseData* d = build_data_[i];
@@ -974,14 +987,12 @@ std::vector<float> ColonyEnvCpp::action_mask() {
         if (!build_allowed(d->id))
             continue;
 
-
         // Money check
         if (g.money < d->price)
             continue;
 
         // find_lot check (BFS — also validates connectivity via base neighbor/road)
-        auto cell = find_lot(*d);
-        if (!cell)
+        if (!has_lot(d))
             continue;
 
         mask[act] = 1.0f;
@@ -1386,23 +1397,28 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             // Решает фундаментальную проблему Credit Assignment: дорога не даёт дохода,
             // пока не дотянется до воды (7-14 клеток). Без шейпинга агент получает -0.04
             // за каждую дорогу и гарантированно бросает стройку в пользу DAY (0.0).
+            // P2-9: коэффициенты живут в RewardConfig (road_shaping_cap,
+            // road_shaping_per_cell, water_reach_bonus, water_reach_radius,
+            // road_no_progress_penalty, road_progress_epsilon) — значения по
+            // умолчанию равны прежнему хардкоду 1.5 / 1.0 / +3.0 / 1.5 / -0.1 / 0.25.
             if (is_road && target_water_x_ >= 0 && cell && !water_reached_) {
                 double d_road = std::hypot((double)(cell->first - target_water_x_),
                                            (double)(cell->second - target_water_y_));
-                if (d_road < min_dist_to_water_ - 0.25) {
+                if (d_road < min_dist_to_water_ - cfg_.road_progress_epsilon) {
                     double progress = min_dist_to_water_ - d_road;
                     min_dist_to_water_ = d_road;
-                    double road_shaping = std::min(1.5, 1.0 * progress);
+                    double road_shaping = std::min(cfg_.road_shaping_cap,
+                                                   cfg_.road_shaping_per_cell * progress);
                     rew += road_shaping;
                     c_proximity += road_shaping;
-                    if (d_road <= 1.5) {
+                    if (d_road <= cfg_.water_reach_radius) {
                         water_reached_ = true;
-                        rew += 3.0;
-                        c_proximity += 3.0;
+                        rew += cfg_.water_reach_bonus;
+                        c_proximity += cfg_.water_reach_bonus;
                     }
                 } else {
-                    rew -= 0.1;
-                    c_proximity -= 0.1;
+                    rew -= cfg_.road_no_progress_penalty;
+                    c_proximity -= cfg_.road_no_progress_penalty;
                 }
             }
 

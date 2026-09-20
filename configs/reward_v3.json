@@ -1,5 +1,5 @@
 {
-  "_comment": "v3 = v2 + добыча ресурсов (first_extraction/extraction_daily/need_fill) + стоимость действий (loan_penalty, preserve_penalty, error_penalty -2, debt_coeff 0.1). Налоговый shaping (bonus за оплату налога) — отдельным профилем v4, чтобы эффекты были изолированы.",
+  "_comment": "v3 = v2 + добыча ресурсов (first_extraction/extraction_daily/need_fill) + стоимость действий (loan_penalty, preserve_penalty, error_penalty -2, debt_coeff 0.1). Налоговый shaping (bonus за оплату налога) — отдельным профилем v4, чтобы эффекты были изолированы. Явно дописаны ключи, появившиеся после v3 (buy_food_penalty, goal_survival_coeff, main_tax_cash_bonus, main_tax_pressure_coeff) их v3-значениями: без них загрузчик молча оставлял дефолты структуры (= v4), и «профиль v3» на деле был гибридом v3+v4 (см. P0-2, docs/REMAINING_WORK_2026_09.md).",
   "build_bonus": 2.0,
   "chain_bonus": 1.0,
   "chain_daily": 0.5,
@@ -42,5 +42,9 @@
   "home_overflow_penalty": 2.0,
   "housing_need_bonus": 3.0,
   "food_need_bonus": 0.8,
-  "water_need_bonus": 0.8
+  "water_need_bonus": 0.8,
+  "buy_food_penalty": 3.0,
+  "goal_survival_coeff": 0.0,
+  "main_tax_cash_bonus": 0.0,
+  "main_tax_pressure_coeff": 0.0
 }
