@@ -178,6 +178,11 @@
   падений нет; passed вырос с 228 до 262 за счёт 34 новых тестов.
 - `./scripts/cpp_checks.sh` — все проверки прошли (22 пробы скомпилированы,
   7 проверок зелёные); `g++ -fsyntax-only src/gui.cpp` — чисто.
+- **CI (GitHub Actions) — первый зелёный прогон в истории проекта** (PR #13):
+  `C++ пробы (compile-all + проверки)` — pass 1m28s, `colony_cpp + pytest` —
+  pass 3m15s (сборка `colony_cpp` через CMake, handshake, полный pytest с
+  Qt-библиотеками). До этого `.github/workflows/ci.yml` не запускался ни разу,
+  а сборка расширения и Qt-тесты в песочнице непроверяемы.
 
 ## [2026-09-19] — план docs/REMAINING_WORK_2026_09.md: P0, P1, P2
 
