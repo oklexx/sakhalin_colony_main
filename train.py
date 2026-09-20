@@ -85,6 +85,11 @@ def parse_args():
     p.add_argument("--disable-daily-income", action="store_true", default=None)
     p.add_argument("--log-actions", action="store_true",
                    help="Log every step (action, reward, building info) to log_dir/name/actions.log")
+    p.add_argument("--preset", type=str, default="", choices=["", "stage1"],
+                   help="Готовый режим обучения. stage1 = «база и ресурсы»: открыты только "
+                        "дорога/водоканал/еда/дома, из действий менеджера — продажа излишков и "
+                        "кредит, бонусы добычи — вода/еда/дерево (минимальная петля выживания; "
+                        "см. docs/TWO_STAGE_TRAINING_2026_09.md).")
     p.add_argument("--curriculum-schedule", type=str, default=None,
                    help="Stage schedule as 'timesteps:stage,timesteps:stage,...' e.g. '200000:1,400000:2,500000:3'")
     p.add_argument("--curriculum-stage", type=int, default=_d.curriculum_stage, choices=[0, 1, 2, 3],
@@ -194,6 +199,14 @@ def main():
         model_dir=args.model_dir,
         reward=reward,
     )
+    # Пресет применяется ПОСЛЕ сборки Config, но ДО расписания курикулума:
+    # ручное --curriculum-schedule из CLI остаётся последним словом.
+    if args.preset:
+        from rl.curriculum import apply_stage1_preset
+        apply_stage1_preset(cfg)
+        print(f"[Config] preset: {args.preset} — минимальная петля "
+              f"({len(allowed_ids(cfg.curriculum_stage, cfg.effective_unlock_ids(), True))} зданий, "
+              f"механики: {', '.join(cfg.enabled_mechanics_at(0)) or '—'})")
     if args.curriculum_schedule:
         schedule = []
         for part in args.curriculum_schedule.split(","):

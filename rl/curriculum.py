@@ -45,21 +45,50 @@ _FULL_WEIGHTS = (1.0,) * 9  # PR 4: neutral resource weights (all resources)
 # curriculum.  This is deliberately an allow-list rather than a variable
 # action space: checkpoints keep the same 49 logits while early training can
 # focus on build/day decisions.
-MECHANIC_NAMES = ("improve_land", "preservation", "credit")
+#
+# 2026-09-21: полный гейтинг — все 11 менеджерских слотов через 8 механик
+# (см. docs/TWO_STAGE_TRAINING_2026_09.md). Порядок обязан совпадать с C++
+# MECHANIC_NAMES (include/colony/constants.h) — регресс
+# test_stage1_preset.py::test_mechanic_tables_in_sync. Первые три имени —
+# легаси-набор (старые мета-файлы), их порядок не менять.
+MECHANIC_NAMES = (
+    "improve_land",  # слот 0: IMPROVE_LAND
+    "repair",        # слоты 1, 2: REPAIR + RESTORE_ALL
+    "destroy",       # слот 3: DESTROY
+    "preservation",  # слоты 4, 5: PRESERVE + UNPRESERVE
+    "sell",          # слот 6: SELL
+    "buy_food",      # слот 7: BUY_FOOD
+    "credit",        # слоты 8, 9: TAKE_LOAN + REPAY_LOAN
+    "manual_tax",    # слот 10: PAY_TAX
+)
 _MECHANIC_ALIASES = {
     "improve": "improve_land",
     "improve_land": "improve_land",
     "land": "improve_land",
+    "repair": "repair",
+    "restore": "repair",
+    "restore_all": "repair",
+    "fix": "repair",
+    "destroy": "destroy",
+    "demolish": "destroy",
     "preserve": "preservation",
     "preservation": "preservation",
     "preserve_buildings": "preservation",
     "unpreserve": "preservation",
     "preserve_building": "preservation",
+    "sell": "sell",
+    "market": "sell",
+    "trade": "sell",
+    "buy_food": "buy_food",
+    "food": "buy_food",
     "credit": "credit",
     "loan": "credit",
     "loans": "credit",
     "take_loan": "credit",
     "repay_loan": "credit",
+    "manual_tax": "manual_tax",
+    "pay_tax": "manual_tax",
+    "tax": "manual_tax",
 }
 
 
@@ -166,6 +195,79 @@ def mechanics_enabled_at_step(
 # (src/resources.cpp) и train_ui2/constants.py RESOURCE_IDS (регресс-тест).
 RESOURCE_NAMES = ("gold", "food", "coal", "iron", "oil", "stone", "water", "wood", "energy")
 _RESOURCE_SET = frozenset(RESOURCE_NAMES)
+
+
+# ── Пресет «Стадия 1: база и ресурсы» (2026-09-21) ───────────────────────────
+# Минимальный режим первого этапа двухэтапного обучения (подробное
+# обоснование — docs/TWO_STAGE_TRAINING_2026_09.md): агент учится (1) тянуть
+# дорогу к воде, (2) строить водоканал, (3) кормить колонию, (4) продавать
+# излишки и копить на следующее здание. Всё остальное закрыто.
+#
+# Состав обоснован экономикой (configs/bases.json + механика Base::end_day:
+# здание НЕ производит без входных ресурсов на складе):
+#   Road          — 400, входов нет; единственный способ дотянуться до воды;
+#   WaterChannel  — 18 310, стоит на воде (LT_WATER), без входных ресурсов
+#                   даёт 7 воды/день — открывает фермы;
+#   Garden/Farm   — еда на воде (18/32 еды за 1/2 воды) — первая реакция
+#                   «вода -> еда», доступная только после водоканала;
+#   Mushroom      — 12 164, стоит на лесу, без входных ресурсов даёт 70
+#                   еды/день — кормление до воды (лес есть почти всегда);
+#   Fish          — 30 202, стоит на воде, ест 2 дерева: второй потребитель
+#                   воды, углубляет навык «сначала вода»;
+#   SmallHouse    — 5 900, без входов: дома не дают производственной
+#                   награды, но пусть учится «когда денег много» (иначе на
+#                   этапе 2 это новое поведение);
+#   House         — 14 038, то же.
+# Потребители воды и леса — «дойные коровы» для продажи излишков. Все прочие
+# производители мертвы без цепочек (Sawmill ест нефть+железо, Coalmine ест
+# дерево+энергию и т.д.) — они на этапе 2.
+#
+# Приоритетные ресурсы: вода+еда+дерево — бонусы добычи направлены на петлю
+# этапа. Механики: открыты «продать излишки» и «кредит» (единственный способ
+# профинансировать дорогу+водоканал, если бюджет съеден; loan_penalty
+# остаётся против кредитного лупа) — ремонт/снос/сохранение/покупка еды/
+# ручной налог для минимальной петли не нужны. Годовой налог на normal
+# уходит в долг автоматически (tax_to_debt) — эпизод живёт и после 365-го
+# дня, хоронить политика на налоге нечестно.
+STAGE1_PRESET_NAME = "stage1"
+
+STAGE1_PRESET: Dict[str, object] = {
+    # Разрешённые здания (unions со stage 1 в ids_for_stage; stage=0 => ровно
+    # этот набор).
+    "unlock_ids": ",".join([
+        "Road", "WaterChannel", "Garden", "Farm", "Mushroom", "Fish",
+        "SmallHouse", "House",
+    ]),
+    "use_curriculum_tab": True,
+    "curriculum_stage": 0,
+    # Ресурсы, за добычу которых даются бонусы (остальные веса = 0).
+    "curriculum_resources": "water,food,wood",
+    # Выключенные механики (менеджерские действия). allow-list на шаге 0
+    # выводится автоматически: MECHANIC_NAMES − disabled = {sell, credit}.
+    "disabled_mechanics": [
+        "improve_land", "repair", "destroy", "preservation",
+        "buy_food", "manual_tax",
+    ],
+    # Расписание разблокировки пустое: этап 2 — отдельный прогон со своим
+    # конфигом (или юзер правит расписание вручную в UI).
+    "mechanics_unlock_schedule": [],
+    # Критерий успеха этапа 1 — минимальная петля, а не «прожить 730 дней».
+    "eval_min_days": 365.0,
+    "eval_min_bases": 3,
+}
+
+
+def apply_stage1_preset(cfg) -> None:
+    """Наложить пресет «Стадия 1: база и ресурсы» на Config-подобный объект.
+
+    Один источник и для CLI (``--preset stage1``), и для UI (кнопка на
+    вкладке «Курикулум») — иначе два пути разъедутся (RULES.md, «золотое
+    правило синхронизации»). Незнакомые поля пресета игнорируются, сам
+    набор зданий/ресурсов/механик валидируется позже в build_state/C++.
+    """
+    for key, value in STAGE1_PRESET.items():
+        if hasattr(cfg, key):
+            setattr(cfg, key, value)
 
 
 @dataclass(frozen=True)
@@ -531,6 +633,11 @@ def resolve_state(
     `obs_version` is explicit-only (never restored from meta): a stored v0
     must ERROR against a v1 env, not silently rebuild it — see
     check_obs_version_compat().
+
+    `enabled_mechanics=None` (нет ни в аргументах, ни в мете) = легаси-режим
+    «все механики включены» — так старые чекпойнты (до полного гейтинга
+    2026-09-21) оцениваются со всеми 11 менеджерскими слотами, как и
+    обучались.
     """
     resolved = resolve_curriculum(
         model_dir,

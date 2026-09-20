@@ -15,7 +15,7 @@
 | [Makefile](Makefile) | Команды: `make build`, `make test`, `make gui`, `make watch`, `make tb` |
 | [requirements.txt](requirements.txt) | Python-стек (torch, numpy, PySide6, …) |
 | [pyproject.toml](pyproject.toml) | Конфигурация ruff/mypy (стандарты для кода) |
-| [tests/](tests/) | 43 тест-файла + 22 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
+| [tests/](tests/) | 44 тест-файла + 23 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
 | [docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md) | Наблюдение за чемпионом в GUI-окне: IPC-протокол, таймауты, диагностика «окно не запустилось» |
 
 > **Отчёты по проекту:** `REPORT.md`, `REPORT_2026_09.md`, `TRAINING_REPORT.md`,
@@ -41,6 +41,12 @@ python -c "import sys; sys.path.insert(0,'python'); import colony_cpp; print(col
 # 4. Обучение (flat-режим, стабильные параметры)
 python train.py --steps 2000000 --envs 8 --n-epochs 4 --ent-coef 0.015 \
     --obs-mode flat --eval-freq 500000 --eval-episodes 10 --name my_run
+
+#    Двухэтапное обучение: сначала «Стадия 1 · база и ресурсы» (минимальная
+#    петля выживания: дорога к воде → водоканал → еда → продажа излишков),
+#    затем «Этап 2 · вся экономика» дообучением от лучшей модели этапа 1
+#    (в UI: вкладка «Модели» → «Дообучить»; см. docs/TWO_STAGE_TRAINING_2026_09.md):
+python train.py --preset stage1 --steps 2000000 --envs 8 --name s1_run
 
 # 5. GUI-дашборд обучения
 python run_train_ui2.py
@@ -123,11 +129,11 @@ sakhalin_colony_main/
 │   ├── models.py             #   Реестр моделей: scan() (что считается моделью) + pick_model_file()
 │   ├── controls.py, charts.py, theme.py
 │
-└── tests/                    # 43 тест-файла (test_gae, test_ppo_smoke, test_evaluator,
+└── tests/                    # 44 тест-файла (test_gae, test_ppo_smoke, test_evaluator,
                               # test_reward_clip, test_milestones, test_curriculum,
                               # test_exp_configs, test_reward_field_sync,
                               # test_trainer_bootstrap, test_watch_visual, test_models, ...) +
-                              # bench_per_step.py, conftest.py и cpp/ — 22 C++-пробы
+                              # bench_per_step.py, conftest.py и cpp/ — 23 C++-пробы
                               # (scripts/cpp_checks.sh)
 ```
 
@@ -311,6 +317,10 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 
 **Приоритеты ресурсов** (`curriculum_resources`, вкладка «Курикулум» → `--curriculum-resources water,wood`): мягкие веса добычи. Выбранные ресурсы дают extraction-бонусы в полной силе, снятые — не дают вовсе; пусто = все веса 1.0 = поведение старых прогонов бит-в-бит. Веса вычисляет тот же `build_state`, C++ лишь умножает (`compute_catalog`), поэтому смена приоритетов по расписанию сама пересчитывает награду. Падение суммарной награды при ограниченных приоритетах — не регрессия, а снятые бонусы (замер: скриптованный 250-дневный эпизод с AirStation, `water-only` против `all-1` = −9.7: first 3.0 + daily ~6.7 за энергию). Два честных ограничения движка, а не курикулума: вес действует только на ресурсы, которые колония реально добывает (вода/золото требуют связанных спец-лотов — на свежих картах водоканал негде поставить, золото требует воды 200 + 30 рабочих), а у еды и золота ноль зданий-потребителей, поэтому `w_food = w_gold = 0` всегда и бонусов за них нет по построению. Сценарий записывается рядом с моделью (`curriculum_stage_at_best` / `unlock_ids` / `use_curriculum_tab` / `curriculum_resources` / `obs_version` в `best_model.meta.json` и `meta.json`), оттуда его восстанавливают eval и «Наблюдение»; иначе модель, обученная на одном водоканале, строила бы прииск под полным набором зданий.
 
+**Двухэтапное обучение / пресеты** (`--preset stage1`, 2026-09-21): готовый режим «Стадия 1 · база и ресурсы» — минимальная петля выживания одним флагом (8 зданий: дорога/водоканал/еда/дома; из действий ИИ — только «продать излишки» и «кредит»; бонусы добычи: вода/еда/дерево; критерий eval 365 дней / 3 здания). Источник — `rl/curriculum.py STAGE1_PRESET` + `apply_stage1_preset()`; в UI то же самое — кнопки «Этап 1 · База и ресурсы» / «Этап 2 · Вся экономика» на вкладке «Курикулум». Этап 2 — дообучение от лучшей модели этапа 1 (`--resume-model` + lr в ~10 раз ниже). Подробности и обоснование состава: `docs/TWO_STAGE_TRAINING_2026_09.md`.
+
+**Гейтинг механик (менеджеры):** все 11 слотов менеджеров сгруппированы в 8 «механик» (`MECHANIC_NAMES`: improve_land, repair, destroy, preservation, sell, buy_food, credit, manual_tax; таблица слотов — `MANAGER_MECHANIC` в `include/colony/constants.h`, обязана зеркалить `rl/curriculum.py`). Дефолт нового прогона — минимальный режим (включены `sell` и `credit`); старый конфиг без полей гейтинга сохраняет легаси «все включены». Закрытый слот — чистый отказ (`error_penalty`, календарь не двигается), re-lock запрещён, расписания только аддитивные. В UI — группа «Действия ИИ» с человеческими подписями; глоссарий наград (`HUMAN_REWARD_HELP`) поясняет каждый коэффициент простыми словами.
+
 **Версия obs** (`obs_version`, дефолт 2): v1 дописывает в конец наблюдения «рамку» — 9 эффективных весов ресурсов (при `all_resources` это девять 1.0, ровно то, что применяет экономика) + 32 бита `build_allowed` (289 = 248+9+32); v0 — строгий префикс, `counts`/`idle_by_type` не фильтруются никогда. v2 дописывает ещё 10 чисел — `(dx, dy)` к ближайшему тайлу каждого добываемого ресурса, нормированные на размер карты (299 = 289+10). Версия фиксируется при создании среды (`--obs-version 0/1/2` в `train.py` / `watch_champion.py` / `run_eval`), смена на ходу запрещена (`set_curriculum` бросает). **Наблюдение и eval берут версию из meta модели** (`rl.curriculum.resolve_obs_version`: явный `--obs-version` → записанная в чекпойнте → текущий дефолт), поэтому старые модели смотрятся на своих 248/289, а не падают с «obs mismatch». Версия хранится в чекпойнте, `meta.json` и `.norm.json`; несовпадение чекпойнт↔среда — явная ошибка «obs mismatch» с подсказкой нужного `--obs-version`, а не падение в matmul; старый `.norm.json` на 248 чисел v1-среда (289) отклоняет. Опциональная абляция `obs_mask_locked_catalog` (reward JSON, дефолт `false`) зануляет строки каталога закрытых зданий; по умолчанию каталог гейт игнорирует.
 
 ---
@@ -442,7 +452,7 @@ freeze/no-minimap), поэтому протокол наблюдения про�
 
 | Job | Что делает | Зависимости |
 |---|---|---|
-| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 22 проб + прогон 7 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`) | только g++ |
+| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 23 проб + прогон 8 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`, `stage1_gate_check`) | только g++ |
 | `python-tests` | сборка `colony_cpp` через CMake → handshake → полный `pytest` (включая Qt-тесты: `libegl1 libgl1 libxkbcommon0 libdbus-1-3`) | Python 3.11, torch (CPU-индекс), pybind11, PySide6 |
 
 Тот же набор локально: `./scripts/cpp_checks.sh` и `python -m pytest`.

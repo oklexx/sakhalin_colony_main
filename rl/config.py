@@ -202,18 +202,22 @@ class Config:
     # TAKE_LOAN/REPAY_LOAN mechanic gate. True converts unpaid tax to bank debt;
     # false keeps the explicit/dialogue tax policy (no hidden manual loan).
     tax_to_debt: bool = True
-    # Mechanic gating never changes the 49-logit action head. These defaults
-    # keep the early curriculum focused on build/economy primitives; unlock
-    # entries are additive and applied by absolute environment steps.
+    # Mechanic gating never changes the 49-logit action head. Defaults keep a
+    # NEW run in the minimal «stage 1» mode (see rl/curriculum.py
+    # STAGE1_PRESET and docs/TWO_STAGE_TRAINING_2026_09.md): only «sell the
+    # surplus» and «credit» are enabled — the manager slots that the first
+    # survival loop needs. Old configs without these fields keep the legacy
+    # all-enabled behaviour (Config.from_dict resets them to []).
     disabled_mechanics: List[str] = field(
-        default_factory=lambda: ["improve_land", "preservation", "credit"]
-    )
-    mechanics_unlock_schedule: List = field(
         default_factory=lambda: [
-            [200_000, ["improve_land", "preservation"]],
-            [500_000, ["credit"]],
+            "improve_land", "repair", "destroy", "preservation",
+            "buy_food", "manual_tax",
         ]
     )
+    # Unlock entries are additive and applied by absolute environment steps.
+    # Empty by default: stage 2 is a separate run with its own config (or the
+    # user edits the schedule manually in the UI).
+    mechanics_unlock_schedule: List = field(default_factory=list)
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # ── PPO ──

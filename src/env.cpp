@@ -104,16 +104,16 @@ Curriculum Curriculum::from_json(const std::string& text) {
     if (j.contains("enabled_mechanics")) {
         if (!j["enabled_mechanics"].is_array())
             throw std::runtime_error("bad --curriculum JSON: enabled_mechanics must be an array");
-        c.enabled_mechanics = {false, false, false};
+        c.enabled_mechanics.fill(false);
         for (const auto& v : j["enabled_mechanics"]) {
             if (!v.is_string())
                 throw std::runtime_error("bad --curriculum JSON: enabled_mechanics must be strings");
             const std::string name = v.get<std::string>();
-            if (name == "all") c.enabled_mechanics = {true, true, true};
-            else if (name == "improve_land") c.enabled_mechanics[0] = true;
-            else if (name == "preservation") c.enabled_mechanics[1] = true;
-            else if (name == "credit") c.enabled_mechanics[2] = true;
-            else throw std::runtime_error("bad --curriculum JSON: unknown mechanic " + name);
+            if (name == "all") { c.enabled_mechanics.fill(true); continue; }
+            const int mi = mechanic_index(name);
+            if (mi < 0)
+                throw std::runtime_error("bad --curriculum JSON: unknown mechanic " + name);
+            c.enabled_mechanics[(size_t)mi] = true;
         }
     }
     return c;
@@ -126,7 +126,7 @@ void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
         throw std::runtime_error("set_curriculum: obs_version change (" +
                                  std::to_string(curriculum_.obs_version) + " -> " +
                                  std::to_string(c.obs_version) + ") requires an env rebuild");
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < N_MECHANICS; ++i) {
         if (curriculum_.enabled_mechanics[(size_t)i] && !c.enabled_mechanics[(size_t)i])
             throw std::runtime_error("set_curriculum: mechanic re-lock is forbidden; "
                                      "unlock schedules are additive only");
@@ -134,12 +134,23 @@ void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
     curriculum_ = c;
     seat_build_gate();  // тот же this, но гейт дешёвый — пересадить явно
     compute_catalog();
+    // Компактный лог механик: all / none / список имён.
+    std::string mech;
+    {
+        int on = 0;
+        for (int i = 0; i < N_MECHANICS; ++i)
+            if (curriculum_.enabled_mechanics[(size_t)i]) ++on;
+        if (on == N_MECHANICS) mech = "all";
+        else if (on == 0) mech = "none";
+        else
+            for (int i = 0; i < N_MECHANICS; ++i)
+                if (curriculum_.enabled_mechanics[(size_t)i])
+                    mech += (mech.empty() ? "" : ",") + std::string(MECHANIC_NAMES[i]);
+    }
     std::cout << "[C++ ColonyEnvCpp] set_curriculum: all_builds=" << curriculum_.all_builds
               << " allowed=" << curriculum_.allowed_builds.size()
               << " stage_report=" << curriculum_.stage_report
-              << " mechanics=" << curriculum_.enabled_mechanics[0]
-              << "," << curriculum_.enabled_mechanics[1]
-              << "," << curriculum_.enabled_mechanics[2];
+              << " mechanics=" << mech;
     if (!curriculum_.all_builds) {
         std::cout << ":";
         std::vector<std::string> ids(curriculum_.allowed_builds.begin(), curriculum_.allowed_builds.end());

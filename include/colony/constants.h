@@ -127,6 +127,30 @@ constexpr int A_DAY = 0;
 constexpr int A_WEEK = 1;
 constexpr int A_BUILD0 = 2;
 constexpr int N_MANAGERS = 11;
+
+// ── Гейтинг механик (менеджерских действий), 2026-09-20 ──────────────────────
+// 11 фиксированных слотов менеджеров сгруппированы в 8 «механик». Каждая
+// механика — одно имя в транспорте (Curriculum.enabled_mechanics ↔
+// rl/curriculum.py MECHANIC_NAMES; порядок обязан совпадать — регресс-тест
+// test_stage1_preset.py::test_mechanic_tables_in_sync). Порядок первых трёх
+// (improve_land, preservation, credit) НЕ меняем: это легаси-набор, старые
+// мета-файлы содержат только эти имена (см. resolve_state и
+// docs/MECHANIC_CURRICULUM_2026_09.md).
+constexpr int N_MECHANICS = 8;
+inline constexpr const char* MECHANIC_NAMES[N_MECHANICS] = {
+    "improve_land", "repair", "destroy", "preservation",
+    "sell", "buy_food", "credit", "manual_tax"};
+// Слот менеджера → индекс механики (N_MANAGERS записей).
+// 0 improve | 1 repair | 2 restore_all | 3 destroy | 4 preserve |
+// 5 unpreserve | 6 sell | 7 buy_food | 8 credit_take | 9 credit_give |
+// 10 manual_tax.
+inline constexpr int MANAGER_MECHANIC[N_MANAGERS] = {0, 1, 1, 2, 3, 3, 4, 5, 6, 6, 7};
+// Имя механики → индекс (-1 = неизвестное имя; парсеры обязаны бросать).
+inline int mechanic_index(const std::string& name) {
+    for (int i = 0; i < N_MECHANICS; ++i)
+        if (name == MECHANIC_NAMES[i]) return i;
+    return -1;
+}
 // Directional road actions. The plain BUILD:Road action places a road at the
 // BFS-first legal cell, which the agent cannot aim -- so water 7 cells away
 // stayed unreachable (the WaterChannel action was masked on 0/2000 random
