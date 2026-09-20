@@ -409,7 +409,11 @@ class MainWindow2(QMainWindow):
 
         # ── Готовые режимы: одно нажатие настраивает всю вкладку ──
         preset_box = T.group("Режим обучения — нажмите одну кнопку, остальное настроится само")
-        prow = QHBoxLayout(preset_box.layout())
+        # QGridLayout группы нельзя передавать родителем в QHBoxLayout —
+        # добавляем layout в layout (как rgroup/agroup ниже); регресс:
+        # tests/test_ui2_smoke.py (пойман CI, PySide6 ругался на тип).
+        prow = QHBoxLayout()
+        preset_box.layout().addLayout(prow, 0, 0)
         for pid in PRESET_ORDER:
             p = PRESETS[pid]
             b = T.button(p["title"],
