@@ -15,9 +15,13 @@
 | [Makefile](Makefile) | Команды: `make build`, `make test`, `make gui`, `make watch`, `make tb` |
 | [requirements.txt](requirements.txt) | Python-стек (torch, numpy, PySide6, …) |
 | [pyproject.toml](pyproject.toml) | Конфигурация ruff/mypy (стандарты для кода) |
-| [tests/](tests/) | ~40 тестов: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
+| [tests/](tests/) | 43 тест-файла + 22 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
+| [docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md) | Наблюдение за чемпионом в GUI-окне: IPC-протокол, таймауты, диагностика «окно не запустилось» |
 
-> **Отчёты по проекту:** [REPORT.md](REPORT.md), [REPORT_2026_09.md](REPORT_2026_09.md), [TRAINING_REPORT.md](TRAINING_REPORT.md), [REVIEW_REPORT.md](REVIEW_REPORT.md) — в текущем состоянии репозитория отсутствуют (см. [STATE.md](STATE.md), п. 4); актуальные материалы — в `docs/`.
+> **Отчёты по проекту:** `REPORT.md`, `REPORT_2026_09.md`, `TRAINING_REPORT.md`,
+> `REVIEW_REPORT.md` в репозитории отсутствуют (исторические имена из старых
+> переписок); актуальные разборы — в [docs/](docs/): аудиты, диагностика RL,
+> план работ `REMAINING_WORK_2026_09.md`, протокол наблюдения `GUI_WATCH_2026_09.md`.
 
 ---
 
@@ -43,12 +47,16 @@ python run_train_ui2.py
 
 # 6. Посмотреть, как играет чемпион
 python watch_champion.py --model-dir ~/colony_runs/models/my_run
+#    то же в raylib-окне (симуляция живёт в C++-окне, модель играет им):
+python watch_champion.py --model-dir ~/colony_runs/models/my_run --visual
 ```
 
 Наблюдение всегда играет **по правилам обучения**: раскладка obs берётся из meta
 модели (``resolve_obs_version``), а окно ``--visual`` получает ``--tax-to-debt``,
 т.е. неоплаченный налог уходит в долг и календарь идёт — как в RL-среде, а не как
 в человеческом GUI с диалогом налогов (см. ``tests/cpp/gui_watch_check.cpp``).
+Протокол окна, таймауты и тексты диагнозов — в
+[docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md).
 
 Артефакты обучения: `~/colony_runs/models/<name>/` (чекпойнты), `~/colony_runs/logs/<name>/` (TensorBoard: `tensorboard --logdir ~/colony_runs/logs`).
 
@@ -59,7 +67,9 @@ python watch_champion.py --model-dir ~/colony_runs/models/my_run
 ```
 sakhalin_colony_main/
 ├── train.py                  # CLI-точка входа обучения (аргументы -> Config -> EnvManager -> AsyncTrainer)
-├── watch_champion.py         # Визуальный просмотр игры чемпиона в реальном времени
+├── watch_champion.py         # Просмотр игры чемпиона: консольный прогон или --visual
+│                             #   (raylib-окно + IPC actions.txt/state.json, диагностика
+│                             #   старта — docs/GUI_WATCH_2026_09.md)
 # ⚠ auto_trainer.py, training_cycle.py, observe.py, sweep2..sweep7_*.py
 #   упоминались в старых версиях, но в репозитории сейчас НЕТ — удалены при
 #   чистке 2026-09-11. План работ и статус пунктов — docs/REMAINING_WORK_2026_09.md
@@ -105,17 +115,20 @@ sakhalin_colony_main/
 │   └── exp_25/26/27_*.json   #   Экспериментальные наборы гиперпараметров (minimap/hybrid)
 │
 ├── train_ui2/                # PySide6-дашборд 2.0 (запуск: python run_train_ui2.py)
-│   ├── app.py, main_window.py  #   Вкладки Обучение/Мониторинг/Награды/Модели/Наблюдение
+│   ├── app.py, main_window.py  #   Вкладки Обучение/Мониторинг/Награды/Курикулум/Модели/Наблюдение
 │   ├── worker.py             #   Обучение в отдельном процессе (JSONL-протокол)
 │   ├── protocol.py           #   Сообщения ready/log/progress/saved/done/error/command
 │   ├── evaluator.py          #   ★ run_eval(): оценка чекпойнта (argmax, с нормализацией)
 │   ├── parameter_widget.py   #   ParamSpec всех параметров (дефолты = rl/config.py)
-│   ├── controls.py, charts.py, theme.py, models.py
+│   ├── models.py             #   Реестр моделей: scan() (что считается моделью) + pick_model_file()
+│   ├── controls.py, charts.py, theme.py
 │
-└── tests/                    # 41 тест-файл (test_gae, test_ppo_smoke, test_evaluator,
+└── tests/                    # 43 тест-файла (test_gae, test_ppo_smoke, test_evaluator,
                               # test_reward_clip, test_milestones, test_curriculum,
-                              # test_exp_configs, test_reward_field_sync, ...) +
-                              # bench_per_step.py и cpp/ — 21 C++-проба (scripts/cpp_checks.sh)
+                              # test_exp_configs, test_reward_field_sync,
+                              # test_trainer_bootstrap, test_watch_visual, test_models, ...) +
+                              # bench_per_step.py, conftest.py и cpp/ — 22 C++-пробы
+                              # (scripts/cpp_checks.sh)
 ```
 
 ---
@@ -137,11 +150,26 @@ train.py (CLI)
 ```
 
 **Один шаг обучения** (`EnvManager.collect_step`, rl/env_manager.py:255-310):
-1. `env.action_masks` → тензор [n_envs, 45] (маски обновляются в C++ после каждого step_wait);
+1. `env.action_masks` → тензор [n_envs, 49] (маски обновляются в C++ после каждого step_wait);
 2. `PPO.collect_step`: forward (no_grad, autocast) → маскировка логитов (`-inf`) → Categorical → action, log_prob, value;
 3. `action_gpu.cpu()` → `env.step_async/step_wait` (C++ выполняет N шагов параллельно);
 4. C++ возвращает obs (нормализованные), rewards (нормализованные), dones, `_last_terminateds`, infos;
 5. `buffer.add(obs, action, reward, log_prob, value, done, terminated, masks)` — всё на GPU.
+
+**Контракт наблюдения по `obs_mode`** (источник бага 2026-09-20, см. CHANGELOG):
+
+| `obs_mode` | что хранит `EnvManager._obs` | что ждёт сеть |
+|---|---|---|
+| `flat` | тензор `[n_envs, obs_size]` | `Linear(flat)` |
+| `minimap` | тензор `[n_envs, 8, 32, 32]` | CNN-ствол |
+| `hybrid` | **пара** `(flat, minimap)` | `ActorCriticHybrid._split_obs` → CNN + `Linear` |
+
+Режим читается только через `EnvManager._obs_mode()` (атрибут существует всегда)
+и `_split_hybrid_obs()`; `getattr(em, "obs_mode", "flat")` **запрещён**: у
+старого `EnvManager` атрибута не было, дефолт молча превращал `hybrid` в `flat`,
+и в `Linear` уезжал кортеж —
+`TypeError: linear(): argument 'input' (position 1) must be Tensor, not tuple`
+на первом же шаге обучения. Регрессия: `tests/test_trainer_bootstrap.py`.
 
 **Update** (`PPO.update`, rl/ppo.py): `compute_gae` (рекурсия с конца, маска бутстрапа = terminated, truncation НЕ терминалится) → нормализация advantages → n_epochs × minibatch: clip-loss + 0.5·MSE(value) − ent·entropy, grad-clip 0.5, Adam.
 
@@ -179,7 +207,7 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 
 ## 5. Пространства действий и наблюдений
 
-### 5.1 Действия — 45 дискретных (constants.h:126-129)
+### 5.1 Действия — 49 дискретных (constants.h:126-141)
 ```
 0  DAY                      1  WEEK
 2..33  BUILD_* (32 здания в порядке bases.json, кроме City):
@@ -191,15 +219,32 @@ gold, food, water, coal, iron, oil, stone, wood, energy. Здания потре
 34..44  MANAGER (env.cpp, имена в python/cpp_env.py:174-177):
        IMPROVE_LAND, REPAIR, REPAIR_ALL, DEMOLISH, PRESERVE, UNPRESERVE,
        SELL_SURPLUS, BUY_FOOD, TAKE_LOAN, REPAY_LOAN, PAY_TAX
+45..48  ROAD_E, ROAD_W, ROAD_S, ROAD_N — направленное продолжение дороги
+        (DX/DY = {+1,0}, {−1,0}, {0,+1}, {0,−1})
 ```
-**Маски:** `DAY`/`WEEK` доступны всегда; BUILD — если разблокировано curriculum, есть деньги, есть участок (BFS с учётом дорог/соседства), для Road — лимит 25. **Менеджеры** (`mask_managers_by_applicability`, дефолт `true`, P1 2026-09) маскируются по применимости: `SELL_SURPLUS` — только при излишке, `BUY_FOOD` — только при нужде, `REPAY_LOAN` — только при долге, `IMPROVE_LAND` — только если хватает на участок, `manual_tax` — никогда (строго доминируется `DAY`). Флаг `false` возвращает старую «формально легальную» маску.
+`n_actions() = A_BUILD0(2) + n_build(32) + N_MANAGERS(11) + N_ROAD_DIRS(4) = 49`.
+Направленные действия стоят **после** блока менеджеров, чтобы инвариант
+`A_BUILD0 + i ↔ build_ids_[i]` не менялся. Зачем они: обычный `BUILD:Road`
+ставит дорогу в первую легальную клетку BFS, и агент не может прицелиться —
+вода в 7 клетках оставалась недостижимой (маска WaterChannel была закрыта на
+0/2000 случайных шагов).
+
+**Маски:** `DAY`/`WEEK` доступны всегда; BUILD — если разблокировано curriculum, есть деньги, есть участок (BFS с учётом дорог/соседства), для Road — лимит 25. `ROAD_E/W/S/N` — тот же гейт, что у `BUILD:Road` (курикулум + деньги), но дополнительно требуется легальная клетка **именно в этом направлении** (`find_lot_dir`). **Менеджеры** (`mask_managers_by_applicability`, дефолт `true`, P1 2026-09) маскируются по применимости: `SELL_SURPLUS` — только при излишке, `BUY_FOOD` — только при нужде, `REPAY_LOAN` — только при долге, `IMPROVE_LAND` — только если хватает на участок, `manual_tax` — никогда (строго доминируется `DAY`). Флаг `false` возвращает старую «формально легальную» маску.
 
 ### 5.2 Наблюдение flat — 248 v0 / 289 v1 / 299 v2 (дефолт) (env.cpp, формула в env.h: obs_size())
 Категории (все нормализованы масштабом, затем RunningMeanStd, клип ±10):
 время (год/месяц/день/сезон) → деньги/кредит/население/занятые → 9 ресурсов → жильё/рабочие/свободные/переполнение → флаги и суммы налогов → days_alive → curriculum_stage → **32 счётчика зданий** → статистика износа/стройки/preserve → 9 цен продажи → категории → **9 балансов ресурсов** (производство−потребление) → 32 флага простоя по типам → дни до годового налога + деньги/налог (= 248). **obs v1** (`obs_version=1`) дописывает в конец «рамку»: 9 эффективных весов ресурсов + 32 бита `build_allowed` (= 289); v0 — строгий префикс v1. **obs v2** (дефолт, `obs_version=2`, P0 2026-09) дописывает ещё 10 чисел: `(dx, dy)` к ближайшему тайлу дерева/угля/железа/нефти/золота (= 299); v0/v1 — строгие префиксы. Без направлений 12 из 32 построек недостижимы: клетку выбирает `find_lot()`, а карты в flat-obs нет (см. `docs/RL_DIAGNOSIS_2026_09.md`).
 
-### 5.3 Minimap — тензор [8, 29, 29] (env.cpp:651-690)
-Окно радиуса R=14 вокруг старта колонии. Каналы: 0 земля, 1 вода, 2 лес, 3 уголь, 4 железо, 5 нефть, 6 золото, 7 занято постройкой. Режимы: `--obs-mode flat|minimap|hybrid` (hybrid = minimap + flat, модели в `rl/actor_critic_*.py`).
+### 5.3 Minimap — тензор [8, 32, 32] = 8192 float (src/observation.cpp: `ColonyEnvCpp::minimap()`)
+**Глобальная** карта острова, downsample из `map_size` (200/280) в сетку 32×32
+(`gx = wx*32/ms`), а не окно вокруг колонии. Каналы: 0 земля (`LT_NORMAL`),
+1 вода, 2 лес, 3 уголь, 4 железо, 5 нефть, 6 золото, 7 занято постройкой;
+значение 1.0/0.0, последняя ячейка карты может «наложиться» на предыдущую
+(целочисленное масштабирование). `minimap_radius` и `set_minimap_radius()`
+сохранены только для совместимости API и выдают `DeprecationWarning` (P2-8):
+на состав наблюдения они не влияют. Режимы: `--obs-mode flat|minimap|hybrid`
+(hybrid = minimap + flat, модели в `rl/actor_critic_*.py`; `obs` в этом режиме —
+**пара** `(flat, minimap)`, см. §3 и RULES.md п. 6).
 
 ---
 
@@ -292,12 +337,25 @@ hybrid = 299 + 8192 = 8491 float. ⚠ Исходные exp-конфиги с `n_
 
 ### 8.2 Файлы прогона (`~/colony_runs/models/<name>/`)
 ```
-checkpoint_<steps>.pt          # модель + optimizer (+ .norm.json рядом)
-final_model.pt / .norm.json
+checkpoint_<steps>.pt          # модель + optimizer (+ .norm.json и .meta.json рядом)
+final_model.pt / .norm.json    # пишется ТОЛЬКО в конце обучения
 best_model.pt / .norm.json / .meta.json   # чемпион по composite score
 _eval/_eval_temp.pt            # временный (удаляется)
 normalization.json             # пишется при старте и каждом чекпойнте
 ```
+
+**Что считается моделью.** Каталог попадает в список UI (`train_ui2/models.py::scan()`),
+если в нём есть хотя бы один файл весов: `final_model.pt`, `best_model.pt` или
+`checkpoint_*_steps.pt`. Прогон, остановленный вручную или упавший, не имеет
+`final_model.pt` — это всё ещё модель, её можно наблюдать и дообучать
+(`pick_model_file()`: final → best → последний чекпойнт). До 2026-09-20 такие
+каталоги не отображались, и «👁 Наблюдать» отвечал «Нет моделей».
+Порядок выбора один и для UI, и для CLI (`train_ui2.models.pick_model_file` /
+`watch_champion.resolve_model_file`): final → best → **свежайший по числу шагов**
+чекпойнт (`checkpoint_sort_key`: лексикографически `999999` «новее» `1000000`,
+поэтому сортировка по имени на длинных прогонах врала).
+`checkpoint_*.meta.json` хранит стадию курикулума/obs_version чекпойнта — по нему
+`watch_champion.py` и турнир восстанавливают правила, при которых он учился.
 
 ### 8.3 Оценка и выбор чемпиона (rl/async_trainer.py::_eval → train_ui2/evaluator.py::run_eval)
 * Политика грузится из чекпойнта (auto-detect MLP/CNN/Hybrid), **детерминированный argmax** с масками; нормализация obs загружается из файла и **замораживается** (`set_update(False)`).
@@ -312,7 +370,34 @@ normalization.json             # пишется при старте и кажд�
 
 ## 9. UI-дашборд (train_ui2/)
 
-`python run_train_ui2.py` → главное окно (вкладки Обучение/Мониторинг/Награды/Модели/Наблюдение). Обучение идёт в отдельном процессе `train_ui2/worker.py`, протокол — JSONL (protocol.py: progress/log/saved/done/error; команды boost_entropy / pause_training / resume_training / stop_training / reset_curriculum). Все параметры — ParamSpec из дефолтов rl/config.py (единый источник); награды редактируются на вкладке «Награды» (группы + абляции disable_*).
+`python run_train_ui2.py` → главное окно, 6 вкладок: **Обучение / Мониторинг /
+Награды / Курикулум / Модели / Наблюдение**. Обучение идёт в отдельном процессе
+`train_ui2/worker.py`, протокол — JSONL (protocol.py: progress/log/saved/done/error;
+команды boost_entropy / pause_training / resume_training / stop_training /
+reset_curriculum). Все параметры — ParamSpec из дефолтов rl/config.py (единый
+источник); награды редактируются на вкладке «Награды» (группы + абляции disable_*).
+
+### 9.1 Вкладка «Наблюдение»
+
+Кнопка **«👁 Наблюдать»** запускает `watch_champion.py` отдельным процессом
+(`--log-file` → UI парсит JSONL и показывает строки в панели лога), чекбокс
+**«GUI-окно»** (`chk_watch_visual`, по умолчанию включён) добавляет `--visual` —
+то есть поднимает raylib-окно, в котором играет модель.
+
+- **Модель** берётся из списка вкладки «Модели» (`ModelRegistry.scan()` →
+  `~/colony_runs/models/`); в списке видны и прерванные прогоны — достаточно
+  `best_model.pt` или чекпойнта (§8.2). Если список пуст, диалог сообщает путь,
+  где искали, и какие файлы считаются весами (то же — `WARNING` в лог).
+- **Остановка** убивает дерево процессов (`taskkill /T /F` на Windows,
+  `_stop_watch_proc()`): само окно raylib — отдельный процесс, и переживший
+  драйвер «сирота» ломал следующий запуск (общий IPC-каталог).
+- **Диагностика**: каждое ожидание имеет таймаут и heartbeat-строку в логе
+  («жду первое состояние от GUI-окна… 5 с»), падение exe показывает код возврата
+  и хвост `gui_output.log`. Полный список симптомов и сообщений —
+  [docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md) §4.
+- Чтение вывода воркера защищено от неполной строки JSON: хвост без `\n`
+  остаётся в буфере до следующего чтения, поэтому лог не «глохнет» на середине
+  сообщения.
 
 ---
 
@@ -320,18 +405,36 @@ normalization.json             # пишется при старте и кажд�
 
 ```bash
 python -m pytest                      # Все тесты (полный прогон требует torch + собранный colony_cpp.pyd)
-python tests/test_gae.py            # GAE против референса
-python tests/test_ppo_smoke.py      # PPO update без падений
-python tests/test_evaluator.py      # run_eval end-to-end
-python tests/test_reward_clip.py    # клип наград
-python tests/test_milestones.py     # milestone-бонусы
-python tests/test_curriculum.py     # стадии/маски
-python tests/test_normalizer.py     # RunningMeanStd save/load
-python tests/bench_per_step.py      # бенчмарк шага среды
+python -m pytest tests/test_gae.py             # GAE против референса
+python -m pytest tests/test_ppo_smoke.py       # PPO update без падений
+python -m pytest tests/test_evaluator.py       # run_eval end-to-end
+python -m pytest tests/test_reward_clip.py     # клип наград
+python -m pytest tests/test_milestones.py      # milestone-бонусы
+python -m pytest tests/test_curriculum.py      # стадии/маски
+python -m pytest tests/test_normalizer.py      # RunningMeanStd save/load
+python tests/bench_per_step.py                 # бенчмарк шага среды
 ./scripts/cpp_checks.sh             # C++-пробы без Python (compile-all + проверки)
 pytest -m "not ui"                  # без Qt-тестов (окружение без графики)
 # остальные файлы — по именам (tax, proximity, hybrid, minimap_radius, ...)
 ```
+
+Регрессии правок 2026-09-20 (см. [CHANGELOG.md](CHANGELOG.md)):
+
+```bash
+python -m pytest tests/test_trainer_bootstrap.py  # контракт obs_mode: EnvManager ↔ сеть (hybrid = пара тензоров)
+python -m pytest tests/test_watch_visual.py       # GUI-наблюдение: handshake, таймауты, рестарты, диагнозы
+python -m pytest tests/test_models.py             # реестр моделей: scan()/pick_model_file()
+```
+
+`tests/test_watch_visual.py` гоняет настоящий `watch_champion.py` против
+**фейкового окна** (Python-скрипт в роли exe, режимы ok/legacy/die/silent/
+freeze/no-minimap), поэтому протокол наблюдения проверен без raylib и без
+сборки C++ — но импорт `colony_cpp` ему всё равно нужен: без собранного
+расширения тест подставляет стаб только на время своего модуля и убирает его за
+собой. Без `colony_cpp` часть остальных тестов честно падает на импорте
+(`ModuleNotFoundError`/`NameError: colony_cpp`) — это признак несобранного
+окружения, а не регрессии: скипаются через `colony_cpp_api.require_colony()`
+только те, что так написаны (RULES.md §«Тесты»). Зелёный эталон — CI.
 
 ### 10.1 CI (GitHub Actions)
 
@@ -339,7 +442,7 @@ pytest -m "not ui"                  # без Qt-тестов (окружение
 
 | Job | Что делает | Зависимости |
 |---|---|---|
-| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 21 пробы + прогон 7 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`) | только g++ |
+| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 22 проб + прогон 7 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`) | только g++ |
 | `python-tests` | сборка `colony_cpp` через CMake → handshake → полный `pytest` (включая Qt-тесты: `libegl1 libgl1 libxkbcommon0 libdbus-1-3`) | Python 3.11, torch (CPU-индекс), pybind11, PySide6 |
 
 Тот же набор локально: `./scripts/cpp_checks.sh` и `python -m pytest`.
@@ -359,7 +462,8 @@ pytest -m "not ui"                  # без Qt-тестов (окружение
 | F3/N7 | score на 76% из days; Optuna оптимизирует шум | подтверждены, фиксы 1.5+1.4 |
 | N3/N4/N5 | хардкод-награды; счётчики «дней»=шаги; idle-ловушка при банкротстве | подтверждены, фиксы 3.7-3.9 |
 
-Исправлены ранее: A1 (avg_return), A2 (is_hybrid), A3 (load_from_file), B5 (_last_terminateds). Корректно и проверено: GAE, сиды env'ов (base+i×10000), нормализация obs/reward в C++, маски DAY/WEEK, game_over_penalty (знак), 45 действий консистентны везде.
+Исправлены ранее: A1 (avg_return), A2 (is_hybrid), A3 (load_from_file), B5 (_last_terminateds). Корректно и проверено: GAE, сиды env'ов (base+i×10000), нормализация obs/reward в C++, маски DAY/WEEK, game_over_penalty (знак), 49 действий консистентны везде
+(45 → 49 после добавления ROAD_E/W/S/N — см. docs/REVIEW_WATER_MODES_2026_09.md).
 
 ---
 

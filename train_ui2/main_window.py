@@ -14,6 +14,7 @@ import json
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -35,7 +36,7 @@ if str(_PROJECT) not in sys.path:
     sys.path.insert(0, str(_PROJECT))
 
 from train_ui2 import protocol as P
-from train_ui2.models import ModelInfo, ModelRegistry
+from train_ui2.models import ModelInfo, ModelRegistry, pick_model_file
 from rl.config import RewardConfig as _RC
 
 from train_ui2 import theme as T
@@ -914,13 +915,16 @@ class MainWindow2(QMainWindow):
                 return
             self._stop_training()
         if self._watch_proc and self._watch_proc.poll() is None:
-            self._watch_proc.kill()
+            # Дерево целиком: raylib-окно — ребёнок watch_champion.py и иначе
+            # остаётся висеть после закрытия UI (см. _stop_watch_proc).
+            self._stop_watch_proc()
         super().closeEvent(ev)
 
     # ─────────────────────────── log ───────────────────────────
 
     def log(self, level: str, text: str):
-        color = {"info": T.TXT, "warn": T.WARN, "error": T.ERR}.get(level, T.TXT)
+        color = {"info": T.TXT, "warn": T.WARN, "warning": T.WARN,
+                 "error": T.ERR}.get(level, T.TXT)
         ts = time.strftime("%H:%M:%S")
         self.log_view.appendHtml(
             f'<span style="color:{T.DIM}">{ts}</span> '
@@ -1310,12 +1314,9 @@ class MainWindow2(QMainWindow):
         if not p:
             QMessageBox.information(self, "Модели", "Выберите модель")
             return
-        model_file = p / "final_model.pt"
-        if not model_file.exists():
-            ck = sorted(p.glob("checkpoint_*_steps.pt"))
-            model_file = ck[-1] if ck else p / "best_model.pt"
-        if not model_file.exists():
-            QMessageBox.warning(self, "Модели", "Нет final/checkpoint/best .pt")
+        model_file = pick_model_file(p)
+        if model_file is None:
+            QMessageBox.warning(self, "Модели", "Нет final/best/checkpoint .pt")
             return
         self._start_training(resume_model=model_file)
 
@@ -1342,11 +1343,49 @@ class MainWindow2(QMainWindow):
     def _random_watch_seed(self):
         self.spn_watch_seed.setValue(random.randint(1, 999_999_999))
 
+    def _stop_watch_proc(self) -> None:
+        """Остановить процесс наблюдения ВМЕСТЕ с raylib-окном.
+
+        `kill()` бьёт только по `watch_champion.py`: окно игры — его ребёнок, и на
+        Windows оно переживает родителя (дерево процессов там не убивается).
+        Сирота продолжала читать `actions.txt`/писать `state.json`, из-за чего
+        следующее наблюдение выглядело «мёртвым». Поэтому — `taskkill /T /F`.
+        """
+        proc = self._watch_proc
+        self._watch_proc = None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            if sys.platform == "win32":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=10,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                except (OSError, subprocess.SubprocessError):
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+            else:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=2.0)
+                except (OSError, subprocess.SubprocessError):
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+        try:
+            proc.wait(timeout=3)
+        except subprocess.SubprocessError:
+            pass
+
     def _toggle_watch(self, start: bool = False):
         if self._watch_proc and self._watch_proc.poll() is None:
-            self._watch_proc.kill()
+            self._stop_watch_proc()
             self._watch_timer.stop()
-            self._watch_proc = None
             self.btn_watch.setText("👁 Наблюдать")
             self.log("info", "Наблюдение остановлено")
             return
@@ -1354,7 +1393,18 @@ class MainWindow2(QMainWindow):
             return
         model_dir = self.cmb_watch_model.currentData()
         if not model_dir:
-            QMessageBox.information(self, "Наблюдение", "Нет моделей — сначала обучите")
+            # Раньше это выглядело как «кнопка ничего не делает»: список пуст,
+            # потому что каталог прогона без final_model.pt (прерванное обучение)
+            # моделью не считался. Сообщаем, где ищем и что считаем весами.
+            from train_ui2.models import MODEL_WEIGHT_NAMES
+            msg = (f"Нет моделей для наблюдения.\n\n"
+                   f"Каталог: {self.registry.root}\n"
+                   f"Моделью считается папка прогона с {' / '.join(MODEL_WEIGHT_NAMES)} "
+                   f"или checkpoint_*.pt внутри.\n\n"
+                   f"Обучите модель (вкладка «Обучение») или нажмите «⟳ Обновить» "
+                   f"на вкладке «Модели», если прогон уже есть.")
+            self.log("warn", msg.replace("\n", " "))
+            QMessageBox.information(self, "Наблюдение", msg)
             return
         seed = self.spn_watch_seed.value()
         speed_txt = self.cmb_watch_speed.currentText()
@@ -1379,14 +1429,26 @@ class MainWindow2(QMainWindow):
         args += ["--log-file", log_file]
         if self.chk_watch_visual.isChecked():
             args.append("--visual")
+        popen_kwargs: Dict[str, Any] = {
+            "cwd": str(_PROJECT),
+            "stderr": subprocess.STDOUT,
+            "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        }
+        if os.name != "nt":
+            # Своя сессия/группа процессов: `_stop_watch_proc` бьёт по дереву
+            # (os.killpg), а не только по watch_champion.py — иначе raylib-окно
+            # переживает остановку наблюдения и доедает чужой actions.txt.
+            popen_kwargs["start_new_session"] = True
+        fh = open(log_file, "a", encoding="utf-8")
         try:
-            fh = open(log_file, "a", encoding="utf-8")
-            self._watch_proc = subprocess.Popen(
-                args, cwd=str(_PROJECT), stdout=fh, stderr=subprocess.STDOUT,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            # Ручку закрываем у себя: дочерний процесс уже унаследовал дескриптор,
+            # а открытый fd в родителе — утечка на каждый запуск наблюдения.
+            self._watch_proc = subprocess.Popen(args, stdout=fh, **popen_kwargs)
         except OSError as e:
             self.log("error", f"не удалось запустить наблюдение: {e}")
             return
+        finally:
+            fh.close()
         self._watch_log, self._watch_offset = log_file, 0
         self.chart_watch.clear()
         self._watch_timer.start(500)
@@ -1401,43 +1463,70 @@ class MainWindow2(QMainWindow):
         try:
             size = os.path.getsize(self._watch_log)
         except OSError:
-            return
+            size = self._watch_offset
         if size < self._watch_offset:  # файл переписан с нуля
             self._watch_offset = 0
-        if size <= self._watch_offset:
+            try:
+                size = os.path.getsize(self._watch_log)
+            except OSError:
+                size = 0
+        if size > self._watch_offset:
+            try:
+                with open(self._watch_log, "r", encoding="utf-8") as f:
+                    f.seek(self._watch_offset)
+                    data = f.read()
+                    tell = f.tell()
+            except (OSError, UnicodeDecodeError):
+                data, tell = "", self._watch_offset
+            nl = data.rfind("\n")
+            if data and nl != len(data) - 1:
+                # Последняя строка ещё дописывается драйвером: не рвём её пополам
+                # (иначе в лог UI попадает обрезок JSON), дочитаем в следующий poll.
+                tail = data[nl + 1:]
+                data = data[:nl + 1]
+                tell -= len(tail.encode("utf-8", "replace"))
+            self._watch_offset = tell
+            for line in data.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("{"):
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        self.log("info", line)
+                        continue
+                    if d.get("type") == "step":
+                        self.w_day.set_value(str(d.get("day", "—")))
+                        self.w_money.set_value(f"{d.get('money', 0):,}")
+                        self.w_people.set_value(str(d.get("people", "—")))
+                        self.w_bases.set_value(str(d.get("bases", "—")))
+                        self.w_action.set_value(str(d.get("action", "—"))[:14])
+                        self.chart_watch.push({"reward": d.get("reward", 0)})
+                        continue
+                    if d.get("type") in ("log", "error", "done"):
+                        self.log(d.get("level", "info"), d.get("message", ""))
+                        continue
+                self.log("info", line)
+        self._check_watch_exit()
+
+    def _check_watch_exit(self) -> None:
+        """Завершился ли процесс наблюдения; показать код возврата.
+
+        Код возврата — единственная подсказка, когда raylib-окно так и не
+        открылось: watch_champion.py пишет диагноз в этот же лог
+        (run_visual_watch / describe_gui_failure) и выходит с 1.
+        """
+        proc = self._watch_proc
+        if proc is None or proc.poll() is None:
             return
-        try:
-            with open(self._watch_log, "r", encoding="utf-8") as f:
-                f.seek(self._watch_offset)
-                data = f.read()
-                self._watch_offset = f.tell()
-        except (OSError, UnicodeDecodeError):
-            return
-        for line in data.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("{"):
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    self.log("info", line)
-                    continue
-                if d.get("type") == "step":
-                    self.w_day.set_value(str(d.get("day", "—")))
-                    self.w_money.set_value(f"{d.get('money', 0):,}")
-                    self.w_people.set_value(str(d.get("people", "—")))
-                    self.w_bases.set_value(str(d.get("bases", "—")))
-                    self.w_action.set_value(str(d.get("action", "—"))[:14])
-                    self.chart_watch.push({"reward": d.get("reward", 0)})
-                    continue
-                if d.get("type") in ("log", "error", "done"):
-                    self.log(d.get("level", "info"), d.get("message", ""))
-                    continue
-            self.log("info", line)
-        if self._watch_proc and self._watch_proc.poll() is not None:
-            self._watch_timer.stop()
-            self.btn_watch.setText("👁 Наблюдать")
+        rc = proc.returncode
+        self._watch_proc = None
+        self._watch_timer.stop()
+        self.btn_watch.setText("👁 Наблюдать")
+        if rc not in (0, None):
+            self.log("error", f"Наблюдение завершилось с кодом {rc} "
+                              f"(причина — в строках выше)")
 
 
 # _esc imported from train_ui2.icons

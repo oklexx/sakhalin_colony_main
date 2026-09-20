@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 import threading
 import queue
@@ -7,7 +8,7 @@ from collections import deque
 import numpy as np
 import torch
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable, List
+from typing import Optional, Dict, Any, Callable, List, Tuple
 from dataclasses import dataclass, field
 
 from rl.config import Config
@@ -193,15 +194,7 @@ class AsyncTrainer:
                 np.asarray(_mask_np, dtype=np.float32),
                 device=self.device, dtype=torch.float32
             ) if _mask_np is not None else None)
-            if getattr(self.em, "obs_mode", "flat") == "hybrid":
-                last_flat, last_minimap = obs
-                last_value = (self.em.ppo.model.get_value(last_flat, last_minimap, last_masks)
-                              if last_masks is not None else
-                              self.em.ppo.model.get_value(last_flat, last_minimap))
-            else:
-                last_value = (self.em.ppo.model.get_value(obs, last_masks)
-                              if last_masks is not None else
-                              self.em.ppo.model.get_value(obs))
+            last_value = self._bootstrap_value(obs, last_masks)
             last_done = torch.tensor(terminated, dtype=torch.bool, device=self.device)
 
         return {
@@ -209,6 +202,64 @@ class AsyncTrainer:
             "last_done": last_done,
             "final_obs": obs,
         }
+
+    # ── obs-mode aware critic bootstrap ──
+
+    def _obs_mode(self) -> str:
+        """Observation mode of this run: 'flat' | 'minimap' | 'hybrid'.
+
+        Read from the trainer config first, then from the env manager. The old
+        `getattr(self.em, "obs_mode", "flat")` ALWAYS answered "flat": EnvManager
+        kept the mode only inside `cfg`, so a hybrid run bootstrapped the critic
+        with the raw `(flat, minimap)` tuple and the first Linear died with
+        "TypeError: linear(): argument 'input' (position 1) must be Tensor, not
+        tuple" at the very first rollout.
+        """
+        for src in (self.cfg, self.em, getattr(self.em, "cfg", None)):
+            mode = getattr(src, "obs_mode", None)
+            if isinstance(mode, str) and mode:
+                return mode
+        return "flat"
+
+    @staticmethod
+    def _split_hybrid_obs(obs: Any) -> Tuple[Any, Any]:
+        """Unpack a hybrid observation into (flat, minimap).
+
+        EnvManager._policy_obs() yields a tuple, but a dict form also exists
+        (both are accepted by ActorCriticHybrid) — accept either here so the
+        bootstrap can never feed a container into a Linear.
+        """
+        if isinstance(obs, dict):
+            return obs.get("flat"), obs.get("minimap")
+        if isinstance(obs, (tuple, list)):
+            if len(obs) != 2:
+                raise TypeError(
+                    f"hybrid obs must be a (flat, minimap) pair, got {len(obs)} items")
+            return obs[0], obs[1]
+        return obs, None
+
+    def _bootstrap_value(self, obs: Any, last_masks: Optional[torch.Tensor]) -> torch.Tensor:
+        """V(s_last) for GAE — obs-mode aware, masks passed by keyword.
+
+        Positional masks are exactly how the hybrid crash happened (the second
+        positional of ActorCriticHybrid.get_value is `minimap`, not masks), so
+        every branch passes `action_masks=` explicitly.
+        """
+        model = self.em.ppo.model
+        if self._obs_mode() == "hybrid":
+            flat, minimap = self._split_hybrid_obs(obs)
+            return model.get_value(flat, minimap, action_masks=last_masks)
+        if isinstance(obs, (tuple, list, dict)):
+            # Defensive: a container obs on a non-hybrid mode means the env and
+            # the policy disagree — fail with a message, not inside a Linear.
+            flat, minimap = self._split_hybrid_obs(obs)
+            if minimap is not None:
+                raise TypeError(
+                    f"obs_mode={self._obs_mode()!r} but the env returned a "
+                    f"(flat, minimap) pair — set obs_mode='hybrid' (or 'minimap') "
+                    f"to match the observation the env emits")
+            obs = flat
+        return model.get_value(obs, action_masks=last_masks)
 
     def _calculate_action_distribution(self) -> List[int]:
         """Calculate action frequency counts from action history."""
@@ -342,8 +393,6 @@ class AsyncTrainer:
         meta file that describes a different curriculum; watch/eval read it, so
         keep it in sync.
         """
-        import json
-
         meta_path = save_dir / "best_model.meta.json"
         if not meta_path.exists():
             return
@@ -362,7 +411,6 @@ class AsyncTrainer:
         Returns dict with days, people, bases, avg_return, score.
         Saves best_model.pt if composite score improves AND thresholds are met.
         """
-        import json
         from train_ui2.evaluator import run_eval
 
         save_dir = Path(self.cfg.model_dir)
@@ -805,7 +853,7 @@ class AsyncTrainer:
                     continue
                 try:
                     cp_norm = Path(str(cp).replace(".pt", ".norm.json"))
-                    cp_norm_str = str(cp_norm) if cp_norm.exists() else norm_str
+                    cp_norm_str = str(cp_norm) if cp_norm.exists() else norm_path
 
                     # Оценивать чекпоинт под той стадией курикулума, под которой он учился
                     eval_curriculum = dict(self._curriculum_kwargs())

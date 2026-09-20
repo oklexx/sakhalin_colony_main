@@ -92,18 +92,78 @@ class ActorCriticHybrid(ActorCriticBase):
             else:
                 orthogonal_init(m, gain=1.0)
 
+    def _looks_like_masks(self, t: Any) -> bool:
+        """True when `t` is a [B, n_actions] tensor — i.e. masks, not a minimap."""
+        return torch.is_tensor(t) and t.dim() == 2 and t.shape[-1] == self.n_actions
+
+    def _split_obs(
+        self, flat: Any, minimap: Any, action_masks: Optional[torch.Tensor],
+    ) -> Tuple[Any, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Normalise every accepted observation form to (flat, minimap, masks).
+
+        `flat` may be:
+          * a tensor ``[B, F]``                       — flat branch only;
+          * a ``(flat, minimap)`` tuple/list          — what EnvManager.reset()/
+            step() return in hybrid mode;
+          * a ``{"flat": …, "minimap": …}`` mapping   — the same pair as a dict.
+
+        A 2-D second positional is action masks, NOT a minimap. ``get_value(obs,
+        masks)`` is the flat/CNN policy signature, and hybrid runs used to reach
+        this module through it: the ``(flat, minimap)`` tuple landed in the first
+        ``nn.Linear`` unchanged and training died on the first rollout with
+        ``TypeError: linear(): argument 'input' (position 1) must be Tensor, not
+        tuple``. Unpacking here makes the call site mistake impossible to repeat
+        silently — and the errors below name the real problem instead of a matmul.
+        """
+        if isinstance(flat, dict):
+            if "flat" not in flat:
+                raise TypeError(
+                    f"hybrid obs dict must contain a 'flat' key, got {sorted(flat)}")
+            if minimap is None:
+                minimap = flat.get("minimap")
+            flat = flat["flat"]
+        elif isinstance(flat, (tuple, list)):
+            if len(flat) != 2:
+                raise TypeError(
+                    f"hybrid obs tuple must be a (flat, minimap) pair, "
+                    f"got {len(flat)} items")
+            pair_flat, pair_minimap = flat
+            if minimap is not None and not torch.is_tensor(minimap):
+                raise TypeError(
+                    f"minimap must be a Tensor, got {type(minimap).__name__}")
+            if minimap is not None and minimap.dim() != 4:
+                # the only non-minimap a caller can pass here is action masks
+                if action_masks is None and self._looks_like_masks(minimap):
+                    action_masks = minimap
+                else:
+                    raise TypeError(
+                        f"second positional must be a [B, C, G, G] minimap or "
+                        f"[B, {self.n_actions}] action masks, got shape "
+                        f"{tuple(minimap.shape)}")
+                minimap = None
+            if minimap is None:
+                minimap = pair_minimap
+            flat = pair_flat
+
+        if flat is not None and not torch.is_tensor(flat):
+            raise TypeError(
+                f"hybrid flat obs must be a Tensor, got {type(flat).__name__} "
+                f"(a (flat, minimap) pair is unpacked automatically — pass the "
+                f"tensors, not the container)")
+        if minimap is not None:
+            if not torch.is_tensor(minimap):
+                raise TypeError(
+                    f"minimap must be a Tensor, got {type(minimap).__name__}")
+            if minimap.dim() != 4:
+                raise TypeError(
+                    f"minimap must be [B, C, G, G], got {tuple(minimap.shape)}")
+        return flat, minimap, action_masks
+
     def forward(
         self, flat: Any, minimap: Optional[torch.Tensor] = None,
         action_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if isinstance(flat, dict):
-            flat_in = flat.get("flat", flat)
-            mini = flat.get("minimap")
-        elif isinstance(flat, (tuple, list)) and len(flat) == 2 and minimap is None:
-            flat_in, mini = flat
-        else:
-            flat_in = flat
-            mini = minimap
+        flat_in, mini, action_masks = self._split_obs(flat, minimap, action_masks)
         if flat_in is not None and mini is not None:
             h_flat = self.flat_trunk(flat_in)
             h_cnn = self.cnn(mini).flatten(1)
@@ -111,7 +171,11 @@ class ActorCriticHybrid(ActorCriticBase):
         elif flat_in is not None:
             h = self.flat_trunk(flat_in)
         elif mini is not None:
-            h = self.cnn(mini).flatten(1)
+            # The joint trunk is sized flat_out + cnn_out: a minimap-only call
+            # cannot match it. Say so instead of failing inside a matmul.
+            raise ValueError(
+                "hybrid policy needs the flat branch: got minimap only "
+                "(use ActorCriticCNN for a minimap-only obs_mode)")
         else:
             raise ValueError("Hybrid obs has no 'flat' or 'minimap'")
 

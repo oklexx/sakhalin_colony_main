@@ -169,6 +169,13 @@ class EnvManager:
 
     def __init__(self, cfg: Config, device: torch.device):
         self.cfg = cfg
+        # Public alias for the observation mode. Consumers (AsyncTrainer) branch
+        # on it to unpack `(flat, minimap)`; reading it as
+        # `getattr(em, "obs_mode", "flat")` used to fall back to "flat" for every
+        # hybrid run because the attribute did not exist — the raw tuple then went
+        # into the policy as one tensor and the first Linear raised
+        # "TypeError: linear(): argument 'input' (position 1) must be Tensor, not tuple".
+        self.obs_mode: str = cfg.obs_mode
         self._curriculum_progress_step = 0
         self.device = device
 
