@@ -6,6 +6,7 @@
 #include "colony/earth.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -449,49 +451,86 @@ static int ai_read_action() {
     std::ifstream f(ai_actions_path);
     if (!f.is_open()) return -1;
     int action = -1;
-    f >> action;
+    const bool parsed = static_cast<bool>(f >> action);
     f.close();
+    if (!parsed || action < 0) {
+        // Файл есть, но действия в нём нет (пустой/недописанный). НЕ удаляем:
+        // удаление означало бы «прочитано», драйвер ждал бы state.json, окно —
+        // actions.txt, и наблюдение зависало навсегда (окно открыто, игра стоит,
+        // в логе тишина). Python пишет действие атомарно (tmp + rename), так что
+        // следующий кадр прочитает его целиком.
+        return -1;
+    }
     // Delete the file so Python knows the action was consumed.
     // Using remove() avoids the race condition with truncation:
     // Python may write a new action between f.close() and an ofstream open.
-    std::filesystem::remove(ai_actions_path);
+    // error_code-версия: на Windows remove бросает исключение, если файл в этот
+    // момент открыт другим процессом — краш GUI из-за гонки IPC нам не нужен.
+    std::error_code ec;
+    std::filesystem::remove(ai_actions_path, ec);
     return action;
 }
 
 static void ai_write_state(const Game& g, const std::vector<float>& obs, int action, bool terminated, const std::vector<float>& mask, const std::vector<float>& minimap, double reward = 0.0) {
     // Write state JSON to file (includes obs, action_mask, and minimap for Python policy)
-    std::ofstream f(ai_state_path);
-    if (!f.is_open()) return;
-    f << "{"
-      << "\"day\":" << g.day << ","
-      << "\"month\":" << g.month << ","
-      << "\"year\":" << g.year << ","
-      << "\"people\":" << g.people << ","
-      << "\"bases\":" << g.bases.size() << ","
-      << "\"money\":" << g.money << ","
-      << "\"reward\":" << reward << ","
-      << "\"action\":" << action << ","
-      << "\"terminated\":" << (terminated ? "true" : "false") << ","
-      << "\"obs\":[";
-    for (size_t i = 0; i < obs.size(); i++) {
-        f << obs[i];
-        if (i + 1 < obs.size()) f << ",";
+    if (ai_state_path.empty()) return;
+    // Атомарно: сначала .tmp, затем rename. Драйвер (watch_champion.py) читает
+    // state.json в цикле, а файл с миникартой 8×32×32 — это ~100 КБ текста:
+    // раньше он регулярно читался наполовину пустым и шаг выпадал.
+    const std::string tmp_path = ai_state_path + ".tmp";
+    {
+        std::ofstream f(tmp_path, std::ios::trunc);
+        if (!f.is_open()) return;
+        f << "{"
+          << "\"day\":" << g.day << ","
+          << "\"month\":" << g.month << ","
+          << "\"year\":" << g.year << ","
+          << "\"people\":" << g.people << ","
+          << "\"bases\":" << g.bases.size() << ","
+          << "\"money\":" << g.money << ","
+          << "\"reward\":" << reward << ","
+          << "\"action\":" << action << ","
+          << "\"terminated\":" << (terminated ? "true" : "false") << ","
+          << "\"obs\":[";
+        for (size_t i = 0; i < obs.size(); i++) {
+            f << obs[i];
+            if (i + 1 < obs.size()) f << ",";
+        }
+        f << "],"
+          << "\"action_mask\":[";
+        for (size_t i = 0; i < mask.size(); i++) {
+            f << mask[i];
+            if (i + 1 < mask.size()) f << ",";
+        }
+        f << "],"
+          << "\"minimap\":[";
+        for (size_t i = 0; i < minimap.size(); i++) {
+            f << minimap[i];
+            if (i + 1 < minimap.size()) f << ",";
+        }
+        f << "]"
+          << "}";
+        f.flush();
+        const bool ok = f.good();
+        f.close();
+        if (!ok) {
+            std::error_code ec;
+            std::filesystem::remove(tmp_path, ec);
+            return;
+        }
     }
-    f << "],"
-      << "\"action_mask\":[";
-    for (size_t i = 0; i < mask.size(); i++) {
-        f << mask[i];
-        if (i + 1 < mask.size()) f << ",";
+    // На Windows rename не проходит, пока читатель держит целевой файл открытым:
+    // несколько коротких попыток, затем запасной путь — перезапись копированием.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        std::error_code ec;
+        std::filesystem::rename(tmp_path, ai_state_path, ec);
+        if (!ec) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    f << "],"
-      << "\"minimap\":[";
-    for (size_t i = 0; i < minimap.size(); i++) {
-        f << minimap[i];
-        if (i + 1 < minimap.size()) f << ",";
-    }
-    f << "]"
-      << "}";
-    f.close();
+    std::error_code ec;
+    std::filesystem::copy_file(tmp_path, ai_state_path,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::remove(tmp_path, ec);
 }
 
 static bool sound_on = true;
@@ -514,7 +553,10 @@ static void ai_reset_env(ColonyEnvCpp& env) {
                   (float)env.game().earth.init_sel_y * TILE};
     cam.zoom = 1.0f;
     // Clear action file so Python knows to send a new one
-    std::filesystem::remove(ai_actions_path);
+    {
+        std::error_code ec;
+        std::filesystem::remove(ai_actions_path, ec);
+    }
     // Write fresh state so Python sends a new action
     ai_write_state(env.game(), env.obs(), -1, false, env.action_mask(), env.minimap(), 0.0);
 }
@@ -928,6 +970,13 @@ int main(int argc, char* argv[]) {
     if (headless_ai) {
         cam.target = {(float)g.map_size() * TILE / 2.0f, (float)g.map_size() * TILE / 2.0f};
         cam.zoom = 0.8f;
+        // Публикуем стартовое состояние сразу. Раньше state.json появлялся
+        // только ПОСЛЕ первого прочитанного действия, поэтому драйвер обязан был
+        // первым отправить действие «вслепую» (гонка при старте наблюдения).
+        // Новый протокол: окно пишет состояние при старте и после авто-рестарта
+        // карты; старый драйвер от этого не ломается (он всё равно шлёт 0).
+        ai_write_state(env.game(), env.obs(), -1, false,
+                       env.action_mask(), env.minimap(), 0.0);
     }
 
     static int sel_action = A_BUILD0;

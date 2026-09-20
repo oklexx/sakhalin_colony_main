@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +29,60 @@ class ModelInfo:
     @property
     def model_file(self) -> Path:
         return self.path / "final_model.pt"
+
+
+#: Файлы, по которым каталог считается обученной моделью. `final_model.pt`
+#: пишется только В КОНЦЕ обучения (rl/async_trainer.py), поэтому прерванный или
+#: упавший прогон имеет лишь `best_model.pt` и/или чекпойнты — раньше такой
+#: каталог исчезал из списка моделей, и «👁 Наблюдать» отвечал «Нет моделей»,
+#: хотя смотреть там есть что (watch_champion.py сам выбирает best → final →
+#: последний checkpoint).
+MODEL_WEIGHT_NAMES = ("final_model.pt", "best_model.pt")
+
+_CHECKPOINT_STEPS_RE = re.compile(r"checkpoint_(\d+)_")
+
+
+def checkpoint_sort_key(path: Path) -> "tuple[int, str]":
+    """Ключ порядка чекпойнтов: ЧИСЛО шагов, затем имя.
+
+    Лексикографически `checkpoint_999999_steps.pt` > `checkpoint_1000000_steps.pt`,
+    поэтому «последний чекпойнт» на длинных прогонах выбирался неверно — а это
+    ровно тот файл, который показывают/грузят при отсутствии final и best.
+    Нераспознанное имя сортируется раньше всех (−1).
+    """
+    m = _CHECKPOINT_STEPS_RE.search(path.name)
+    return (int(m.group(1)) if m else -1, path.name)
+
+
+def latest_checkpoint(entry: Path, pattern: str = "checkpoint_*_steps.pt",
+                      loose: bool = True) -> Optional[Path]:
+    """Свежайший чекпойнт по числу шагов (или None).
+
+    `pattern` сужает поиск (веса — `*_steps.pt`, нормализация —
+    `*_steps.norm.json`); при `loose=True` и пустом результате пробуем любой
+    `checkpoint_*.pt`, чтобы нестандартные имена не терялись. Для sidecar-файлов
+    (`.norm.json`) нужно `loose=False`: иначе вместо нормализации вернутся веса.
+    """
+    files = list(entry.glob(pattern))
+    if not files and loose and pattern != "checkpoint_*.pt":
+        files = list(entry.glob("checkpoint_*.pt"))
+    return max(files, key=checkpoint_sort_key) if files else None
+
+
+def has_model_weights(entry: Path) -> bool:
+    """True, если в каталоге прогона лежат веса (final/best/любой чекпойнт)."""
+    if any((entry / name).exists() for name in MODEL_WEIGHT_NAMES):
+        return True
+    return latest_checkpoint(entry, "checkpoint_*.pt") is not None
+
+
+def pick_model_file(entry: Path) -> Optional[Path]:
+    """Лучший доступный файл весов: final → best → свежий чекпойнт."""
+    for name in MODEL_WEIGHT_NAMES:
+        p = entry / name
+        if p.exists():
+            return p
+    return latest_checkpoint(entry, "checkpoint_*.pt")
 
 
 def _parse_dt(s: str) -> Optional[datetime]:
@@ -82,7 +137,7 @@ class ModelRegistry:
         for entry in sorted(self.root.iterdir()):
             if not entry.is_dir():
                 continue
-            if not (entry / "final_model.pt").exists() and not list(entry.glob("checkpoint_*.pt")):
+            if not has_model_weights(entry):
                 continue
             out.append(_build_info(entry.name, entry, _load_meta(entry)))
         out.sort(key=lambda m: (m.created is None, m.created or datetime.min), reverse=True)

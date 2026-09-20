@@ -7,7 +7,13 @@ Usage:
   python watch_champion.py --model-dir ~/colony_runs/models/run_003 --episodes 3
 """
 import argparse
+import itertools
+import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -21,6 +27,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "python"))
 from colony_cpp_api import require_colony
 from cpp_env import CppColonyEnv
 from train_ui2.evaluator import _load_policy
+from train_ui2.models import latest_checkpoint
 
 
 class TeeWriter:
@@ -76,17 +83,32 @@ def curriculum_action_mask(allowed, action_names):
     return mask if restricted else None
 
 
-def write_action(action_file: Path, action: int) -> None:
-    """Write action int to the IPC file.
+def write_action(action_file: Path, action: int, timeout: float = 2.0) -> bool:
+    """Write action int to the IPC file (atomic tmp + rename).
 
     Waits for C++ to delete the file (consumed previous action) before writing.
     This prevents overwriting an unread action.
+
+    Returns True when the previous action was consumed in time. False means the
+    GUI is not reading the file at all (мертвое окно, чужой exe, зависший
+    headless-ai) — caller turns that into a diagnosis instead of waiting forever.
+
+    The write is atomic (`os.replace`): the GUI used to be able to open a
+    truncated actions.txt, fail the `f >> action` parse and still delete the
+    file — the action was lost and BOTH sides waited for each other forever
+    (window open, game frozen, log silent).
     """
-    import time as _time
-    deadline = _time.monotonic() + 2.0
-    while action_file.exists() and _time.monotonic() < deadline:
-        _time.sleep(0.005)
-    action_file.write_text(str(action), encoding="utf-8")
+    deadline = time.monotonic() + timeout
+    consumed = True
+    while action_file.exists():
+        if time.monotonic() >= deadline:
+            consumed = False
+            break
+        time.sleep(0.005)
+    tmp = action_file.with_name(action_file.name + ".tmp")
+    tmp.write_text(str(action), encoding="utf-8")
+    os.replace(tmp, action_file)
+    return consumed
 
 
 GUI_EXE_NAMES = (
@@ -104,6 +126,30 @@ GUI_EXE_DIRS = (
     "out/build/x64-Release",
     "python",
 )
+
+
+def resolve_model_file(model_dir: Path, requested: str = "best_model.pt") -> Path:
+    """Какой файл весов грузить: запрошенный → final → best → свежий чекпойнт.
+
+    `final_model.pt` пишется только в конце обучения, поэтому у остановленного
+    вручную или упавшего прогона его нет. Раньше цепочка запасных вариантов его
+    не знала: `--model-file final_model.pt` на прерванном прогоне перескакивал
+    сразу на чекпойнт, хотя рядом лежал `best_model.pt` — чемпион турнира
+    (обычно сильнее произвольного чекпойнта). Порядок совпадает с
+    `train_ui2.models.pick_model_file`, чтобы UI и CLI выбирали одно и то же.
+
+    Если нет ничего, возвращается запрошенный путь: ошибка ниже назовёт именно
+    тот файл, который просил пользователь.
+    """
+    wanted = model_dir / requested
+    if wanted.exists():
+        return wanted
+    for name in ("final_model.pt", "best_model.pt"):
+        cand = model_dir / name
+        if cand.exists():
+            return cand
+    latest = latest_checkpoint(model_dir)
+    return latest if latest is not None else wanted
 
 
 def find_gui_exe() -> "Path | None":
@@ -140,6 +186,164 @@ def read_state(state_file: Path) -> dict | None:
         return None
 
 
+# ── visual watch: IPC hygiene and diagnostics ────────────────────────────────
+#
+# Окно наблюдения «не запускалось» молча: драйвер не проверял ни старт exe, ни
+# появление state.json, и в любой непонятной ситуации уходил в бесконечный
+# `time.sleep(0.05)` (или в бесконечный рестарт exe). Ниже — явные таймауты,
+# heartbeat в лог UI, ограниченные рестарты и текст диагноза.
+
+GUI_START_TIMEOUT = 25.0    # сколько ждём первый state.json от окна
+GUI_STEP_TIMEOUT = 30.0     # сколько ждём ответ на одно действие
+GUI_RESET_TIMEOUT = 20.0    # C++ сам перезапускает карту через 5 с (gui.cpp)
+GUI_HEARTBEAT_EVERY = 5.0   # раз в столько секунд пишем «ещё жду» в лог UI
+MAX_GUI_RESTARTS = 3        # exe, который не стартует, не должен крутиться вечно
+
+
+class GuiStartupError(RuntimeError):
+    """The raylib GUI never came up (exited early or never answered over IPC)."""
+
+
+#: Счётчик вызовов `make_ipc_dir` в этом процессе: pid+мс уникальны МЕЖДУ
+#: процессами, но два запуска в одном процессе (тесты, повторное наблюдение без
+#: перезапуска воркера) могут попасть в одну миллисекунду — и, если предыдущий
+#: каталог уже убран за собой, получить тот же путь.
+_IPC_SEQ = itertools.count()
+
+
+def make_ipc_dir() -> Path:
+    """Unique per-run IPC directory for actions.txt / state.json.
+
+    A fixed `%TEMP%/colony_watch` was shared by every run: the UI kills only
+    `watch_champion.py` (Windows does not kill the process tree), so a raylib
+    window that outlived its driver kept eating actions.txt and writing
+    state.json — the NEXT watch then talked to the orphan, and its own window
+    looked dead. Per-run dir + cleanup makes that impossible.
+    """
+    root = Path(tempfile.gettempdir()) / "colony_watch"
+    seq = next(_IPC_SEQ)
+    stamp = f"{os.getpid()}_{int(time.time() * 1000)}" + (f"_s{seq}" if seq else "")
+    for attempt in range(100):
+        d = root / (stamp if attempt == 0 else f"{stamp}_{attempt}")
+        try:
+            d.mkdir(parents=True, exist_ok=False)
+            return d
+        except FileExistsError:
+            continue
+    # крайне маловероятно: 100 каталогов за один запуск уже существуют
+    d = root / f"{stamp}_fallback"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def gui_exe_stale_sources(exe_path) -> "list[str]":
+    """Sources newer than the built exe — a stale exe ignores new CLI flags.
+
+    Наблюдение передаёт `--tax-to-debt`, `--curriculum` JSON и `--minimap-radius`;
+    exe, собранный до этих правок, молча играет в другую игру (или не понимает
+    протокол). Предупреждение печатается в лог UI до запуска окна.
+    """
+    exe = Path(exe_path)
+    try:
+        exe_mtime = exe.stat().st_mtime
+    except OSError:
+        return []
+    newer: "list[str]" = []
+    for pattern in ("src/*.cpp", "include/colony/*.h", "include/*.h",
+                    "configs/*.json", "build_gui.bat"):
+        for f in PROJECT_ROOT.glob(pattern):
+            try:
+                if f.stat().st_mtime > exe_mtime:
+                    newer.append(f.relative_to(PROJECT_ROOT).as_posix())
+            except OSError:
+                continue
+    return sorted(newer)
+
+
+def state_stamp(state_file: Path):
+    """(mtime_ns, size) of state.json or None — «свежесть» ответа окна."""
+    try:
+        st = Path(state_file).stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def wait_for_state(
+    state_file: Path,
+    since=None,
+    timeout: "float | None" = None,
+    heartbeat: "float | None" = None,
+    on_wait=None,
+    proc=None,
+) -> "dict | None":
+    """Wait for a state.json NEWER than `since` (None = any state at all).
+
+    Lock-step: an action must be computed from the state that resulted from the
+    PREVIOUS action. Without the freshness check the driver could answer with a
+    stale state and send two actions per GUI step.
+
+    `on_wait(seconds)` is called every `heartbeat` seconds — the UI log gets a
+    visible «жду окно» instead of total silence. Returns None on timeout (or if
+    `proc` died while waiting — the caller then reports the exit code).
+    """
+    # Константы читаем в теле (не в дефолтах): так их можно подкрутить и в
+    # тестах, и при отладке медленного старта окна.
+    timeout = GUI_STEP_TIMEOUT if timeout is None else float(timeout)
+    heartbeat = GUI_HEARTBEAT_EVERY if heartbeat is None else float(heartbeat)
+    deadline = time.monotonic() + timeout
+    next_beat = time.monotonic() + heartbeat
+    while True:
+        stamp = state_stamp(state_file)
+        if stamp is not None and (since is None or stamp != since):
+            state = read_state(state_file)
+            if state is not None:
+                return state
+        if proc is not None and proc.poll() is not None:
+            return None
+        now = time.monotonic()
+        if now >= deadline:
+            return None
+        if on_wait is not None and now >= next_beat:
+            next_beat = now + heartbeat
+            on_wait(timeout - (deadline - now))
+        time.sleep(0.02)
+
+
+def describe_gui_failure(proc, exe_path, gui_log: "Path | None", ipc_dir: Path,
+                         waited_for: str) -> str:
+    """Human-readable diagnosis for «окно не поднялось»."""
+    lines = [f"ERROR: GUI-окно не запустилось ({waited_for})."]
+    rc = proc.poll() if proc is not None else None
+    if rc is not None:
+        hint = ""
+        if rc < 0:
+            hint = f" (signal {-rc})"
+        elif rc >= 0x80000000 or rc in (0xC0000135, -1073741515):
+            hint = " — 0xC0000135 = не найден DLL (raylib.dll рядом с exe?)"
+        lines.append(f"  процесс завершился сразу: exit code {rc}{hint}")
+    else:
+        lines.append("  процесс жив, но не пишет state.json — окно могло не открыться "
+                     "(проверьте ai_debug_gui.log в корне проекта)")
+    lines.append(f"  exe: {exe_path}")
+    lines.append(f"  IPC: {ipc_dir}")
+    if gui_log is not None and Path(gui_log).exists():
+        try:
+            tail = Path(gui_log).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            tail = ""
+        if tail:
+            lines.append("  вывод GUI (последние строки):")
+            lines.extend(f"    | {ln}" for ln in tail.splitlines()[-15:])
+        else:
+            lines.append("  вывод GUI пуст (exe не успел ничего напечатать)")
+    stale = gui_exe_stale_sources(exe_path)
+    if stale:
+        lines.append(f"  ВНИМАНИЕ: exe старше исходников {stale[:6]}"
+                     f"{' …' if len(stale) > 6 else ''} — пересоберите build_gui.bat")
+    return "\n".join(lines)
+
+
 def launch_visual_watch(
     model_dir: Path,
     exe_path: str,
@@ -151,6 +355,7 @@ def launch_visual_watch(
     reward_config_path: str | None = None,
     minimap_radius: int | None = None,
     tax_to_debt: bool = True,
+    gui_log: "Path | None" = None,
 ) -> "subprocess.Popen":
     """Launch the GUI exe in headless-ai mode.
 
@@ -160,6 +365,10 @@ def launch_visual_watch(
     наблюдения сообщает его явно — иначе watched-модель играет в другую игру
     и «умирает» на 365-м дне там, где обучение уже не умирает
     (см. tests/cpp/gui_watch_check.cpp).
+
+    `gui_log` перехватывает stdout/stderr окна: без него причина «не запустилось»
+    (битый --curriculum JSON, отсутствующий DLL, ошибка в конфиге) уходила в
+    никуда — консоль у watch-процесса скрыта (CREATE_NO_WINDOW из UI).
     """
     import json as _json
     import subprocess
@@ -185,7 +394,286 @@ def launch_visual_watch(
     if minimap_radius is not None:
         args.extend(["--minimap-radius", str(minimap_radius)])
     workdir = str(PROJECT_ROOT)
-    return subprocess.Popen(args, cwd=workdir)
+    kwargs: dict = {"cwd": workdir}
+    if gui_log is not None:
+        # line-buffered text file: строки ошибки видны в логе UI сразу. Ручку
+        # закрываем у себя — дочерний процесс уже унаследовал дескриптор.
+        fh = open(gui_log, "a", encoding="utf-8", errors="replace")
+        try:
+            kwargs["stdout"] = fh
+            kwargs["stderr"] = subprocess.STDOUT
+            return subprocess.Popen(args, **kwargs)
+        finally:
+            fh.close()
+    return subprocess.Popen(args, **kwargs)
+
+
+
+def run_visual_watch(
+    *,
+    exe_path: str,
+    ipc_dir: Path,
+    model_dir: Path,
+    seed: int,
+    map_size: int,
+    curriculum=None,
+    reward_config_path: "str | None" = None,
+    minimap_radius: "int | None" = None,
+    tax_to_debt: bool = True,
+    normalizer=None,
+    policy=None,
+    is_hybrid: bool = False,
+    is_cnn: bool = False,
+    device=None,
+    cur_mask=None,
+    action_names: "list[str] | None" = None,
+    speed: float = 1.0,
+    episodes: int = 1,
+    emit_step=None,
+    emit_log=None,
+) -> int:
+    """Drive the raylib GUI over the file IPC and feed it policy actions.
+
+    Протокол (оба файла — в `ipc_dir`):
+      ``actions.txt`` : драйвер пишет int-действие, окно читает и удаляет файл;
+      ``state.json``  : окно пишет day/money/people/bases/reward/obs/
+                        action_mask/minimap после каждого шага.
+
+    Всё, что раньше выглядело как «галочка GUI-окно → ничего не происходит,
+    в логе тишина», теперь имеет таймаут и диагноз: старт exe, первый
+    state.json, ответ на каждое действие, авто-рестарт карты. Рестарты упавшего
+    exe ограничены (``MAX_GUI_RESTARTS``), вывод окна пишется в
+    ``ipc_dir/gui_output.log`` и показывается в логе UI вместе с кодом возврата.
+
+    Returns 0 on a clean stop, 1 when the GUI never came up.
+    """
+    actions_file = ipc_dir / "actions.txt"
+    state_file = ipc_dir / "state.json"
+    gui_log = ipc_dir / "gui_output.log"
+    names = list(action_names or [])
+
+    def _log(msg: str, level: str = "info") -> None:
+        # либо JSON для UI, либо текст в консоль — но не то и другое сразу
+        # (иначе каждая строка наблюдения дублируется в панели лога UI).
+        if emit_log is not None:
+            emit_log(msg, level=level)
+        else:
+            print(msg, flush=True)
+
+    stale = gui_exe_stale_sources(exe_path)
+    if stale:
+        _log(f"WARNING: GUI exe собран ДО правок в {', '.join(stale[:4])}"
+             f"{' …' if len(stale) > 4 else ''} — пересоберите build_gui.bat, "
+             f"иначе окно играет по старым правилам/протоколу.", level="warning")
+
+    def _launch():
+        proc = launch_visual_watch(
+            model_dir=model_dir,
+            exe_path=exe_path,
+            actions_file=actions_file,
+            state_file=state_file,
+            seed=seed,
+            map_size=map_size,
+            curriculum=curriculum,
+            reward_config_path=reward_config_path,
+            minimap_radius=minimap_radius,
+            tax_to_debt=tax_to_debt,
+            gui_log=gui_log,
+        )
+        _log(f"GUI-окно запущено: pid={proc.pid}, exe={exe_path}")
+        _log(f"IPC: {ipc_dir} ({actions_file.name} / {state_file.name}); "
+             f"вывод окна → {gui_log}")
+        return proc
+
+    def _handshake(proc) -> dict:
+        """Первый state.json от окна; старый exe толкаем действием 0 (DAY)."""
+        state = wait_for_state(state_file, since=None, timeout=3.0, proc=proc)
+        if state is not None:
+            return state
+        if proc.poll() is not None:
+            raise GuiStartupError(describe_gui_failure(
+                proc, exe_path, gui_log, ipc_dir, "exe завершился при старте"))
+        write_action(actions_file, 0)  # 0 = DAY
+        state = wait_for_state(
+            state_file, since=None, timeout=GUI_START_TIMEOUT, proc=proc,
+            on_wait=lambda s: _log(f"жду первое состояние от GUI-окна… {s:.0f} с"))
+        if state is None:
+            raise GuiStartupError(describe_gui_failure(
+                proc, exe_path, gui_log, ipc_dir,
+                f"нет state.json за {GUI_START_TIMEOUT:.0f} с"))
+        return state
+
+    def _minimap_tensor(minimap_data):
+        """8×G×G тензор из плоского списка; None, если окно миникарту не прислало."""
+        if not minimap_data:
+            return None
+        n_mm = len(minimap_data)
+        n_ch = 8
+        grid = int(round((n_mm / n_ch) ** 0.5))
+        if grid * grid * n_ch != n_mm:
+            _log(f"WARNING: миникарта из окна не раскладывается в 8×G×G "
+                 f"({n_mm} чисел) — ветвь CNN останется без входа", level="warning")
+            return None
+        return torch.from_numpy(
+            np.array(minimap_data, dtype=np.float32).reshape(1, n_ch, grid, grid)
+        ).to(device)
+
+    def _choose_action(state: dict) -> "tuple[int, str]":
+        obs = state.get("obs") or []
+        if not obs:
+            return 0, "DAY"          # окно ещё не прислало наблюдение
+        obs_np = np.array(obs, dtype=np.float32)
+        if normalizer is not None:
+            obs_np = normalizer.normalize(obs_np)
+        mm_t = _minimap_tensor(state.get("minimap") or [])
+        if (is_hybrid or is_cnn) and mm_t is None:
+            grid = getattr(policy, "grid_size", None)
+            _log(f"ERROR: модель {'hybrid' if is_hybrid else 'minimap'}, а окно не "
+                 f"прислало миникарту (нужно 8×{grid}×{grid} в state.json). "
+                 f"Пересоберите GUI (build_gui.bat): старый exe не пишет поле "
+                 f"minimap и наблюдать такую модель нельзя.", level="error")
+            return 0, "DAY"
+        with torch.no_grad():
+            obs_t = torch.from_numpy(obs_np).to(device).reshape(1, -1)
+            if is_hybrid:
+                logits, _ = policy(obs_t, mm_t)
+            elif is_cnn:
+                logits, _ = policy(mm_t)
+            else:
+                logits, _ = policy(obs_t)
+            # Маски — как в обучении (rl/ppo.py): -1e9, а не -inf (NaN-safe).
+            mask = state.get("action_mask")
+            if mask is not None:
+                mask_t = torch.tensor(mask, dtype=torch.float32,
+                                      device=device).reshape(1, -1)
+                logits = logits.masked_fill(mask_t == 0, -1e9)
+            # ...и курикулум-маска (exe мог собраться до --unlock-ids).
+            if cur_mask is not None:
+                cm_t = torch.tensor(cur_mask, dtype=torch.float32,
+                                    device=device).reshape(1, -1)
+                logits = logits.masked_fill(cm_t == 0, -1e9)
+            action = int(logits.argmax(dim=-1).item())
+        name = names[action] if action < len(names) else str(action)
+        return action, name
+
+    restarts = 0
+    step_count = 0
+    episode = 0
+    total_reward = 0.0
+    infer_errors = 0
+    total_episodes = max(1, episodes)
+    proc = None
+    try:
+        proc = _launch()
+        state = _handshake(proc)
+        _log(f"Visual watch running. Speed: {speed if speed > 0 else 1.0} steps/s. "
+             f"Закройте окно, чтобы остановить.")
+
+        while episode < total_episodes:
+            if state.get("terminated"):
+                episode += 1
+                total_reward = 0.0
+                _log(f"[Game Over at day {state.get('day')}] "
+                     f"episode {episode}/{total_episodes}")
+                if episode >= total_episodes:
+                    break
+                # C++ сам сбрасывает карту через 5 с (gui.cpp) и пишет свежий
+                # state — раньше драйвер спал вслепую 6 с и чистил IPC-файлы.
+                stamp = state_stamp(state_file)
+                state = wait_for_state(
+                    state_file, since=stamp, timeout=GUI_RESET_TIMEOUT, proc=proc,
+                    on_wait=lambda s: _log(f"жду авто-рестарт карты в окне… {s:.0f} с"))
+                if state is None:
+                    if proc.poll() is None:
+                        raise GuiStartupError(describe_gui_failure(
+                            proc, exe_path, gui_log, ipc_dir,
+                            f"окно не перезапустило карту за {GUI_RESET_TIMEOUT:.0f} с"))
+                    if restarts >= MAX_GUI_RESTARTS:
+                        raise GuiStartupError(describe_gui_failure(
+                            proc, exe_path, gui_log, ipc_dir,
+                            f"лимит рестартов ({MAX_GUI_RESTARTS}) исчерпан"))
+                    restarts += 1
+                    _log(f"[GUI process exited, restarting… {restarts}/"
+                         f"{MAX_GUI_RESTARTS}]", level="warning")
+                    proc = _launch()
+                    state = _handshake(proc)
+                continue
+
+            step_count += 1
+            day = state.get("day", "?")
+            money = state.get("money", "?")
+            bases = state.get("bases", "?")
+            try:
+                action, action_name = _choose_action(state)
+            except Exception as e:
+                infer_errors += 1
+                action, action_name = 0, "DAY"
+                if infer_errors <= 3 or infer_errors % 50 == 0:
+                    _log(f"[WARN] ошибка инференса на шаге {step_count}: "
+                         f"{type(e).__name__}: {e} → действие 0 (DAY)",
+                         level="warning")
+                if infer_errors == 3:
+                    _log("ERROR: инференс падает на каждом шаге — наблюдение "
+                         "бессмысленно (проверьте obs_version/нормализатор "
+                         "модели и что окно присылает obs той же размерности).",
+                         level="error")
+            else:
+                if step_count <= 10 or step_count % 50 == 0:
+                    print(f"  step {step_count}  day {day}  money={money} "
+                          f"bases={bases}  -> action {action} ({action_name})",
+                          flush=True)
+
+            stamp = state_stamp(state_file)
+            if not write_action(actions_file, action):
+                _log("WARNING: окно не забирает actions.txt 2 с — оно зависло "
+                     "или не в режиме --headless-ai", level="warning")
+            state = wait_for_state(
+                state_file, since=stamp, timeout=GUI_STEP_TIMEOUT, proc=proc,
+                on_wait=lambda s: _log(f"жду ответ от GUI-окна… {s:.0f} с"))
+            if state is None:
+                if proc.poll() is None:
+                    raise GuiStartupError(describe_gui_failure(
+                        proc, exe_path, gui_log, ipc_dir,
+                        f"окно не ответило на действие за {GUI_STEP_TIMEOUT:.0f} с"))
+                if restarts >= MAX_GUI_RESTARTS:
+                    raise GuiStartupError(describe_gui_failure(
+                        proc, exe_path, gui_log, ipc_dir,
+                        f"лимит рестартов ({MAX_GUI_RESTARTS}) исчерпан"))
+                restarts += 1
+                _log(f"[GUI process exited, restarting… {restarts}/"
+                     f"{MAX_GUI_RESTARTS}]", level="warning")
+                proc = _launch()
+                state = _handshake(proc)
+                continue
+
+            reward = float(state.get("reward", 0.0) or 0.0)
+            total_reward += reward
+            # Тот же JSONL-протокол, что в текстовом режиме: без него карточки
+            # «День/Касса/Люди/Базы/Действие» и график вкладки Наблюдение пусты.
+            if emit_step:
+                emit_step(
+                    step=step_count, day=state.get("day", "?"),
+                    action=action_name, reward=reward,
+                    total_reward=round(total_reward, 2),
+                    people=state.get("people", 0), bases=state.get("bases", 0),
+                    money=state.get("money", 0),
+                )
+            if speed > 0:
+                time.sleep(1.0 / speed)
+
+    except GuiStartupError as e:
+        _log(str(e), level="error")
+        return 1
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+        # IPC-каталог свой у каждого запуска — удаляем целиком (actions.txt,
+        # state.json, reward_config.json, gui_output.log).
+        shutil.rmtree(ipc_dir, ignore_errors=True)
+        _log("Visual watch stopped.")
+    return 0
 
 
 def main():
@@ -258,6 +746,18 @@ def main():
         emit_log = None
         emit_done = None
 
+    def say(msg: str, level: str = "info") -> None:
+        """Одна строка — ровно один раз.
+
+        С `--log-file` лог читает UI (`_poll_watch`): он парсит JSON-строки и
+        отдельно показывает обычный текст, поэтому `print` + `emit_log` одной и
+        той же фразы давали в панели лога ДВА одинаковых сообщения.
+        """
+        if emit_log is not None:
+            emit_log(msg, level=level)
+        else:
+            print(msg, flush=True)
+
     # Randomize the map unless an explicit seed was requested. Same seed =
     # same island (Earth(seed) generates terrain/lakes/deposits), and with a
     # fixed default seed the colony always replayed ONE map — sometimes an
@@ -267,21 +767,10 @@ def main():
         args.seed = _rnd.randint(1, 999_999_999)
         _msg = (f"Random map seed: {args.seed} "
                 f"(re-watch this exact map with --seed {args.seed})")
-        print(_msg)
-        if emit_log:
-            emit_log(_msg)
+        say(_msg)
 
     model_dir = Path(args.model_dir).expanduser()
-    model_path = model_dir / args.model_file
-    # Fallback: if requested model doesn't exist, try final_model.pt then checkpoint_*.pt
-    if not model_path.exists():
-        fallback = model_dir / "final_model.pt"
-        if fallback.exists():
-            model_path = fallback
-        else:
-            checkpoints = sorted(model_dir.glob("checkpoint_*_steps.pt"))
-            if checkpoints:
-                model_path = checkpoints[-1]
+    model_path = resolve_model_file(model_dir, args.model_file)
     norm_path = model_dir / "normalization.json"
     if not norm_path.exists():
         norm_path = model_path.with_suffix(".norm.json")
@@ -290,9 +779,8 @@ def main():
         for meta_name in ("best_model.meta.json", "meta.json"):
             meta_path = model_dir / meta_name
             if meta_path.exists():
-                import json as _json
                 try:
-                    meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     ts = meta.get("total_timesteps") or meta.get("steps")
                     if ts:
                         candidate = model_dir / f"checkpoint_{ts}_steps.norm.json"
@@ -307,9 +795,11 @@ def main():
         if final_norm.exists():
             norm_path = final_norm
         else:
-            ckpt_norms = sorted(model_dir.glob("checkpoint_*_steps.norm.json"))
-            if ckpt_norms:
-                norm_path = ckpt_norms[-1]
+            # числовой порядок: лексикографически 999999 «новее» 1000000
+            ckpt_norm = latest_checkpoint(model_dir, "checkpoint_*_steps.norm.json",
+                                          loose=False)
+            if ckpt_norm is not None:
+                norm_path = ckpt_norm
 
     if not model_path.exists():
         print(f"ERROR: model not found: {model_path}")
@@ -382,9 +872,7 @@ def main():
              else f"дефолт {CURRENT_OBS_VERSION}")
     _vmsg = (f"Obs layout: v{obs_version} "
              f"({obs_size_for_version(obs_version)} dims, из {_vsrc})")
-    print(_vmsg)
-    if emit_log:
-        emit_log(_vmsg)
+    say(_vmsg)
 
     resolved = resolve_curriculum(
         None, meta=meta,
@@ -467,9 +955,7 @@ def main():
 
     _tax_policy = "долг (как при обучении)" if env.cpp_env.tax_to_debt() else "диалог"
     _taxmsg = f"Tax policy: {_tax_policy}"
-    print(_taxmsg)
-    if emit_log:
-        emit_log(_taxmsg)
+    say(_taxmsg)
 
     action_names = env._action_names
     cur_mask = curriculum_action_mask(resolved["allowed"], action_names)
@@ -577,201 +1063,49 @@ def main():
                    f"{', '.join(str(PROJECT_ROOT / d / n) for d in GUI_EXE_DIRS[:3] for n in GUI_EXE_NAMES[:2])} ... "
                    f"Build it with build_gui.bat (requires raylib in raylib/), "
                    f"or set COLONY_GUI_EXE=/path/to/gui.exe")
-            print(msg)
-            if emit_log:
-                emit_log(msg, level="error")
+            say(msg, level="error")
+            env.close()
             sys.exit(1)
         exe_path = str(exe)
         print(f"GUI exe: {exe_path}")
 
-        import tempfile
-        tmp_dir = Path(tempfile.gettempdir()) / "colony_watch"
-        tmp_dir.mkdir(exist_ok=True)
-        actions_file = tmp_dir / "actions.txt"
-        state_file = tmp_dir / "state.json"
-
-        # Write reward config to temp file for GUI
+        # Свой IPC-каталог на каждый запуск: общий %TEMP%/colony_watch делили
+        # все прогоны, а окно переживает своего драйвера (UI убивает только
+        # watch_champion.py) — сирота съедала действия следующего наблюдения.
+        ipc_dir = make_ipc_dir()
         reward_cfg_path = None
         if reward_cfg:
             import json as _json
-            rc_file = tmp_dir / "reward_config.json"
+            rc_file = ipc_dir / "reward_config.json"
             rc_file.write_text(_json.dumps(reward_cfg), encoding="utf-8")
             reward_cfg_path = str(rc_file)
 
         print(f"Launching visual watch: {exe_path}")
-        proc = launch_visual_watch(
-            model_dir=model_dir,
+        rc = run_visual_watch(
             exe_path=exe_path,
-            actions_file=actions_file,
-            state_file=state_file,
+            ipc_dir=ipc_dir,
+            model_dir=model_dir,
             seed=args.seed,
             map_size=args.map_size,
             curriculum=st,
             reward_config_path=reward_cfg_path,
             minimap_radius=resolved_minimap_radius,
             tax_to_debt=tax_to_debt,
+            normalizer=env.normalizer,
+            policy=policy,
+            is_hybrid=is_hybrid,
+            is_cnn=is_cnn,
+            device=dev,
+            cur_mask=cur_mask,
+            action_names=action_names,
+            speed=args.speed,
+            episodes=args.episodes,
+            emit_step=emit_step,
+            emit_log=emit_log,
         )
-
-        for f in (actions_file, state_file):
-            if f.exists():
-                f.unlink()
-
-        write_action(actions_file, 0)  # 0 = DAY
-
-        speed = args.speed if args.speed > 0 else 1.0
-        print(f"Visual watch running. Speed: {speed} steps/s. Close GUI window to stop.")
-
-        def _restart_gui():
-            """Kill old process, clean IPC, launch fresh, seed action."""
-            if proc.poll() is None:
-                proc.kill()
-            for f in (actions_file, state_file):
-                if f.exists():
-                    f.unlink()
-            p = launch_visual_watch(
-                model_dir=model_dir,
-                exe_path=exe_path,
-                actions_file=actions_file,
-                state_file=state_file,
-                seed=args.seed,
-                map_size=args.map_size,
-                curriculum=st,
-                reward_config_path=reward_cfg_path,
-                minimap_radius=resolved_minimap_radius,
-                tax_to_debt=tax_to_debt,
-            )
-            write_action(actions_file, 0)
-            return p
-
-        try:
-            step_count = 0
-            episode = 0
-            total_reward = 0.0
-            total_episodes = max(1, args.episodes)
-            while episode < total_episodes:
-                # Restart if process died
-                if proc.poll() is not None:
-                    print("  [GUI process exited, restarting...]")
-                    proc = _restart_gui()
-                    time.sleep(0.5)
-                    continue
-
-                state = read_state(state_file)
-                if state is None:
-                    time.sleep(0.05)
-                    continue
-
-                if state.get("terminated"):
-                    episode += 1
-                    total_reward = 0.0
-                    print(f"  [Game Over at day {state.get('day')}] "
-                          f"episode {episode}/{total_episodes}")
-                    if episode >= total_episodes:
-                        break
-                    # Wait for C++ auto-reset (5s in gui.cpp) + margin
-                    print("  [Waiting for C++ auto-reset...]")
-                    time.sleep(6.0)
-                    if proc.poll() is not None:
-                        # Process died — restart it
-                        proc = _restart_gui()
-                        time.sleep(0.5)
-                    else:
-                        # Process alive — GUI auto-reset, clear IPC and send fresh action
-                        for f in (actions_file, state_file):
-                            if f.exists():
-                                f.unlink()
-                        write_action(actions_file, 0)  # 0 = DAY
-                        time.sleep(0.1)
-                    continue
-
-                step_count += 1
-                day = state.get("day", "?")
-                money = state.get("money", "?")
-                bases = state.get("bases", "?")
-                if step_count <= 10 or step_count % 50 == 0:
-                    print(f"  step {step_count}  day {day}  "
-                          f"money={money} bases={bases} "
-                          f"action_history={state.get('action')}")
-
-                obs = state.get("obs", [])
-                minimap_data = state.get("minimap", [])
-                action_name = ""
-                if obs:
-                    try:
-                        obs_arr = np.array(obs, dtype=np.float32)
-                        obs_arr = env.normalizer.normalize(obs_arr)
-                        # Minimap grid size inferred from data length instead
-                        # of hardcoded 29x29 (radius may differ from 14).
-                        mm_t = None
-                        if minimap_data:
-                            n_mm = len(minimap_data)
-                            n_ch = 8
-                            grid = int(round((n_mm / n_ch) ** 0.5))
-                            if grid * grid * n_ch == n_mm:
-                                mm_t = torch.from_numpy(
-                                    np.array(minimap_data, dtype=np.float32)
-                                    .reshape(1, n_ch, grid, grid)).to(dev)
-                        with torch.no_grad():
-                            if is_hybrid and mm_t is not None:
-                                obs_t = torch.from_numpy(obs_arr).to(dev).reshape(1, -1)
-                                logits, _ = policy(obs_t, mm_t)
-                            elif is_cnn and mm_t is not None:
-                                logits, _ = policy(mm_t)
-                            else:
-                                obs_t = torch.from_numpy(obs_arr).to(dev).reshape(1, -1)
-                                logits, _ = policy(obs_t)
-                            # Apply action masking from GUI env (match training behavior)
-                            mask = state.get("action_mask", None)
-                            if mask is not None:
-                                mask_t = torch.tensor(mask, dtype=torch.float32, device=dev).reshape(1, -1)
-                                # -1e9 like training (rl/ppo.py), not -inf: NaN-safe.
-                                logits = logits.masked_fill(mask_t == 0, -1e9)
-                            # ...and the curriculum mask (GUI exe may predate
-                            # --unlock-ids support and unlock everything)
-                            if cur_mask is not None:
-                                cm_t = torch.tensor(cur_mask, dtype=torch.float32, device=dev).reshape(1, -1)
-                                # -1e9 like training (rl/ppo.py), not -inf: NaN-safe.
-                                logits = logits.masked_fill(cm_t == 0, -1e9)
-                            action = int(logits.argmax(dim=-1).item())
-                        action_name = action_names[action] if action < len(action_names) else str(action)
-                        if step_count <= 10 or step_count % 50 == 0:
-                            print(f"  -> sending action {action} ({action_name})")
-                        write_action(actions_file, action)
-                    except Exception as e:
-                        print(f"  [WARN] obs/inference error on step {step_count}: {e}")
-                        if step_count <= 10 or step_count % 50 == 0:
-                            print(f"  -> fallback action 0 (DAY)")
-                        write_action(actions_file, 0)
-                else:
-                    write_action(actions_file, 0)
-
-                reward = state.get("reward", 0.0)
-                total_reward += reward
-                # Feed the UI state panel (same JSONL protocol as text mode);
-                # without this the "Текущее состояние среды" panel stays empty
-                # in visual mode.
-                if emit_step:
-                    emit_step(
-                        step=step_count, day=day, action=action_name,
-                        reward=reward, total_reward=round(total_reward, 2),
-                        people=state.get("people", 0), bases=bases, money=money,
-                    )
-
-                if args.speed > 0:
-                    time.sleep(1.0 / args.speed)
-
-        except KeyboardInterrupt:
-            pass
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-            for f in (actions_file, state_file):
-                if f.exists():
-                    f.unlink()
-            if reward_cfg_path and Path(reward_cfg_path).exists():
-                Path(reward_cfg_path).unlink()
-            env.close()
-            print("Visual watch stopped.")
+        env.close()
+        if rc != 0:
+            sys.exit(rc)
         return
 
     env.close()
