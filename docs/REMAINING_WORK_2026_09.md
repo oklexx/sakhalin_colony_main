@@ -224,7 +224,9 @@ CPython (`/usr/include/python3.11`) и системных библиотек Qt 
       env.cpp: 2300 → 1888 строк. Обновлены `CMakeLists.txt`, `build_gui.bat`,
       `build_exe.bat`, `scripts/cpp_checks.sh` (SHARED_SRC). Вывод всех 7
       проверок побайтово идентичен до/после переноса.
-- [ ] 2/4 `src/action_mask.cpp` — `action_mask()` (кеш P2-11 + lot_cache).
+- [x] 2/4 `src/action_mask.cpp` (2026-09-20): `action_mask()` (кеш P2-11 +
+      lot_cache). env.cpp: 1888 → 1733 строки. Вывод всех 7 проверок
+      побайтово идентичен.
 - [ ] 3/4 `src/observation.cpp` — `obs()` (×2), `minimap()`, `dump_obs()`,
       `compute_catalog`, `count_priority_reached`, `python_season_to_cpp`.
 - [ ] 4/4 `src/vec_env.cpp` — `ColonyVecEnvCpp` (последний, самый рискованный).
@@ -289,7 +291,8 @@ BUILD-действий совпало до и после во всех сост�
 ## Что осталось в целом
 
 1. **P2-7 — распил `src/env.cpp`** отдельным PR (порядок по риску выше):
-   1/4 `lot_finder.cpp` ✅ (коммит 2026-09-20), 2/4–4/4 в работе.
+   1/4 `lot_finder.cpp` ✅, 2/4 `action_mask.cpp` ✅ (коммиты 2026-09-20),
+   3/4–4/4 в работе.
 2. ~~**Наведение на воду** (из P0-1)~~ — ✅ сделано 2026-09-20:
    цель-ориентированный `find_lot_dir` (`pick_dir_cell` в `src/env.cpp`),
    регресс-зонд — `water_mask_check` W9 (seed 100 + все 8 сидов).
