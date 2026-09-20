@@ -23,6 +23,7 @@ add_library(colony_cpp MODULE
     src/env.cpp
     src/lot_finder.cpp
     src/action_mask.cpp
+    src/observation.cpp
     src/bindings.cpp
 )
 

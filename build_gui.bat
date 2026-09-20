@@ -110,6 +110,12 @@ cl.exe /O2 /EHsc /std:c++17 /utf-8 /nologo /c ^
     /Fo"%OBJDIR%\action_mask.obj"
 if errorlevel 1 goto :fail
 
+cl.exe /O2 /EHsc /std:c++17 /utf-8 /nologo /c ^
+    /I"%ROOT%\include" /I"%ROOT%\include\third_party" ^
+    "%ROOT%\src\observation.cpp" ^
+    /Fo"%OBJDIR%\observation.obj"
+if errorlevel 1 goto :fail
+
 echo === Compiling GUI ===
 cl.exe /O2 /EHsc /std:c++17 /utf-8 /nologo /c ^
     /I"%ROOT%\include" /I"%ROOT%\include\third_party" /I"%RLDIR%\include" ^
@@ -128,6 +134,7 @@ cl.exe /nologo ^
     "%OBJDIR%\env.obj" ^
     "%OBJDIR%\lot_finder.obj" ^
     "%OBJDIR%\action_mask.obj" ^
+    "%OBJDIR%\observation.obj" ^
     "%OBJDIR%\rewards.obj" ^
     /Fe"%ROOT%\sakhalin_colony_gui.exe" ^
     /link /SUBSYSTEM:CONSOLE /NODEFAULTLIB:libcmt.lib ^
