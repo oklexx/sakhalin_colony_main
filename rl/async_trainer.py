@@ -840,6 +840,13 @@ class AsyncTrainer:
             cand_paths = sorted(save_dir.glob("checkpoint_*_steps.pt")) + [final_path]
             if (save_dir / "best_model.pt").exists():
                 cand_paths.append(save_dir / "best_model.pt")
+            # Keep the progress denominator stable and do not evaluate the same
+            # path twice if best_model.pt happens to be a listed candidate.
+            cand_paths = sorted(set(cand_paths), key=lambda p: str(p).lower())
+            tournament_total = len(cand_paths)
+            tournament_done = 0
+            tournament_started = time.perf_counter()
+            self._log(f"[Tournament] Progress: 0.0% (0/{tournament_total})")
 
             import random
             seeds = [random.randint(1, 999999) for _ in range(5)]
@@ -848,9 +855,17 @@ class AsyncTrainer:
             min_b = getattr(self.cfg, "eval_min_bases", 5)
             min_d = getattr(self.cfg, "eval_min_days", 730.0)
 
-            for cp in set(cand_paths):
+            for candidate_index, cp in enumerate(cand_paths, start=1):
                 if not cp.exists():
+                    tournament_done += 1
+                    percent = 100.0 * tournament_done / max(1, tournament_total)
+                    self._log(f"[Tournament] Progress: {percent:.1f}% "
+                              f"({tournament_done}/{tournament_total}), "
+                              f"missing={cp.name}")
                     continue
+                self._log(f"[Tournament] Candidate {candidate_index}/{tournament_total}: "
+                          f"{cp.name} (progress "
+                          f"{100.0 * (candidate_index - 1) / max(1, tournament_total):.1f}%)")
                 try:
                     cp_norm = Path(str(cp).replace(".pt", ".norm.json"))
                     cp_norm_str = str(cp_norm) if cp_norm.exists() else norm_path
@@ -924,6 +939,15 @@ class AsyncTrainer:
                         best_cand_path = cp
                 except Exception as ex:
                     self._log(f"[Tournament] Candidate {cp.name} evaluation error: {ex}")
+                finally:
+                    tournament_done += 1
+                    percent = 100.0 * tournament_done / max(1, tournament_total)
+                    elapsed_t = time.perf_counter() - tournament_started
+                    eta_s = (elapsed_t / tournament_done) * (tournament_total - tournament_done)
+                    eta_min = eta_s / 60.0
+                    self._log(f"[Tournament] Progress: {percent:.1f}% "
+                              f"({tournament_done}/{tournament_total}), "
+                              f"remaining≈{eta_min:.1f} min")
 
             if best_cand_path is not None:
                 self._log(f"[Tournament] Winner: {best_cand_path.name} (score={best_cand_score:.1f})")

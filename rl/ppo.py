@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import torch
 import torch._dynamo  # noqa: F401  (must be module-level: a function-local
                       # `import torch._dynamo` would make `torch` local to
@@ -322,6 +323,12 @@ class PPO:
         # Always save from the un-compiled module: the OptimizedModule's
         # state_dict prefixes keys with "_orig_mod.", which older checkpoints
         # and the evaluator's architecture inference do not expect.
+        #
+        # Write beside the destination and replace it only after torch.save has
+        # completed.  The GUI can start watch while training is still running;
+        # a direct torch.save(path) exposes a partially-written ZIP checkpoint
+        # and the watcher then exits immediately after "Loading policy ...".
+        # os.replace is atomic on the same filesystem (including Windows).
         model = self._raw_model
         clean_state = {}
         for k, v in model.state_dict().items():
@@ -352,7 +359,7 @@ class PPO:
             extra["grid_size"] = model.grid_size
         elif hasattr(model, "obs_size"):
             extra["obs_size"] = model.obs_size
-        torch.save({
+        payload = {
             "model_state": clean_state,
             "optimizer_state": self.optimizer.state_dict(),
             "buffer_pos": self.buffer.pos,
@@ -360,7 +367,19 @@ class PPO:
             "hidden_sizes": hidden_sizes,
             "obs_version": int(getattr(self, "obs_version", 1)),
             **extra,
-        }, path)
+        }
+        destination = os.fspath(path)
+        temporary = f"{destination}.tmp-{os.getpid()}"
+        try:
+            torch.save(payload, temporary)
+            os.replace(temporary, destination)
+        finally:
+            # If serialization failed, do not leave a file that the model
+            # scanner could mistake for a usable checkpoint.
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
     def load(self, path: str):
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
