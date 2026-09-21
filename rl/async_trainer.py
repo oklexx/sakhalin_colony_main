@@ -447,6 +447,8 @@ class AsyncTrainer:
         all_bases: list[float] = []
         all_people: list[float] = []
         all_returns: list[float] = []
+        all_water: list[float] = []
+        all_water_ready: list[float] = []
 
         try:
             for seed in seeds:
@@ -467,6 +469,8 @@ class AsyncTrainer:
                 all_bases.extend(result.get("episode_bases", [result["bases"]]))
                 all_people.extend(result.get("episode_people", [result["people"]]))
                 all_returns.extend(result.get("episode_returns", [result["avg_return"]]))
+                all_water.extend(result.get("episode_water", [result.get("water_channels", 0.0)]))
+                all_water_ready.extend(result.get("episode_water_ready", [result.get("water_ready", 0.0)]))
         finally:
             if eval_model_path.exists():
                 eval_model_path.unlink()
@@ -477,11 +481,15 @@ class AsyncTrainer:
             bases_agg = float(np.median(all_bases))
             people_agg = float(np.median(all_people))
             return_agg = float(np.median(all_returns))
+            water_agg = float(np.median(all_water)) if all_water else 0.0
+            water_ready_agg = float(np.median(all_water_ready)) if all_water_ready else 0.0
         else:
             days_agg = float(np.mean(all_days))
             bases_agg = float(np.mean(all_bases))
             people_agg = float(np.mean(all_people))
             return_agg = float(np.mean(all_returns))
+            water_agg = float(np.mean(all_water)) if all_water else 0.0
+            water_ready_agg = float(np.mean(all_water_ready)) if all_water_ready else 0.0
 
         bases_std = float(np.std(all_bases)) if all_bases else 0.0
         bases_p25 = float(np.percentile(all_bases, 25)) if all_bases else 0.0
@@ -489,22 +497,31 @@ class AsyncTrainer:
 
         w1, w2, w3, w4 = getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))
         variance_penalty = 0.2 * bases_std + 0.001 * days_std
+
+        # Water chain bonus in eval score:
+        # Starting WaterChannel construction gives +20, operational WaterChannel gives +50.
+        water_score = 20.0 * min(water_agg, 2.0) + 50.0 * min(water_ready_agg, 2.0)
+
         score = (days_agg * w1 + bases_agg * w2
                  + people_agg * w3 + max(0.0, return_agg) * w4
+                 + water_score
                  - variance_penalty)
 
         min_bases = getattr(self.cfg, "eval_min_bases", 5)
         min_days = getattr(self.cfg, "eval_min_days", 730.0)
-        thresholds_met = (bases_agg >= min_bases) and (bases_p25 >= min_bases * 0.7) and (days_agg >= min_days)
+        # Standard threshold OR water breakthrough threshold (built water channel + 2 bases + survived 60 days)
+        water_qualified = (water_agg >= 1.0 and bases_agg >= 2 and days_agg >= 60.0)
+        thresholds_met = ((bases_agg >= min_bases) and (bases_p25 >= min_bases * 0.7) and (days_agg >= min_days)) or water_qualified
 
         ci95 = {}
+        water_str = f" water={water_agg:.1f} (ready={water_ready_agg:.1f})" if (water_agg > 0 or water_ready_agg > 0) else ""
         if len(all_days) >= 4:
             ci95["days"] = [float(np.percentile(all_days, 2.5)), float(np.percentile(all_days, 97.5))]
             ci95["bases"] = [float(np.percentile(all_bases, 2.5)), float(np.percentile(all_bases, 97.5))]
             ci95["people"] = [float(np.percentile(all_people, 2.5)), float(np.percentile(all_people, 97.5))]
             self._log(
                 f"[Eval @ {total_done:,}] days={days_agg:.1f} "
-                f"people={people_agg:.1f} bases={bases_agg:.1f} "
+                f"people={people_agg:.1f} bases={bases_agg:.1f}{water_str} "
                 f"return={return_agg:.1f} score={score:.2f} "
                 f"CI95 days={ci95['days'][0]:.1f}-{ci95['days'][1]:.1f} "
                 f"bases={ci95['bases'][0]:.1f}-{ci95['bases'][1]:.1f} "
@@ -513,7 +530,7 @@ class AsyncTrainer:
         else:
             self._log(
                 f"[Eval @ {total_done:,}] days={days_agg:.1f} "
-                f"people={people_agg:.1f} bases={bases_agg:.1f} "
+                f"people={people_agg:.1f} bases={bases_agg:.1f}{water_str} "
                 f"return={return_agg:.1f} score={score:.2f} "
                 f"thresholds={'PASS' if thresholds_met else 'FAIL'}"
             )
@@ -534,9 +551,13 @@ class AsyncTrainer:
                 "best_bases": bases_agg,
                 "best_people": people_agg,
                 "best_return": return_agg,
+                "best_water": water_agg,
+                "best_water_ready": water_ready_agg,
+                "water_score": water_score,
                 "score_weights": list(getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))),
                 "min_bases": min_bases,
                 "min_days": min_days,
+                "map_size": int(getattr(self.cfg, "map_size", 280)),
                 "total_timesteps": total_done,
                 "episodes": len(all_days),
                 # stage + manual set → watch/eval can rebuild the same scenario
@@ -549,12 +570,14 @@ class AsyncTrainer:
             with open(meta_path, "w") as f:
                 json.dump(meta, f, indent=2)
 
-            self._log(f"[Best] Saved best_model.pt (score={score:.2f}, days={days_agg:.1f}, bases={bases_agg:.1f})")
+            self._log(f"[Best] Saved best_model.pt (score={score:.2f}, days={days_agg:.1f}, bases={bases_agg:.1f}{water_str})")
 
         return {
             "days": days_agg,
             "bases": bases_agg,
             "people": people_agg,
+            "water": water_agg,
+            "water_ready": water_ready_agg,
             "avg_return": return_agg,
             "score": score,
             "saved": thresholds_met and (self.best_score == score),
@@ -890,6 +913,8 @@ class AsyncTrainer:
                     all_bases = []
                     all_people = []
                     all_returns = []
+                    all_water = []
+                    all_water_ready = []
                     for seed in seeds:
                         res = run_eval(
                             model_path=str(cp),
@@ -908,17 +933,23 @@ class AsyncTrainer:
                         all_bases.extend(res.get("episode_bases", [res["bases"]]))
                         all_people.extend(res.get("episode_people", [res["people"]]))
                         all_returns.extend(res.get("episode_returns", [res["avg_return"]]))
+                        all_water.extend(res.get("episode_water", [res.get("water_channels", 0.0)]))
+                        all_water_ready.extend(res.get("episode_water_ready", [res.get("water_ready", 0.0)]))
 
                     if use_median:
                         days_agg = float(np.median(all_days))
                         bases_agg = float(np.median(all_bases))
                         people_agg = float(np.median(all_people))
                         return_agg = float(np.median(all_returns))
+                        water_agg = float(np.median(all_water)) if all_water else 0.0
+                        water_ready_agg = float(np.median(all_water_ready)) if all_water_ready else 0.0
                     else:
                         days_agg = float(np.mean(all_days))
                         bases_agg = float(np.mean(all_bases))
                         people_agg = float(np.mean(all_people))
                         return_agg = float(np.mean(all_returns))
+                        water_agg = float(np.mean(all_water)) if all_water else 0.0
+                        water_ready_agg = float(np.mean(all_water_ready)) if all_water_ready else 0.0
 
                     bases_std = float(np.std(all_bases)) if all_bases else 0.0
                     days_std = float(np.std(all_days)) if all_days else 0.0
@@ -929,12 +960,21 @@ class AsyncTrainer:
                     effective_bases = min(bases_agg, 15.0)
                     # 2) Реальный вес возврата (0.005 вместо 0.0001): здоровая экономика +2000 даёт +10 очков
                     return_score = return_agg * 0.005
+                    # 3) Бонус за создание водной инфраструктуры (водоканал строящийся +20, работающий +50)
+                    water_score = 20.0 * min(water_agg, 2.0) + 50.0 * min(water_ready_agg, 2.0)
                     sc = (days_agg * w1 + effective_bases * w2
                           + people_agg * w3 + return_score
+                          + water_score
                           - variance_penalty)
 
-                    # Только модели без банкротства (return > -5000) могут победить
-                    if bases_agg >= min_b and days_agg >= min_d and return_agg > -5000.0 and sc > best_cand_score:
+                    # Модель побеждает, если:
+                    #   - выполнила стандартные требования (базы >= min_b, дни >= min_d)
+                    #   ИЛИ
+                    #   - совершила прорыв по воде (water >= 1.0, базы >= 2, дни >= 60)
+                    # И нет катастрофического банкротства (return > -5000)
+                    water_qualified = (water_agg >= 1.0 and bases_agg >= 2 and days_agg >= 60.0)
+                    thresholds_ok = (bases_agg >= min_b and days_agg >= min_d) or water_qualified
+                    if thresholds_ok and return_agg > -5000.0 and sc > best_cand_score:
                         best_cand_score = sc
                         best_cand_path = cp
                 except Exception as ex:

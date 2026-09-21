@@ -830,6 +830,9 @@ class MainWindow2(QMainWindow):
         self.chk_watch_visual = T.check("GUI-окно", True,
                                         "raylib-окно игры (нужен sakhalin_colony_gui.exe)")
         bar.addWidget(self.chk_watch_visual)
+        self.chk_watch_sample = T.check("Сэмплирование", False,
+                                        "Выбирать действия стохастично по вероятностям вместо строгого argmax (как во время обучения)")
+        bar.addWidget(self.chk_watch_sample)
         self.btn_watch = T.button("👁 Наблюдать", self._toggle_watch, "primary")
         bar.addWidget(self.btn_watch)
         bar.addStretch(1)
@@ -925,6 +928,7 @@ class MainWindow2(QMainWindow):
         self.spn_watch_map.setValue(int(cfg.get("watch_map_size", 280)))
         self.spn_watch_seed.setValue(int(cfg.get("watch_seed", 0)))
         self.chk_watch_visual.setChecked(bool(cfg.get("watch_visual", True)))
+        self.chk_watch_sample.setChecked(bool(cfg.get("watch_sample", False)))
         idx = self.cmb_watch_speed.findText(str(cfg.get("watch_speed", "5")))
         if idx >= 0:
             self.cmb_watch_speed.setCurrentIndex(idx)
@@ -1042,6 +1046,7 @@ class MainWindow2(QMainWindow):
         cfg["watch_map_size"] = self.spn_watch_map.value()
         cfg["watch_seed"] = self.spn_watch_seed.value()
         cfg["watch_visual"] = self.chk_watch_visual.isChecked()
+        cfg["watch_sample"] = self.chk_watch_sample.isChecked()
         cfg["watch_speed"] = self.cmb_watch_speed.currentText()
         return cfg
 
@@ -1444,6 +1449,19 @@ class MainWindow2(QMainWindow):
             idx = self.cmb_watch_model.findData(str(p))
             if idx >= 0:
                 self.cmb_watch_model.setCurrentIndex(idx)
+            # Auto-sync watch map size with model's trained map_size from meta
+            for meta_name in ("best_model.meta.json", "meta.json"):
+                mf = p / meta_name
+                if mf.exists():
+                    try:
+                        with open(mf, encoding="utf-8") as f:
+                            mdata = json.load(f)
+                        ms = mdata.get("map_size")
+                        if ms and int(ms) > 0:
+                            self.spn_watch_map.setValue(int(ms))
+                            break
+                    except Exception:
+                        pass
 
     def _watch_selected_model(self):
         row = self.tbl_models.currentRow()
@@ -1574,6 +1592,8 @@ class MainWindow2(QMainWindow):
         args += ["--log-file", log_file]
         if self.chk_watch_visual.isChecked():
             args.append("--visual")
+        if self.chk_watch_sample.isChecked():
+            args.append("--sample")
         popen_kwargs: Dict[str, Any] = {
             "cwd": str(_PROJECT),
             "stderr": subprocess.STDOUT,
