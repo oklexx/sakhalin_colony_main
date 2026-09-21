@@ -30,20 +30,55 @@ from train_ui2.evaluator import _load_policy
 from train_ui2.models import latest_checkpoint
 
 
-class TeeWriter:
-    """Write to both stdout and a file (for UI log capture)."""
+def _same_file(stream, path: Path) -> bool:
+    """Is `stream` already pointing at `path`?
 
-    def __init__(self, stdout, file):
+    The GUI launches us with stdout AND stderr redirected into --log-file
+    (`subprocess.Popen(stdout=fh, stderr=STDOUT)`). Opening the same file a
+    second time here gives a SECOND file object with its OWN offset: the two
+    writers then overwrite each other's bytes, and whatever lands last wins.
+    That is why a crash showed up in the UI as «завершилось с кодом 1» with the
+    traceback nowhere to be seen — it was written at an offset that the
+    duplicated `print` output had already clobbered.
+    """
+    try:
+        s1 = os.fstat(stream.fileno())
+    except (OSError, ValueError, AttributeError):
+        return False
+    try:
+        s2 = os.stat(path)
+    except OSError:
+        return False
+    if os.name == "nt":
+        # st_ino is meaningful on Windows for Python 3.8+ (via GetFileInformation).
+        return (s1.st_dev, s1.st_ino) == (s2.st_dev, s2.st_ino) and s1.st_ino != 0
+    return (s1.st_dev, s1.st_ino) == (s2.st_dev, s2.st_ino)
+
+
+class TeeWriter:
+    """Write to both stdout and a file (for UI log capture).
+
+    When stdout IS the file (UI launch), the duplicate write is suppressed —
+    see `_same_file`.
+    """
+
+    def __init__(self, stdout, file, duplicate: bool = True):
         self.stdout = stdout
         self.file = file
+        self.duplicate = duplicate
 
     def write(self, data):
-        self.stdout.write(data)
+        if self.duplicate:
+            self.stdout.write(data)
         self.file.write(data)
         self.file.flush()
 
     def flush(self):
-        self.stdout.flush()
+        if self.duplicate:
+            try:
+                self.stdout.flush()
+            except (OSError, ValueError):
+                pass
         self.file.flush()
 
 
@@ -732,8 +767,13 @@ def main():
     require_colony(allow_stale=args.allow_stale_pyd)
 
     if args.log_file:
-        log_f = open(args.log_file, "w", encoding="utf-8")
-        sys.stdout = TeeWriter(sys.__stdout__, log_f)
+        # "a", not "w": the GUI already opened this very file and handed it to
+        # us as stdout. Truncating it here threw away lines and left the two
+        # writers fighting over offsets, so the crash reason never survived to
+        # the UI panel («причина — в строках выше» pointed at nothing).
+        log_f = open(args.log_file, "a", encoding="utf-8")
+        _dup = not _same_file(sys.__stdout__, Path(args.log_file))
+        sys.stdout = TeeWriter(sys.__stdout__, log_f, duplicate=_dup)
         import json as _json
         def emit_step(**kw):
             print(_json.dumps({"type": "step", **kw}, ensure_ascii=False))
@@ -1116,5 +1156,37 @@ def main():
         print(f"\n{final_msg}")
 
 
+def _main_guarded() -> int:
+    """Run main() and make sure the failure REASON reaches the log file.
+
+    Без этого любое исключение после «Loading policy …» (несовпадение раскладки
+    obs, битый чекпойнт, отсутствующий normalization.json, ошибка формы в
+    policy) улетало в stderr интерпретатора и терялось, а UI показывал только
+    «Наблюдение завершилось с кодом 1 (причина — в строках выше)» — при том что
+    выше ничего не было. Теперь traceback пишется в тот же лог, и последняя
+    строка исключения дублируется как JSON-сообщение уровня error, чтобы UI
+    показал её в панели красным.
+    """
+    import traceback
+
+    try:
+        main()
+        return 0
+    except SystemExit as e:
+        return int(e.code or 0)
+    except BaseException as e:  # noqa: BLE001 — диагностика важнее типа
+        tb = traceback.format_exc()
+        try:
+            print(tb, flush=True)
+            import json as _json
+            msg = f"{type(e).__name__}: {e}"
+            print(_json.dumps({"type": "error", "level": "error",
+                               "message": f"Наблюдение упало — {msg}"},
+                              ensure_ascii=False), flush=True)
+        except Exception:
+            pass
+        return 1
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(_main_guarded())

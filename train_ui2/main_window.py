@@ -1603,6 +1603,11 @@ class MainWindow2(QMainWindow):
                          f"карта {self.spn_watch_map.value()})")
 
     def _poll_watch(self):
+        self._drain_watch_log()
+        self._check_watch_exit()
+
+    def _drain_watch_log(self) -> None:
+        """Прочитать и показать всё, что дописалось в лог наблюдения."""
         if not self._watch_log:
             return
         try:
@@ -1653,7 +1658,6 @@ class MainWindow2(QMainWindow):
                         self.log(d.get("level", "info"), d.get("message", ""))
                         continue
                 self.log("info", line)
-        self._check_watch_exit()
 
     def _check_watch_exit(self) -> None:
         """Завершился ли процесс наблюдения; показать код возврата.
@@ -1669,6 +1673,10 @@ class MainWindow2(QMainWindow):
         self._watch_proc = None
         self._watch_timer.stop()
         self.btn_watch.setText("👁 Наблюдать")
+        # Процесс уже умер, но его последние строки (traceback!) могли попасть
+        # в файл ПОСЛЕ нашего последнего чтения. Без этого добора UI печатал
+        # «причина — в строках выше», а самих строк в панели не было.
+        self._drain_watch_log()
         if rc not in (0, None):
             self.log("error", f"Наблюдение завершилось с кодом {rc} "
                               f"(причина — в строках выше)")
