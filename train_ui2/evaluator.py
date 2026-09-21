@@ -321,6 +321,9 @@ def run_eval(
     people_list: list[int] = []
     bases_list: list[int] = []
     returns: list[float] = []
+    water_list: list[int] = []
+    water_ready_list: list[int] = []
+    water_stock_list: list[int] = []
 
     log_file = None
     if log_path:
@@ -388,6 +391,25 @@ def run_eval(
                     if log_file:
                         log_file.write(f"  *** EPISODE END | terminated={terminated} truncated={truncated} | total_reward={total_reward:.1f} ***\n")
                     break
+
+            # Track water infrastructure metrics
+            w_count, w_ready, w_stock = 0, 0, 0
+            try:
+                cpp_env = getattr(env, "cpp_env", None)
+                if cpp_env is not None and hasattr(cpp_env, "game"):
+                    g = cpp_env.game()
+                    bases = g.bases()
+                    w_count = sum(1 for b in bases if b.get("id") == "WaterChannel")
+                    w_ready = sum(1 for b in bases if b.get("id") == "WaterChannel" and b.get("build_days", 1) == 0)
+                    sunduk = g.sunduk
+                    if len(sunduk) > 6:
+                        w_stock = int(sunduk[6])
+            except Exception:
+                pass
+            water_list.append(w_count)
+            water_ready_list.append(w_ready)
+            water_stock_list.append(w_stock)
+
             days_list.append(int(info.get("days", 0)))
             people_list.append(int(info.get("people", 0)))
             bases_list.append(int(info.get("bases", 0)))
@@ -399,6 +421,7 @@ def run_eval(
             log_file.write(f"SUMMARY | days={sum(days_list)/max(len(days_list),1):.0f} | "
                           f"people={sum(people_list)/max(len(people_list),1):.0f} | "
                           f"bases={sum(bases_list)/max(len(bases_list),1):.0f} | "
+                          f"water={sum(water_list)/max(len(water_list),1):.1f} | "
                           f"avg_return={sum(returns)/max(len(returns),1):.1f}\n")
             log_file.close()
 
@@ -410,8 +433,13 @@ def run_eval(
         "bases": float(sum(bases_list) / n),
         "episodes": float(len(days_list)),
         "avg_return": float(sum(returns) / n),
+        "water_channels": float(sum(water_list) / n),
+        "water_ready": float(sum(water_ready_list) / n),
+        "water_stock": float(sum(water_stock_list) / n),
         "episode_days": days_list,
         "episode_bases": bases_list,
         "episode_people": people_list,
         "episode_returns": returns,
+        "episode_water": water_list,
+        "episode_water_ready": water_ready_list,
     }

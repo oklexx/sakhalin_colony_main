@@ -464,6 +464,7 @@ def run_visual_watch(
     action_names: "list[str] | None" = None,
     speed: float = 1.0,
     episodes: int = 1,
+    temperature: float = 0.0,
     emit_step=None,
     emit_log=None,
 ) -> int:
@@ -587,9 +588,17 @@ def run_visual_watch(
                 cm_t = torch.tensor(cur_mask, dtype=torch.float32,
                                     device=device).reshape(1, -1)
                 logits = logits.masked_fill(cm_t == 0, -1e9)
-            action = int(logits.argmax(dim=-1).item())
+
+            probs = torch.softmax(logits, dim=-1).squeeze(0)
+            if temperature > 0.0:
+                sample_probs = torch.softmax(logits / max(1e-4, temperature), dim=-1).squeeze(0)
+                action = int(torch.multinomial(sample_probs, 1).item())
+            else:
+                action = int(logits.argmax(dim=-1).item())
         name = names[action] if action < len(names) else str(action)
-        return action, name
+        top3_idx = torch.topk(probs, min(3, probs.numel())).indices.tolist()
+        top3_info = ", ".join(f"{names[i] if i < len(names) else i}: {probs[i].item():.1%}" for i in top3_idx)
+        return action, name, top3_info
 
     restarts = 0
     step_count = 0
@@ -638,8 +647,9 @@ def run_visual_watch(
             day = state.get("day", "?")
             money = state.get("money", "?")
             bases = state.get("bases", "?")
+            top3_info = ""
             try:
-                action, action_name = _choose_action(state)
+                action, action_name, top3_info = _choose_action(state)
             except Exception as e:
                 infer_errors += 1
                 action, action_name = 0, "DAY"
@@ -654,8 +664,9 @@ def run_visual_watch(
                          level="error")
             else:
                 if step_count <= 10 or step_count % 50 == 0:
+                    top_suffix = f" [{top3_info}]" if top3_info else ""
                     print(f"  step {step_count}  day {day}  money={money} "
-                          f"bases={bases}  -> action {action} ({action_name})",
+                          f"bases={bases}  -> action {action} ({action_name}){top_suffix}",
                           flush=True)
 
             stamp = state_stamp(state_file)
@@ -758,6 +769,10 @@ def main():
                              "wins; a mismatch with the checkpoint still errors out.")
     parser.add_argument("--visual", action="store_true",
                         help="Open visual GUI window (requires sakhalin_colony_gui.exe)")
+    parser.add_argument("--temperature", type=float, default=0.0,
+                        help="Sampling temperature (0=deterministic argmax, >0=stochastic sampling, e.g. 0.8)")
+    parser.add_argument("--sample", action="store_true",
+                        help="Enable stochastic action sampling (default temperature 0.8)")
     parser.add_argument("--allow-stale-pyd", action="store_true",
                         help="Debugging only: run even if the colony_cpp binary is stale "
                              "(same as COLONY_ALLOW_STALE_PYD=1). Expect wrong behaviour.")
@@ -1050,7 +1065,11 @@ def main():
                             logits = logits.masked_fill(mask_t == 0, -1e9)
                         except Exception:
                             pass
-                    action = int(logits.argmax(dim=-1).item())
+                    if watch_temp > 0.0:
+                        sample_probs = torch.softmax(logits / max(1e-4, watch_temp), dim=-1).squeeze(0)
+                        action = int(torch.multinomial(sample_probs, 1).item())
+                    else:
+                        action = int(logits.argmax(dim=-1).item())
 
                 obs, reward, terminated, truncated, info = env.step(action)
                 total_reward += reward
@@ -1096,6 +1115,11 @@ def main():
                 else:
                     print(f"\n>>> {msg}")
 
+    watch_temp = args.temperature if args.temperature > 0.0 else (0.8 if args.sample else 0.0)
+    stored_map_size = meta.get("map_size")
+    if stored_map_size and int(stored_map_size) != args.map_size:
+        say(f"WARNING: наблюдение запущено с картой {args.map_size}, а модель обучалась на карте {stored_map_size}! Рекомендуется запускать с --map-size {stored_map_size}.", level="warning")
+
     if args.visual:
         exe = find_gui_exe()
         if exe is None:
@@ -1140,6 +1164,7 @@ def main():
             action_names=action_names,
             speed=args.speed,
             episodes=args.episodes,
+            temperature=watch_temp,
             emit_step=emit_step,
             emit_log=emit_log,
         )
