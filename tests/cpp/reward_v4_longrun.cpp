@@ -92,6 +92,7 @@ static RewardConfig load_reward_profile(const std::string& path, RewardConfig ba
         RCF_D(housing_need_bonus), RCF_D(food_need_bonus), RCF_D(water_need_bonus),
         RCF_D(buy_food_penalty), RCF_D(goal_survival_coeff),
         RCF_D(main_tax_cash_bonus), RCF_D(main_tax_pressure_coeff),
+        RCF_D(day_penalty), RCF_D(week_penalty),
     };
     static const IntFieldSpec kIntFields[] = {RCF_I(idle_build_threshold_days)};
 

@@ -338,9 +338,17 @@ class MainWindow2(QMainWindow):
         self.lbl_loop = T.label("циклы: нет", T.DIM)
         self.lbl_curric = T.label("курикулум: —", T.DIM)
         self.lbl_thresh = T.label("пороги eval: —", T.DIM)
+        self.lbl_timeskip = T.label("перемотка: —", T.DIM, word_wrap=True)
+        self.lbl_timeskip.setToolTip(
+            "Доля действий «День» + «Неделя» среди последних ~1000 шагов.\n"
+            "Зелёный <30% — модель строит; жёлтый 30–60% — много ждёт;\n"
+            "красный ≥60% — модель «спит»: поднимите штрафы на вкладке "
+            "«Награды» → «Перемотка времени» (day_penalty 0.2–0.5, "
+            "week_penalty 2.0–4.0) или усильте «Штраф простоя».")
         side.addWidget(self.lbl_loop)
         side.addWidget(self.lbl_curric)
         side.addWidget(self.lbl_thresh)
+        side.addWidget(self.lbl_timeskip)
         side.addStretch(1)
         bottom.addLayout(side, 1)
         root.addLayout(bottom)
@@ -1267,6 +1275,24 @@ class MainWindow2(QMainWindow):
                     actions_dict[k] = v
             self.bars_actions.set_items(actions_dict)
             self.bars_build.set_items(build_dict)
+            # Доля перемотки времени (DAY+WEEK) — главный симптом «модель спит».
+            # top_actions — проценты от последних ~1000 шагов (см. async_trainer).
+            day_pct = float(top_actions.get("DAY", 0.0) or 0.0)
+            week_pct = float(top_actions.get("WEEK", 0.0) or 0.0)
+            skip_pct = day_pct + week_pct
+            if skip_pct >= 60.0:
+                skip_color = T.ERR
+                skip_hint = " — модель спит! См. «Награды» → «Перемотка времени»"
+            elif skip_pct >= 30.0:
+                skip_color = T.WARN
+                skip_hint = " — много ожидания"
+            else:
+                skip_color = T.OK
+                skip_hint = ""
+            self.lbl_timeskip.setText(
+                f"перемотка: {skip_pct:.0f}% (день {day_pct:.0f}% + неделя {week_pct:.0f}%){skip_hint}")
+            self.lbl_timeskip.setStyleSheet(
+                f"color:{skip_color}; background:transparent;")
             if d.get("loop_detected"):
                 self.lbl_loop.setText(
                     f"циклы: {d.get('envs_with_loops', 0)} env ({d.get('loop_action_name') or '?'})")

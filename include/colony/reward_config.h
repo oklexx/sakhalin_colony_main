@@ -104,6 +104,19 @@ struct RewardConfig {
     double goal_survival_coeff = 200.0;
     double main_tax_cash_bonus = 100.0;
     double main_tax_pressure_coeff = 0.002;
+
+    // Штраф за перемотку времени (2026-09-21): DAY даёт +0.3..1.5/шаг «ни за что»
+    // (tax_daily_bonus + chain_daily + extraction_daily), а WEEK — те же слагаемые
+    // ×7 дней В ОДИН шаг (chain_daily 0.5 → 3.5, extraction_daily 0.3 → 2.1) плюс
+    // сжатие горизонта для goal_survival_coeff (10k шагов = 70k дней). Поэтому
+    // WEEK — доминирующая стратегия сбора дневных наград, а idle_build_penalty
+    // (-2 за 7 дней) её не перевешивает. Эти два поля — прямой рычаг из UI:
+    // вычитаются при действиях A_DAY / A_WEEK (WEEK — фикс за нажатие, независимо
+    // от числа реально прошедших дней). Дефолт 0.0 = старое поведение.
+    // Ориентир для подбора: day_penalty 0.2-0.5, week_penalty 2.0-4.0
+    // (на уровне error_penalty, иначе выгоднее станет спам ошибочных BUILD).
+    double day_penalty = 0.0;
+    double week_penalty = 0.0;
 };
 
 }  // namespace colony

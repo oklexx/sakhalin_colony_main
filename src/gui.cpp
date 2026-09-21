@@ -933,6 +933,10 @@ int main(int argc, char* argv[]) {
             if (rj.contains("tax_debt_penalty")) rc.tax_debt_penalty = rj["tax_debt_penalty"].get<double>();
             if (rj.contains("mask_managers_by_applicability"))
                 rc.mask_managers_by_applicability = rj["mask_managers_by_applicability"].get<bool>();
+            // Штраф за перемотку времени (2026-09-21): иначе окно наблюдения
+            // считает DAY/WEEK без штрафа, а обучение — со штрафом.
+            if (rj.contains("day_penalty")) rc.day_penalty = rj["day_penalty"].get<double>();
+            if (rj.contains("week_penalty")) rc.week_penalty = rj["week_penalty"].get<double>();
         }
     }
 

@@ -402,6 +402,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     // P0 (2026-09-17): раньше эти слагаемые учитывались в rew, но не в логе —
     // из-за этого сумма компонентов в step-логе не сходилась с total.
     double c_debt = 0, c_born = 0, c_died = 0, c_lost = 0, c_overflow = 0, c_tax_debt = 0;
+    double c_time = 0;  // штраф за перемотку времени (DAY/WEEK), см. day/week_penalty
     std::string action_name = "?";
 
     // Update episode metrics peaks
@@ -450,6 +451,18 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     
     if (action == A_DAY || action == A_WEEK) {
         action_name = action == A_DAY ? "DAY" : "WEEK";
+        // Прямой штраф за перемотку времени (настраивается из UI: вкладка
+        // «Награды» → «Перемотка времени»). WEEK штрафуется фиксом за нажатие,
+        // а не за день: иначе ранний обрыв недели (stop_week на событии) давал бы
+        // скидку именно за «интересную» неделю. BUILD и менеджеры тоже двигают
+        // календарь на 1 день (advance_day ниже), но штрафа не несут — относительная
+        // цена безделья растёт, а легитимное ожидание (стройка идёт, денег нет)
+        // остаётся возможным, пока штраф меньше дневных бонусов.
+        if (action == A_DAY && cfg_.day_penalty != 0.0) {
+            rew -= cfg_.day_penalty; c_time -= cfg_.day_penalty;
+        } else if (action == A_WEEK && cfg_.week_penalty != 0.0) {
+            rew -= cfg_.week_penalty; c_time -= cfg_.week_penalty;
+        }
     } else if (action >= A_BUILD0 && action < A_BUILD0 + n_build_) {
         const BaseData* d = build_data_[action - A_BUILD0];
         action_name = road_dir_name ? (std::string(road_dir_name) + "(Road)")
@@ -1079,6 +1092,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
           << " pres=" << f2(c_preserve) << " sale=" << f2(c_sale) << " mtax=" << f2(c_manual_tax)
           << " chain=" << f2(c_chain) << " daily=" << f2(c_daily) << " nov=" << f2(c_novelty)
           << " mile=" << f2(c_milestone) << " surv=" << f2(c_survival) << " idle=" << f2(c_idle)
+          << " time=" << f2(c_time)
           << " gover=" << f2(c_gameover) << " extr=" << f2(c_extract) << " loan=" << f2(c_loan)
           << " | nw=" << net_worth() << " nw_delta=" << f2(net_worth() - net0)
           << " pop=" << g.people << " bases=" << (int)g.bases.size()

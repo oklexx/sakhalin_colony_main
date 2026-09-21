@@ -40,6 +40,10 @@ REWARD_GROUPS = {
                     "buy_food_penalty"],
     "Дисциплина": ["error_penalty", "preserve_penalty", "demolish_penalty",
                    "idle_build_penalty", "idle_build_threshold_days"],
+    # Штраф за перемотку времени (2026-09-21): DAY/WEEK собирают дневные награды
+    # «ни за что» (WEEK — ×7 дней в один шаг), поэтому без штрафа это доминирующая
+    # стратегия. Дефолт 0.0 = старое поведение.
+    "Перемотка времени": ["day_penalty", "week_penalty"],
     "Milestones и клип": ["milestone_base_bonus", "milestone_people_bonus",
                           "milestone_day_bonus", "milestone_year_bonus",
                           "clip_reward_min", "clip_reward_max"],
@@ -243,6 +247,9 @@ HUMAN_REWARD_HELP = {
     "demolish_penalty": "Штраф за снос здания. Отрицательное число.",
     "idle_build_penalty": "Штраф, когда рабочие простаивают N дней без дела. Отрицательное число.",
     "idle_build_threshold_days": "Сколько дней простоя считать «бездельем».",
+    # Перемотка времени
+    "day_penalty": "Вычет за каждое нажатие «День» — против «спать всю игру».",
+    "week_penalty": "Вычет за каждое нажатие «Неделя» (фикс за нажатие, не за день).",
     # Milestones и клип
     "milestone_base_bonus": "Премия за каждое новое здание-достижение.",
     "milestone_people_bonus": "Премия за рост населения.",

@@ -454,6 +454,9 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readwrite("goal_survival_coeff", &RewardConfig::goal_survival_coeff)
         .def_readwrite("main_tax_cash_bonus", &RewardConfig::main_tax_cash_bonus)
         .def_readwrite("main_tax_pressure_coeff", &RewardConfig::main_tax_pressure_coeff)
+        // штраф за перемотку времени (2026-09-21): DAY/WEEK как действия
+        .def_readwrite("day_penalty", &RewardConfig::day_penalty)
+        .def_readwrite("week_penalty", &RewardConfig::week_penalty)
         // P2-9 (2026-09-19): road-shaping к воде — раньше хардкод в step()
         .def_readwrite("road_shaping_cap", &RewardConfig::road_shaping_cap)
         .def_readwrite("road_shaping_per_cell", &RewardConfig::road_shaping_per_cell)

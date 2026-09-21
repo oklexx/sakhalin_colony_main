@@ -138,6 +138,12 @@ class RewardConfig:
     main_tax_cash_bonus: float = 100.0
     main_tax_pressure_coeff: float = 0.002
 
+    # Штраф за перемотку времени (2026-09-21): вычитается при действиях DAY/WEEK.
+    # WEEK даёт дневные награды ×7 в один шаг, поэтому без штрафа это доминирующая
+    # стратегия. Дефолт 0.0 = старое поведение; ориентир: day 0.2-0.5, week 2.0-4.0.
+    day_penalty: float = 0.0
+    week_penalty: float = 0.0
+
     # ── serialization ──
 
     def to_dict(self) -> Dict[str, Any]:
