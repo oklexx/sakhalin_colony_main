@@ -223,12 +223,24 @@ class CppVecEnv(VecEnv):
                     )
                 else:
                     info["terminal_observation"] = obs[i].copy()
+                if "terminal_observation_norm" in info:
+                    info["terminal_observation_norm"] = np.asarray(
+                        info["terminal_observation_norm"], dtype=np.float32
+                    )
                 info["TimeLimit.truncated"] = bool(trunceds[i] and not terminateds[i])
             infos.append(info)
+
+        tmm_fn = getattr(self.cpp_vec, "terminal_minimap_batch", None)
+        if tmm_fn is not None and dones.any():
+            tmm = np.asarray(tmm_fn(), dtype=np.float32).reshape(self.num_envs, 8, 32, 32)
+            for i in range(self.num_envs):
+                if dones[i]:
+                    infos[i]["terminal_minimap"] = tmm[i].copy()
 
         # Expose the raw termination flag separately from the (terminated|truncated)
         # `dones` so the RL layer can bootstrap GAE correctly on truncation.
         self._last_terminateds = terminateds
+        self._last_trunceds = trunceds
         return obs, rewards, dones, infos
 
     @property

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
 import gymnasium as gym
-from typing import Optional, Dict, Any, Tuple, List
+import numpy as np
 from python.cpp_vecenv import CppVecEnv
 
 
@@ -41,16 +40,18 @@ class CppVecEnvMinimap(CppVecEnv):
         return flat_obs
 
     def step_wait(self):
-        # ORDER MATTERS. `step_async_batch()` has already applied the actions,
-        # and the parent's `step_wait()` only normalises and then AUTO-RESETS
-        # every done env (ColonyVecEnvCpp::step_wait_batch -> do_reset ->
-        # envs_[i].reset). Reading the minimap after that call therefore returns
-        # the *next* episode's map for any env that just ended, while `obs`
-        # still carries the terminal one -- in hybrid the two halves of the
-        # tuple disagree, in minimap the whole obs is wrong, and it is wrong
-        # exactly where GAE bootstraps. Sample the minimap first.
-        minimap_obs = np.ascontiguousarray(self.cpp_vec.minimap_batch(), dtype=np.float32)
+        # ПОРЯДОК ВАЖЕН: миникарта читается ПОСЛЕ super().step_wait().
+        # `step_wait_batch()` при done ВОЗВРАЩАЕТ пост-reset наблюдение (контракт
+        # SB3: obs — это s'_0 нового эпизода, терминальный obs уезжает в
+        # infos["terminal_observation"]), поэтому парой для этой flat обязана
+        # быть карта НОВОГО эпизода — ровно та, что в minimap_batch() уже после
+        # step_wait. Прежний порядок («прочитать до», так называемый «фикс B1»)
+        # склеивал на каждом завершении эпизода пару из двух эпизодов:
+        # flat = s'_0 нового, миникарта = s_T старого (живой замер: max|Δ
+        # каналов| = 1.0) — а это ровно те шаги, где агент ищет воду по карте.
+        # Регрессия: tests/test_cpp_vecenv_minimap.py (пара после авто-reset).
         obs, rewards, dones, infos = super().step_wait()
+        minimap_obs = np.ascontiguousarray(self.cpp_vec.minimap_batch(), dtype=np.float32)
         if self.obs_mode == "minimap":
             return minimap_obs, rewards, dones, infos
         elif self.obs_mode == "hybrid":

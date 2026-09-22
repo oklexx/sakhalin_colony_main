@@ -332,6 +332,9 @@ public:
     int minimap_channels() const { return 8; }
     void set_minimap_radius(int r) { minimap_radius_ = r; for (auto& e : envs_) e.set_minimap_radius(r); }
     std::vector<float> minimap_batch() const;
+    // Minimap of s_T for envs that ended on the last step_wait_batch (zeros else).
+    // Shape [n_envs * 8 * 32 * 32], same layout as minimap_batch().
+    std::vector<float> terminal_minimap_batch() const;
     // Action masks for all envs: [n_envs * n_actions]
     std::vector<float> action_masks_batch() const;
 
@@ -397,6 +400,8 @@ private:
     std::vector<float> obs_buffer_;       // [n_envs * obs_size]
     std::vector<float> old_obs_buffer_;   // for RMS update (SB3 order)
     std::vector<float> raw_obs_buf_;      // for terminal_observation (reusable)
+    std::vector<float> terminal_minimap_buf_;  // [n_envs * 8 * 32 * 32]
+    std::vector<char> terminal_minimap_valid_; // per-env, last step
     std::vector<double> rewards_;         // [n_envs]
     std::vector<double> old_rew_buffer_;  // for reward RMS
     std::vector<bool> terminateds_;

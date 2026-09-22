@@ -186,8 +186,87 @@ def test_gae_normalization():
     print("PASS: GAE normalization correct")
 
 
+def test_gae_truncation_bootstraps_terminal_value_not_next_episode():
+    """Truncated step must bootstrap V(s_T), not V(s'_0) of the next episode.
+
+    Also the λ-trace must cut on `done` so advantages of the new episode
+    do not leak into the truncated one.
+    """
+    T = 4
+    gamma = 0.99
+    lam = 0.95
+    device = torch.device("cpu")
+    buf = RolloutBuffer(
+        n_steps=T, n_envs=1, obs_size=4, n_actions=3,
+        gamma=gamma, gae_lambda=lam, device=device,
+    )
+
+    # t=0,1 continuing; t=2 truncated (done but not terminated); t=3 new episode
+    rewards = [1.0, 1.0, 1.0, 0.0]
+    values = [0.0, 0.0, 0.0, 99.0]  # 99 is V(s'_0) — must NOT leak
+    dones = [False, False, True, False]
+    terminated = [False, False, False, False]
+    v_sT = 5.0  # true V(s_T)
+
+    for t in range(T):
+        buf.add(
+            torch.zeros(1, 4),
+            torch.tensor([0]),
+            torch.tensor([rewards[t]]),
+            torch.zeros(1),
+            torch.tensor([values[t]]),
+            torch.tensor([dones[t]]),
+            terminated=torch.tensor([terminated[t]]),
+            trunc_value=torch.tensor([v_sT if dones[t] and not terminated[t] else 0.0]),
+        )
+
+    buf.compute_gae(last_value=torch.tensor([0.0]), last_done=torch.tensor([False]))
+
+    # Un-whitened returns live in buf.returns = adv_raw + V
+    ret = buf.returns[:T].squeeze().tolist()
+    # Step 2 (truncated): R = r + γ V(s_T) = 1 + 0.99*5 = 5.95
+    assert abs(ret[2] - (1.0 + gamma * v_sT)) < 1e-4, ret
+    # Step 3 (new episode) must not leak into step 2: if λ flowed, ret[2]
+    # would include 99. The new-episode return is independent.
+    assert abs(ret[3] - 0.0) < 1e-4 or ret[3] < 10.0, ret
+    # Step 1 bootstraps through step 2's GAE, not through V=99
+    # δ2 = 1 + γ*5 - 0 = 5.95; A2 = δ2 (λ cut)
+    # δ1 = 1 + γ*0 - 0 = 1; A1 = 1 + γλ A2
+    a2 = 1.0 + gamma * v_sT
+    a1 = 1.0 + gamma * lam * a2
+    # returns[1] = A1 + V1 = A1
+    assert abs(ret[1] - a1) < 1e-3, (ret, a1)
+
+
+def test_gae_true_termination_still_zeros_bootstrap():
+    T = 3
+    gamma = 0.99
+    device = torch.device("cpu")
+    buf = RolloutBuffer(
+        n_steps=T, n_envs=1, obs_size=4, n_actions=3,
+        gamma=gamma, gae_lambda=0.95, device=device,
+    )
+    for t, (r, v, done, term) in enumerate([
+        (1.0, 0.0, False, False),
+        (1.0, 0.0, True, True),
+        (0.0, 50.0, False, False),
+    ]):
+        buf.add(
+            torch.zeros(1, 4), torch.tensor([0]), torch.tensor([r]),
+            torch.zeros(1), torch.tensor([v]), torch.tensor([done]),
+            terminated=torch.tensor([term]),
+            trunc_value=torch.tensor([7.0]),  # must be ignored on true terminal
+        )
+    buf.compute_gae(last_value=torch.tensor([0.0]), last_done=torch.tensor([False]))
+    ret = buf.returns[:T].squeeze().tolist()
+    # terminated step: R = r + 0, not r + γ*7
+    assert abs(ret[1] - 1.0) < 1e-4, ret
+
+
 if __name__ == "__main__":
     test_gae_single_env()
     test_gae_multi_env()
     test_gae_normalization()
+    test_gae_truncation_bootstraps_terminal_value_not_next_episode()
+    test_gae_true_termination_still_zeros_bootstrap()
     print("\nAll GAE tests passed!")

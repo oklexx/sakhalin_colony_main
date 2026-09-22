@@ -87,13 +87,11 @@ def test_custom_required_subset_checked(fake_colony):
 # ── happy path ───────────────────────────────────────────────────────────
 
 def test_fresh_binary_returns_info(fake_colony):
-    # P0 (2026-09-17): "свежая" бинарка обязана нести и obs_v2/tax_to_debt —
-    # иначе это старый .pyd, который молча съест новые 299 чисел наблюдения.
     fake_colony(extension_info=lambda: {
         "version": EXTENSION_MIN_VERSION,
         "features": ["set_curriculum", "curriculum", "resource_curriculum", "minimap",
                      "action_masks_batch", "obs_v2", "tax_to_debt",
-                     "mechanic_curriculum"],
+                     "mechanic_curriculum", "terminal_minimap"],
         "src_sha": "deadbee"})
     info = require_colony()
     assert info["version"] == EXTENSION_MIN_VERSION
@@ -102,13 +100,10 @@ def test_fresh_binary_returns_info(fake_colony):
 
 
 def test_required_features_contract():
-    # set_curriculum is THE entry point of the PR 1 contract — it must stay required.
     assert "set_curriculum" in REQUIRED_FEATURES
-    # resource_curriculum (PR 4): a binary that ignores weights must fail loudly.
     assert "resource_curriculum" in REQUIRED_FEATURES
-    # P0 (2026-09-17): obs v2 (299) и налог-в-долг — обязательные фичи.
-    assert {"obs_v2", "tax_to_debt", "mechanic_curriculum"} <= set(REQUIRED_FEATURES)
-    assert EXTENSION_MIN_VERSION >= 3
+    assert {"obs_v2", "tax_to_debt", "mechanic_curriculum", "terminal_minimap"} <= set(REQUIRED_FEATURES)
+    assert EXTENSION_MIN_VERSION >= 5
 
 
 # ── escape hatch ─────────────────────────────────────────────────────────
@@ -125,7 +120,7 @@ def test_allow_stale_env_var(fake_colony, monkeypatch, capsys):
         "version": 0, "features": [], "src_sha": "old"})
     monkeypatch.setenv(STALE_ENV_VAR, "1")
     assert stale_allowed() is True
-    info = require_colony()  # no explicit flag — env var decides
+    info = require_colony()
     assert info["version"] == 0
     assert "WARNING" in capsys.readouterr().out
 

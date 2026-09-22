@@ -286,7 +286,12 @@ class EnvManager:
         rewards_t = torch.as_tensor(np.asarray(rewards, dtype=np.float32), device=self.device)
         terminated_np = np.asarray(getattr(self.vec_env, "_last_terminateds", dones), dtype=bool)
         terminated_t = torch.as_tensor(terminated_np, device=self.device)
-        dones_t = torch.as_tensor(np.asarray(dones, dtype=bool), device=self.device)
+        dones_np = np.asarray(dones, dtype=bool)
+        dones_t = torch.as_tensor(dones_np, device=self.device)
+        truncated_np = dones_np & ~terminated_np
+        trunc_value_t = self._truncation_bootstrap_values(
+            infos, truncated_np, action_masks_t
+        )
 
         if self.cfg.obs_mode == "hybrid":
             next_flat, next_minimap = next_obs_t
@@ -301,6 +306,7 @@ class EnvManager:
                 terminated=terminated_t,
                 flat=prev_flat,
                 action_masks=action_masks_t,
+                trunc_value=trunc_value_t,
             )
         else:
             self._obs = next_obs_t
@@ -313,8 +319,74 @@ class EnvManager:
                 dones_t,
                 terminated=terminated_t,
                 action_masks=action_masks_t,
+                trunc_value=trunc_value_t,
             )
         return self._obs, infos
+
+    def _truncation_bootstrap_values(
+        self,
+        infos: List[Dict[str, Any]],
+        truncated_np: np.ndarray,
+        action_masks_t: torch.Tensor,
+    ) -> torch.Tensor:
+        """V(s_T) for truncated envs; zeros elsewhere."""
+        n = self.n_envs
+        out = torch.zeros(n, dtype=torch.float32, device=self.device)
+        if not np.any(truncated_np):
+            return out
+        idx = np.flatnonzero(truncated_np)
+        model = self.model
+        with torch.no_grad():
+            if self.cfg.obs_mode == "hybrid":
+                flats = []
+                mms = []
+                ok_idx = []
+                for i in idx:
+                    info = infos[int(i)]
+                    flat = info.get("terminal_observation_norm", info.get("terminal_observation"))
+                    mm = info.get("terminal_minimap")
+                    if flat is None or mm is None:
+                        continue
+                    flats.append(np.asarray(flat, dtype=np.float32))
+                    mms.append(np.asarray(mm, dtype=np.float32))
+                    ok_idx.append(int(i))
+                if not ok_idx:
+                    return out
+                flat_t = torch.as_tensor(np.stack(flats), device=self.device, dtype=torch.float32)
+                mm_t = torch.as_tensor(np.stack(mms), device=self.device, dtype=torch.float32)
+                vals = model.get_value(flat_t, mm_t, action_masks=action_masks_t[ok_idx])
+                out[ok_idx] = vals.float().reshape(-1)
+                return out
+            if self.cfg.obs_mode == "minimap":
+                mms = []
+                ok_idx = []
+                for i in idx:
+                    mm = infos[int(i)].get("terminal_minimap")
+                    if mm is None:
+                        continue
+                    mms.append(np.asarray(mm, dtype=np.float32))
+                    ok_idx.append(int(i))
+                if not ok_idx:
+                    return out
+                mm_t = torch.as_tensor(np.stack(mms), device=self.device, dtype=torch.float32)
+                vals = model.get_value(mm_t, action_masks=action_masks_t[ok_idx])
+                out[ok_idx] = vals.float().reshape(-1)
+                return out
+            flats = []
+            ok_idx = []
+            for i in idx:
+                info = infos[int(i)]
+                flat = info.get("terminal_observation_norm", info.get("terminal_observation"))
+                if flat is None:
+                    continue
+                flats.append(np.asarray(flat, dtype=np.float32))
+                ok_idx.append(int(i))
+            if not ok_idx:
+                return out
+            flat_t = torch.as_tensor(np.stack(flats), device=self.device, dtype=torch.float32)
+            vals = model.get_value(flat_t, action_masks=action_masks_t[ok_idx])
+            out[ok_idx] = vals.float().reshape(-1)
+        return out
 
     # ── curriculum ──
 
