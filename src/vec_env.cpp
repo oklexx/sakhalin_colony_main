@@ -237,6 +237,13 @@ std::vector<float> ColonyVecEnvCpp::minimap_batch() const {
     return out;
 }
 
+std::vector<float> ColonyVecEnvCpp::terminal_minimap_batch() const {
+    // Миникарты s_T сред, завершившихся на последнем step_wait_batch.
+    // Буфер заполняется в step_wait_batch (перед авто-ресетом) и обнуляется
+    // в начале каждого шага: записи невалидных сред остаются нулями.
+    return terminal_minimap_buf_;
+}
+
 std::vector<float> ColonyVecEnvCpp::action_masks_batch() const {
     if (envs_.empty()) return {};
     const int n = (int)envs_.size();
