@@ -12,7 +12,13 @@
   **рвёт λ-след по `done`**. True terminal по-прежнему нулит bootstrap.
   C++ `ColonyVecEnvCpp` сохраняет миникарту `s_T` до auto-reset
   (`terminal_minimap_batch`, handshake v5 / фича `terminal_minimap`) и
-  кладёт нормированный flat в `terminal_observation_norm`.
+  кладёт нормированный flat в `terminal_observation_norm`. *Догонка от
+  2026-09-22: при мерже PR #18 потерялась сама реализация
+  `ColonyVecEnvCpp::terminal_minimap_batch` в `src/vec_env.cpp`
+  (на Windows это ловилось как LNK2019); реализация восстановлена,
+  Linux-сборка + импорт + функциональная проба `terminal_minimap_batch`
+  (форма `[n_envs, 8, 32, 32]`, нули до первого шага и у не завершившихся
+  сред, ненулевая карта `s_T` у завершившихся) — зелёные.*
 - **Актор.** `actor_mask_proj` (Linear n×n, bias=False, zero-init) во
   `ActorCritic` / CNN / Hybrid: `logits += W·mask`. Хард-маска `-1e9`
   после него, как в PPO. Eval передаёт маску в `policy(..., action_masks=)`.
