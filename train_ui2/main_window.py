@@ -40,7 +40,8 @@ from train_ui2.models import ModelInfo, ModelRegistry, pick_model_file
 from rl.config import RewardConfig as _RC
 
 from train_ui2 import theme as T
-from train_ui2.charts import Bars, Chart
+from train_ui2.charts import Bars, Chart, action_ru
+from train_ui2.monitor import fmt_pct, split_by_panel, watch_report
 from train_ui2.controls import ParamGroup, StatCard
 
 CONFIG_PATH = Path.home() / "colony_runs" / "sakhalin_colony_ui2" / "config.json"
@@ -56,6 +57,7 @@ from train_ui2.constants import (
     RESOURCE_IDS,
     RESOURCE_CAPTIONS,
     BUILD_IMAGE_INDEX,
+    KEY_ACTIONS_MONITOR,
     CONFIG_VERSION,
     MECHANIC_IDS,
     MECHANIC_CAPTIONS,
@@ -330,17 +332,25 @@ class MainWindow2(QMainWindow):
         root.addLayout(g, 1)
 
         bottom = QHBoxLayout()
-        self.bars_actions = Bars(title="Активности")
-        self.bars_build = Bars(title="Строительство зданий")
+        # Серый «след» под полоской = доля шагов, где действие было легально
+        # (маска = 1): без неё короткое окно легальности водоканала выглядит
+        # как зависание/потеря данных.
+        legend = "след = % легальных шагов"
+        self.bars_actions = Bars(title="Активности", legend=legend)
+        self.bars_build = Bars(title="Строительство зданий", legend=legend,
+                               keep=KEY_ACTIONS_MONITOR)
         bottom.addWidget(self.bars_actions, 2)
         bottom.addWidget(self.bars_build, 2)
         side = QVBoxLayout()
         self.lbl_loop = T.label("циклы: нет", T.DIM)
-        self.lbl_curric = T.label("курикулум: —", T.DIM)
+        self.lbl_curric = T.label("курикулум: —", T.DIM, word_wrap=True)
         self.lbl_thresh = T.label("пороги eval: —", T.DIM)
+        self.lbl_key_actions = T.label(
+            "ключевые действия: —", T.DIM, word_wrap=True, size=10)
         side.addWidget(self.lbl_loop)
         side.addWidget(self.lbl_curric)
         side.addWidget(self.lbl_thresh)
+        side.addWidget(self.lbl_key_actions)
         side.addStretch(1)
         bottom.addLayout(side, 1)
         root.addLayout(bottom)
@@ -1261,17 +1271,15 @@ class MainWindow2(QMainWindow):
             self.card_ent.set_value(f"{ent:.2f}")
             self.card_kl.set_value(f"{kl:.4f}")
             self.chart_ent.push({"entropy": ent, "kl": kl})
-            top_actions = d.get("top_actions", {})
-            actions_dict = {}
-            build_dict = {}
-            for k, v in top_actions.items():
-                uk = str(k).upper()
-                if "BUILD:" in uk or uk.startswith("A_BUILD") or uk.startswith("BUILD_") or uk in ALL_BUILD_IDS:
-                    build_dict[k] = v
-                else:
-                    actions_dict[k] = v
-            self.bars_actions.set_items(actions_dict)
-            self.bars_build.set_items(build_dict)
+            # Разбор долей — в train_ui2/monitor.py (без Qt, значит с тестами);
+            # легальность приходит отдельным полем, чтобы «пропавшая» строка
+            # читалась как «закрыто маской», а не как «данных нет».
+            actions_dict, build_dict = split_by_panel(d.get("top_actions", {}),
+                                                       ALL_BUILD_IDS)
+            legality = d.get("action_legality", {}) or {}
+            self.bars_actions.set_items(actions_dict, legality)
+            self.bars_build.set_items(build_dict, legality)
+            self._update_key_actions(d)
             if d.get("loop_detected"):
                 self.lbl_loop.setText(
                     f"циклы: {d.get('envs_with_loops', 0)} env ({d.get('loop_action_name') or '?'})")
@@ -1281,13 +1289,57 @@ class MainWindow2(QMainWindow):
                 self.lbl_loop.setStyleSheet(f"color:{T.DIM}; background:transparent;")
             stage = d.get("curriculum_stage", 0)
             prog = d.get("curriculum_progress_percent", 0) or 0
-            self.lbl_curric.setText(f"курикулум: этап {stage} ({prog*100:.0f}%)")
+            if d.get("curriculum_progress_valid", True):
+                txt = f"курикулум: этап {stage} ({prog*100:.0f}%)"
+            else:
+                # Раньше сюда прилетал вечно нулевой прогресс (тренер звал
+                # несуществующий метод); «прогресс не измеряется» честнее, чем
+                # «0%», а причину (нет расписания этапов / среда не отдаёт
+                # метрику) сообщает однократное предупреждение в логе.
+                txt = f"курикулум: этап {stage} (прогресс не измеряется)"
+            avail = d.get("curriculum_available_actions", "")
+            if avail:
+                txt += f"\nоткрыто зданий: {avail}"
+            self.lbl_curric.setText(txt)
         elif t == "error":
             self.log("error", d.get("message", "ошибка worker"))
         elif t == "done":
             self.log("info", f"Готово: {d.get('total',0):,} шагов за {d.get('time_s',0):.0f}с")
         elif t == "saved":
             self.log("info", f"Сохранено: {d.get('path')}")
+
+    def _update_key_actions(self, d: dict) -> None:
+        """Подпись «ключевые действия»: счётчик, доля роллаута, легальность, вердикт.
+
+        Отвечает на ровно тот вопрос, из-за которого панель вообще считали
+        сломанной: если «Водоканал» пропал из списка, то его закрыла маска
+        (нет денег / нет свободного участка с водой, к которому доехала дорога)
+        или политика перестала строить. Строки берутся из KEY_ACTIONS_MONITOR,
+        поэтому они не зависят от того, влезло ли действие в видимый список.
+        """
+        rows = watch_report(
+            d.get("action_counts", {}) or {},
+            d.get("action_legality", {}) or {},
+            KEY_ACTIONS_MONITOR,
+            total_actions=int(d.get("action_total_steps", 0) or 0),
+            shares=d.get("top_actions", {}) or {},
+        )
+        total = int(d.get("action_total_steps", 0) or 0)
+        head = (f"ключевые действия (доля из {total:,} шагов роллаута):"
+                if total > 0 else "ключевые действия:")
+        lines = []
+        for row in rows:
+            label = action_ru(str(row["name"]))
+            share = fmt_pct(float(row["pct"]))
+            cnt = row["count"]
+            legal = row["legal"]
+            if legal is None:
+                lines.append(f"{label}: {cnt} ({share}) · легальность не измерялась")
+            else:
+                lines.append(f"{label}: {cnt} ({share}) · легально {float(legal):.0f}% "
+                             f"· {row['verdict']}")
+        self.lbl_key_actions.setText(
+            head + ("\n" + "\n".join(lines) if lines else ""))
 
     # ─────────────────────────── rewards tab ───────────────────────────
 

@@ -106,6 +106,15 @@ RESOURCE_CAPTIONS = {
     "stone": "Камень", "water": "Вода", "wood": "Дерево", "energy": "Энергия",
 }
 
+# ── закреплённые строки панели «Строительство зданий» (Мониторинг) ────────────
+# Цепочка выживания пресета stage1 — «дорога к воде → водоканал → еда» (см.
+# PRESETS ниже). Нулевая доля этих действий сама по себе диагностика, поэтому
+# строка не имеет права исчезать: её держит train_ui2.monitor.rows_with_sticky.
+# Ключи — имена действий среды: "BUILD_" + id.upper() (python/cpp_vecenv.py).
+KEY_ACTIONS_MONITOR = [
+    "BUILD_WATERCHANNEL", "BUILD_ROAD", "BUILD_FARM", "BUILD_GARDEN", "BUILD_HOUSE",
+]
+
 BUILD_IMAGE_INDEX = {
     "Farm": 0, "Garden": 1, "WaterChannel": 2, "Sawmill": 3, "Coalmine": 4, "Ironmine": 5,
     "Refinery": 6, "Goldmine": 7, "PowerStation": 8, "HydroStation": 9, "Road": 12,

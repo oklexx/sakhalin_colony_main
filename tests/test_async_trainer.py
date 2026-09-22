@@ -368,15 +368,31 @@ def test_fallback_action_names_index_aligned():
 
 
 def test_top_actions_dict_omits_zeros_and_maps_names():
+    """Доли для монитора: нули не отправляются, имена — из списка среды.
+
+    Обновлено 2026-09-23: `_calculate_action_distribution()` по умолчанию
+    считает ПО ВСЕМУ РОЛЛАУТУ (счётчик `_rollout_action_counts`), а не по
+    последним 1000 записям истории — старое окно оставляло панели ~3% шагов, и
+    «Водоканал» исчезал, когда в хвосте роллаута не оставалось нажатий. Скользящее
+    окно теперь запрашивается явно (`window=N`) и используется как отладочный
+    режим; см. регрессии в tests/test_monitor_action_stats.py.
+    """
     cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, use_amp=False)
     em = FakeEnvManager(n_envs=2, n_steps=3)
     trainer = AsyncTrainer(cfg=cfg, env_manager=em)
     names = em.action_names  # 5 fake actions
     trainer._action_history.extend([(0, names[1]), (1, names[1]), (0, names[3])])
-    counts = trainer._calculate_action_distribution()
+
+    # явное окно по истории (legacy-режим)
+    counts = trainer._calculate_action_distribution(window=1000)
     assert counts == [0, 2, 0, 1, 0]
     d = trainer._top_actions_dict(counts, sum(counts))
     assert d == {names[1]: round(200 / 3, 2), names[3]: round(100 / 3, 2)}
+
+    # счётчик роллаута пуст, пока сбор не идёт: панель обязана молчать, а не
+    # показывать вчерашние доли
+    assert trainer._calculate_action_distribution() == [0, 0, 0, 0, 0]
+    assert trainer._top_actions_dict(trainer._calculate_action_distribution(), 0) == {}
 
 
 def test_env_manager_action_names_match_env_order():

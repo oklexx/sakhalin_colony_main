@@ -44,11 +44,25 @@ class TrainMetrics:
     min_return: float = 0.0
     n_episodes_for_stats: int = 0
     top_actions: Dict[str, float] = field(default_factory=dict)
+    # Ненулевые счётчики действий за роллаут: по ним UI восстанавливает числа
+    # для закрепленных строк, даже если действие не попало в `top_actions`.
+    action_counts: Dict[str, int] = field(default_factory=dict)
+    # Доля шагов роллаута, на которых действие было легальным (маска == 1),
+    # 0..100. Без неё «строка пропала» неоднозначна: политика разлюбила или
+    # действие закрыто маской (для водоканала — не было свободного LT_WATER).
+    action_legality: Dict[str, float] = field(default_factory=dict)
+    # Знаменатель долей = шагов в собранном роллауте (n_steps*n_envs).
+    action_total_steps: int = 0
     loop_detected: bool = False
     loop_action_name: Optional[str] = None
     envs_with_loops: int = 0
     curriculum_stage: int = 0
+    # Доля 0..1 (не проценты!): UI умножает на 100. Название оставлено ради
+    # совместимости протокола — см. curriculum_progress_valid.
     curriculum_progress_percent: float = 0.0
+    # False = прогресс не измерялся (среда/воркер его не предоставили или
+    # расписания этапов нет). Отличает честное «н/д» от вечно нулевых 0%.
+    curriculum_progress_valid: bool = True
     curriculum_available_actions: str = ""
     curriculum_next_at_step: Optional[int] = None
     curriculum_upcoming_stages: List = field(default_factory=list)
@@ -110,8 +124,21 @@ class AsyncTrainer:
                 + ["ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"]
             )
 
-        # Action history for loop detection (safe tracking)
+        # Action history for loop detection (safe tracking). Окно намеренно
+        # маленькое: детектору циклов достаточно недавней истории, а мониторинг
+        # долей считает отдельным счётчиком на весь роллаут (см. ниже) — иначе
+        # «циклы» начали бы срабатывать на всём роллауте сразу.
         self._action_history: deque = deque(maxlen=1000)
+
+        # ── мониторинг долей действий (вкладка «Мониторинг») ──
+        # Счётчик на весь роллаут: исторически доли считались по последним 1000
+        # действиям, что при n_steps*n_envs = 32768 (дефолт) показывало ~3%
+        # роллаута. Отсюда и жалоба «водоканал появился, подрос и пропал»:
+        # строка исчезала, когда в ХВОСТЕ роллаута не оставалось нажатий, а не
+        # когда политика перестала строить.
+        n_act = max(1, len(self._action_names))
+        self._rollout_action_counts: np.ndarray = np.zeros(n_act, dtype=np.int64)
+        self._monitor_warned: bool = False
 
     def _request_stop(self):
         self._stop = True
@@ -134,6 +161,9 @@ class AsyncTrainer:
         """Collect n_steps of transitions."""
         n_envs = self.em.n_envs
         action_names = self._action_names
+        # Окно монитора = один роллаут: обнуляем счётчик ДО сбора, иначе
+        # доли «наследовались» бы от предыдущего роллаута.
+        self._reset_rollout_actions()
 
         for _ in range(self.cfg.n_steps):
             if self._check_stop():
@@ -141,18 +171,9 @@ class AsyncTrainer:
 
             new_obs, infos = self.em.collect_step(obs)
 
-            # Track actions for loop detection (read only current step slice)
-            try:
-                pos = self.em.buffer.pos - 1
-                step_actions = (self.em.buffer.actions[pos * n_envs:(pos + 1) * n_envs]
-                                .cpu().numpy())
-                for env_idx in range(n_envs):
-                    action_idx = int(step_actions[env_idx])
-                    action_name = (action_names[action_idx]
-                                   if action_idx < len(action_names) else f"ACTION_{action_idx}")
-                    self._action_history.append((env_idx, action_name))
-            except Exception:
-                pass
+            # Действия шага: счётчик долей (весь роллаут) + история для
+            # детектора циклов (недавний хвост).
+            self._track_step_actions(n_envs, action_names)
 
             # Track per-episode returns
             for info in infos:
@@ -261,28 +282,151 @@ class AsyncTrainer:
             obs = flat
         return model.get_value(obs, action_masks=last_masks)
 
-    def _calculate_action_distribution(self) -> List[int]:
-        """Calculate action frequency counts from action history."""
-        action_counts = [0] * len(self._action_names)
-        recent = list(self._action_history)[-1000:]
-        for _, action_name in recent:
-            try:
-                idx = self._action_names.index(action_name)
-                if 0 <= idx < len(action_counts):
-                    action_counts[idx] += 1
-            except ValueError:
-                pass
-        return action_counts
+    def _reset_rollout_actions(self) -> None:
+        """Новый роллаут — новый отсчёт долей (окно = ровно один роллаут)."""
+        self._rollout_action_counts[:] = 0
 
-    def _top_actions_dict(self, action_counts, total_actions) -> Dict[str, float]:
-        """Top-15 action shares for monitoring (zero-count actions omitted)."""
+    def _record_rollout_actions(self, actions: Any) -> None:
+        """Сложить действия одного шага всех env в счётчик роллаута."""
+        arr = np.asarray(actions, dtype=np.int64).reshape(-1)
+        if arr.size == 0:
+            return
+        n = int(self._rollout_action_counts.size)
+        valid = (arr >= 0) & (arr < n)
+        if not bool(np.any(valid)):
+            return
+        self._rollout_action_counts += np.bincount(arr[valid], minlength=n)[:n]
+
+    def _calculate_action_distribution(self, window: int = 0) -> List[int]:
+        """Счётчики действий для монитора.
+
+        ``window <= 0`` (норма) — всё, что накоплено за текущий роллаут: доля
+        тогда означает «сколько шагов роллаута ушло на действие», и строка не
+        гаснет из-за случайного пустого хвоста лога.
+
+        ``window > 0`` — legacy-режим по последним N записям `_action_history`
+        (исторически это был единственный способ считать; оставлен для отладки
+        и тестов, которым нужна именно скользящая window).
+        """
+        if window > 0:
+            counts = [0] * len(self._action_names)
+            recent = list(self._action_history)[-window:]
+            for _, action_name in recent:
+                try:
+                    idx = self._action_names.index(action_name)
+                except ValueError:
+                    # Имя из fallback-списка может отсутствовать в списке среды:
+                    # считаем по реальным именам, молча пропуская чужие.
+                    continue
+                if 0 <= idx < len(counts):
+                    counts[idx] += 1
+            return counts
+        n = min(len(self._rollout_action_counts), len(self._action_names))
+        return [int(c) for c in self._rollout_action_counts[:n]]
+
+    def _top_actions_dict(self, action_counts: List[int], total_actions: int,
+                          limit: Optional[int] = None) -> Dict[str, float]:
+        """Доли действий для монитора; нулевые сюда не попадают (их рисует UI).
+
+        `limit` по умолчанию = `Config.monitor_action_top` (0 = не обрезать).
+        Раньше тут был жёсткий `[:15]`, и при равных count стабильная
+        сортировка отдавала предпочтение меньшему индексу действия: здание с
+        count=1 вылетало из списка, как только набиралось 15 действий с
+        count>=2, — хотя его собственная доля не падала. Это и было второй
+        половиной жалобы «водоканал рос и пропал».
+        """
+        if limit is None:
+            limit = int(getattr(self.cfg, "monitor_action_top", 0) or 0)
         order = sorted(range(len(action_counts)),
-                       key=lambda i: action_counts[i], reverse=True)[:15]
+                       key=lambda i: action_counts[i], reverse=True)
+        if limit > 0:
+            order = order[:limit]
+        total = max(int(total_actions), 1)
+        names = self._action_names
         return {
-            self._action_names[i]: round(action_counts[i] / max(total_actions, 1) * 100, 2)
+            names[i]: round(action_counts[i] / total * 100, 2)
             for i in order
-            if i < len(self._action_names) and action_counts[i] > 0
+            if i < len(names) and action_counts[i] > 0
         }
+
+    def _track_step_actions(self, n_envs: int, action_names: List[str]) -> None:
+        """Записать действия последнего шага: счётчик роллаута + историю циклов.
+
+        Одно чтение буфера на двух потребителей: раньше оба жили в одном
+        `try/except: pass`, и молча обнулённый мониторинг было не отличить от
+        «политика ничего не строит».
+        """
+        try:
+            pos = self.em.buffer.pos - 1
+            step_actions = (self.em.buffer.actions[pos * n_envs:(pos + 1) * n_envs]
+                            .cpu().numpy())
+        except Exception as e:  # noqa: BLE001 - наблюдательный счётчик не валит обучение
+            self._monitor_warn_once(
+                f"не удалось прочитать actions шага: {type(e).__name__}: {e}")
+            return
+        self._record_rollout_actions(step_actions)
+        for env_idx in range(n_envs):
+            action_idx = int(step_actions[env_idx])
+            action_name = (action_names[action_idx]
+                           if action_idx < len(action_names) else f"ACTION_{action_idx}")
+            self._action_history.append((env_idx, action_name))
+
+    def _monitor_warn_once(self, message: str) -> None:
+        """Предупреждение о недоступной метрике — ровно один раз за прогон.
+
+        Тихий `except Exception` под RULES.md запрещён: отсутствие счётчика
+        должно быть видно, но не должно спамить на каждый роллаут.
+        """
+        if self._monitor_warned:
+            return
+        self._monitor_warned = True
+        self._log(f"[Monitor] {message}")
+
+    def _pop_action_legality(self) -> Dict[str, float]:
+        """Доля легальных шагов по каждому действию за собранный роллаут."""
+        pop = getattr(self.em, "pop_action_legality", None)
+        if pop is None:
+            self._monitor_warn_once(
+                "env_manager не предоставляет pop_action_legality — доля "
+                "легальных шагов не измеряется (монитор не сможет отличить "
+                "«маска закрыла» от «политика не хочет»)"
+            )
+            return {}
+        try:
+            return dict(pop() or {})
+        except Exception as e:  # noqa: BLE001 - наблюдательная метрика не валит обучение
+            self._monitor_warn_once(f"pop_action_legality упал: {type(e).__name__}: {e}")
+            return {}
+
+    def _curriculum_progress_view(self, step: int) -> Tuple[float, bool]:
+        """(доля 0..1, измерена ли) — прогресс текущего этапа курикулума.
+
+        Вторым значением возвращаем честный признак «нет данных»: до 2026-09-23
+        несуществующий `EnvManager.get_curriculum_progress` глушился
+        `except Exception` и UI вечно рисовал «этап N (0%)».
+        """
+        get = getattr(self.em, "get_curriculum_progress", None)
+        if get is None:
+            self._monitor_warn_once(
+                "env_manager.get_curriculum_progress отсутствует — прогресс "
+                "этапа скрыт (в UI: «н/д» вместо вечных 0%)"
+            )
+            return 0.0, False
+        try:
+            prog = get(int(step)) or {}
+        except Exception as e:  # noqa: BLE001 - наблюдательная метрика не валит обучение
+            self._monitor_warn_once(
+                f"get_curriculum_progress упал: {type(e).__name__}: {e}")
+            return 0.0, False
+        raw = prog.get("progress")
+        if raw is None:  # этап без расписания: доли нет, и 0% показывать нельзя
+            return 0.0, False
+        try:
+            return float(raw), True
+        except (TypeError, ValueError):
+            self._monitor_warn_once(
+                f"get_curriculum_progress вернул progress={raw!r} (не число)")
+            return 0.0, False
 
     def _process_commands(self, command_queue: Optional[queue.Queue]):
         """Process queued commands from the UI."""
@@ -672,10 +816,18 @@ class AsyncTrainer:
             self.metrics.best_reward = self.best_reward
             self.metrics.ent_coef = self.em.ppo.ent_coef
 
-            # Calculate top actions from history
+            # Доли действий — по всему роллауту (не по хвосту в 1000 шагов),
+            # плюс сырые счётчики и легальность по маскам: UI по ним держит
+            # «липкие» строки и различает «нельзя» / «не хочет».
             action_counts = self._calculate_action_distribution()
             total_actions = sum(action_counts)
             top_actions = self._top_actions_dict(action_counts, total_actions)
+            counts_by_name = {
+                name: int(cnt)
+                for name, cnt in zip(self._action_names, action_counts)
+                if cnt > 0
+            }
+            action_legality = self._pop_action_legality()
 
             # Return statistics
             avg_return = 0.0
@@ -715,13 +867,10 @@ class AsyncTrainer:
             except Exception:
                 pass
 
-            # Real progress of the current stage for the UI widget (was
-            # hardcoded 0.0 before).
-            try:
-                prog = self.em.get_curriculum_progress(total_done)
-                curriculum_progress = float(prog.get("progress_percent", 0.0))
-            except Exception:
-                curriculum_progress = 0.0
+            # Реальный прогресс текущего этапа (с проверкой, что он вообще
+            # измеряется: вечно нулевой ноль хуже, чем «н/д»).
+            curriculum_progress, curriculum_progress_valid = \
+                self._curriculum_progress_view(total_done)
 
             upcoming_stages = []
             if schedule:
@@ -737,11 +886,15 @@ class AsyncTrainer:
             self.metrics.min_return = min_return
             self.metrics.n_episodes_for_stats = n_episodes_for_stats
             self.metrics.top_actions = top_actions
+            self.metrics.action_counts = counts_by_name
+            self.metrics.action_legality = action_legality
+            self.metrics.action_total_steps = int(total_actions)
             self.metrics.loop_detected = envs_with_loops > 0
             self.metrics.loop_action_name = loop_action_name
             self.metrics.envs_with_loops = envs_with_loops
             self.metrics.curriculum_stage = self._curriculum_stage
             self.metrics.curriculum_progress_percent = curriculum_progress
+            self.metrics.curriculum_progress_valid = curriculum_progress_valid
             self.metrics.curriculum_available_actions = available_actions
             self.metrics.curriculum_next_at_step = curriculum_next_at_step
             self.metrics.curriculum_upcoming_stages = upcoming_stages

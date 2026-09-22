@@ -127,9 +127,10 @@ sakhalin_colony_main/
 │   ├── evaluator.py          #   ★ run_eval(): оценка чекпойнта (argmax, с нормализацией)
 │   ├── parameter_widget.py   #   ParamSpec всех параметров (дефолты = rl/config.py)
 │   ├── models.py             #   Реестр моделей: scan() (что считается моделью) + pick_model_file()
+│   ├── monitor.py            #   Логика панелей Мониторинга: доли/легальность/вердикт (без Qt)
 │   ├── controls.py, charts.py, theme.py
 │
-└── tests/                    # 44 тест-файла (test_gae, test_ppo_smoke, test_evaluator,
+└── tests/                    # 45 тест-файлов (test_gae, test_ppo_smoke, test_evaluator,
                               # test_reward_clip, test_milestones, test_curriculum,
                               # test_exp_configs, test_reward_field_sync,
                               # test_trainer_bootstrap, test_watch_visual, test_models, ...) +
@@ -409,6 +410,34 @@ reset_curriculum). Все параметры — ParamSpec из дефолтов
   остаётся в буфере до следующего чтения, поэтому лог не «глохнет» на середине
   сообщения.
 
+### 9.2 Вкладка «Мониторинг»: как читать доли действий
+
+Панели «Активности» и «Строительство зданий» — это **не** счётчик построенных
+зданий и не «прогресс этапа». Число справа = доля шагов **последнего
+роллаута** (`n_steps × n_envs`, по дефолту 32 768), в котором политика выбрала
+это действие; серый «след» под полоской = доля шагов, на которых действие было
+**легальным** (маска = 1). Отсюда два разных диагноза (подробности —
+[docs/MONITOR_ACTIONS_2026_09.md](docs/MONITOR_ACTIONS_2026_09.md)):
+
+- строка с нулевой долей и следом ~0 → действие было закрыто маской: здание не
+  открыто курикулумом, не хватает денег (`price` в `configs/bases.json`) или нет
+  свободного участка, связанного с колонией (`src/action_mask.cpp`,
+  `src/lot_finder.cpp`);
+- строка с нулевой долей и полным следом → легально, но политика не выбирает.
+
+Водоканал — частный случай первого варианта и штатное поведение: его участок
+становится легален только когда до воды доехала дорога, и закрывается, когда
+тайл занят (дорогой или самим водоканалом) либо сгорел
+(`tests/cpp/water_mask_check.cpp` W3/W6). То есть «появился → подрос → пропал»
+было нормальным поведением сценария; теперь панель это честно показывает:
+
+- ключевые здания (`train_ui2/constants.py::KEY_ACTIONS_MONITOR`) закреплены в
+  панели и при нулевой доле — строка остаётся серой, а не исчезает;
+- справа от панелей — строка «ключевые действия»: доля, легальность и вердикт
+  по каждому закреплённому действию, независимо от того, влезло ли оно в список;
+- `Config.monitor_action_top` (0 = не обрезать) и `monitor_action_legality`
+  (выключить сбор легальности) — единственные ручки режима.
+
 ---
 
 ## 10. Тесты
@@ -421,6 +450,7 @@ python -m pytest tests/test_evaluator.py       # run_eval end-to-end
 python -m pytest tests/test_reward_clip.py     # клип наград
 python -m pytest tests/test_milestones.py      # milestone-бонусы
 python -m pytest tests/test_curriculum.py      # стадии/маски
+python -m pytest tests/test_monitor_action_stats.py  # доли действий и легальность в Мониторинге
 python -m pytest tests/test_normalizer.py      # RunningMeanStd save/load
 python tests/bench_per_step.py                 # бенчмарк шага среды
 ./scripts/cpp_checks.sh             # C++-пробы без Python (compile-all + проверки)
