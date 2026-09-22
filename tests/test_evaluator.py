@@ -127,7 +127,7 @@ def test_run_eval_returns_stats(tmp_path, monkeypatch):
     monkeypatch.setattr(cpp_env_mod, "CppColonyEnv", fake_env, raising=False)
 
     class FakePolicy:
-        def __call__(self, obs):
+        def __call__(self, obs, action_masks=None):
             import torch
             return torch.zeros(1, 45), torch.zeros(1, 1)
 
@@ -179,7 +179,7 @@ def test_run_eval_with_normalization(tmp_path, monkeypatch):
     ))
 
     class FakePolicy:
-        def __call__(self, obs):
+        def __call__(self, obs, action_masks=None):
             # 49 = 2 + 32 builds + 11 managers + 4 road dirs — реальная
             # среда под маской отдаёт ровно столько элементов
             return torch.zeros(1, 49), torch.zeros(1, 1)

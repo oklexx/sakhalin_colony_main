@@ -26,6 +26,15 @@
   `test_hybrid_actor_mask_proj_zero_init_is_noop`. **Нужен rebuild**
   `colony_cpp` (версия 5). Мини-A/B в этой песочнице не гонялся (нет
   заголовков CPython / cmake).
+- **Догонка мержа PR #18 (2026-09-22):** две потери при мерже, найденные
+  сборкой/pytest в песочнице — (1) потерялась реализация
+  `ColonyVecEnvCpp::terminal_minimap_batch` в `src/vec_env.cpp`
+  (Windows: LNK2019) — восстановлена, Linux-сборка + импорт + функциональная
+  проба зелёные (форма `[n_envs, 8, 32, 32]`, нули до первого шага и у
+  не завершившихся сред, ненулевая карта `s_T` у завершившихся);
+  (2) заглушки `FakePolicy` в `tests/test_evaluator.py` не принимали новый
+  аргумент `policy(..., action_masks=)` — 2 теста падали, подписи обновлены.
+  Полный pytest: 399 passed / 2 skipped.
 
 ## [2026-09-22] — ребаланс веток `ActorCriticHybrid`: CNN → пул 2×2 → 256 + LayerNorm
 
