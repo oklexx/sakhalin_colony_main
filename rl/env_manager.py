@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from rl.action_monitor import ActionLegalityMonitor
 from rl.config import Config
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -214,6 +215,16 @@ class EnvManager:
         self._obs: Optional[torch.Tensor | Dict[str, torch.Tensor]] = None
         self._last_dones = np.zeros(self.n_envs, dtype=bool)
 
+        # Мониторинг легальности действий (см. rl/action_monitor.py). Среда
+        # обязана отдавать маски — collect_step читает self.vec_env.action_masks
+        # безусловно, — поэтому отдельная проверка «есть ли маски» тут только
+        # молча выключала бы метрику на пустом месте.
+        self._action_legality: Optional[ActionLegalityMonitor] = (
+            ActionLegalityMonitor(self.n_actions)
+            if bool(getattr(cfg, "monitor_action_legality", True))
+            else None
+        )
+
     # ── observation helpers ──
 
     def _to_tensor(self, x: Any) -> torch.Tensor:
@@ -259,6 +270,10 @@ class EnvManager:
 
         action_masks_np = np.asarray(self.vec_env.action_masks, dtype=np.float32)
         action_masks_t = torch.as_tensor(action_masks_np, device=self.device, dtype=torch.float32)
+        # Мониторинг: та самая маска, из которой сэмплируется действие (не следующая!),
+        # поэтому доля легальных шагов считается честно (rl/action_monitor.py).
+        if self._action_legality is not None:
+            self._action_legality.add_step(action_masks_np)
 
         if self.cfg.obs_mode == "hybrid":
             flat_obs, minimap_obs = self._obs
@@ -322,6 +337,36 @@ class EnvManager:
                 trunc_value=trunc_value_t,
             )
         return self._obs, infos
+
+    # ── мониторинг (UI: вкладка «Мониторинг») ──
+
+    def pop_action_legality(self) -> Dict[str, float]:
+        """Доля шагов роллаута, на которых действие было легальным (0..100).
+
+        Окно — ровно один только что собранный роллаут: счётчики обнуляются,
+        поэтому соседние обновления монитора не описывают один и тот же хвост
+        лога. Пустой dict = легальность не измерялась (флаг выключен), и UI
+        обязан показать «нет данных», а не «заблокировано маской».
+        """
+        if self._action_legality is None:
+            return {}
+        return self._action_legality.pop_percent(self.action_names)
+
+    def get_curriculum_progress(self, step: int) -> Dict[str, object]:
+        """Прогресс текущего этапа курикулума в шагах (для подписи в UI).
+
+        Пересчитывать этапы здесь нельзя — единый источник `rl/curriculum.py`
+        (RULES.md, п. 2 золотого правила). До 2026-09-23 этого метода не было,
+        а вызов в AsyncTrainer падал в `except Exception`, из-за чего монитор
+        вечно показывал «этап N (0%)».
+        """
+        from rl.curriculum import stage_progress
+
+        return stage_progress(
+            int(step),
+            list(getattr(self.cfg, "curriculum_schedule", []) or []),
+            int(getattr(self.cfg, "curriculum_stage", 0) or 0),
+        )
 
     def _truncation_bootstrap_values(
         self,

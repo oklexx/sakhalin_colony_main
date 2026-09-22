@@ -8,7 +8,7 @@ into a `CurriculumState`; the C++ side never interprets stages or lists again
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 # Stage → building ids (as in configs/bases.json without City)
 STAGE_MAP: Dict[int, List[str]] = {
@@ -810,3 +810,67 @@ def allowed_buildings_for_stage(stage: int) -> List[str]:
     ids = ids_for_stage(stage)
     # EnvManager expects BUILD_* + managers + DAY/WEEK etc. Keep that expansion there.
     return ids
+
+
+def stage_progress(step: int, schedule: Sequence[Sequence[int]],
+                   base_stage: int = 0) -> Dict[str, object]:
+    """Прогресс текущего этапа курикулума в шагах — для UI-монитора.
+
+    Смысл цифры — «сколько шагов съедено из бюджета этапа», а не «насколько
+    хорошо научились». Отсюда два режима:
+
+    * ``mode="schedule"`` — есть следующий порог ``curriculum_schedule``;
+      ``progress = (step - start) / (next - start)`` в отрезке [0, 1].
+    * ``mode="fixed"`` — следующего порога нет (этап последний либо
+      расписания нет вовсе). Ждать перехода некуда, поэтому ``progress``
+      равен ``None``: рисовать тут «0%» означало бы вечно живой нуль
+      (именно так и выглядел монитор до 2026-09-23 — см. ниже), а «100%»
+      читалось бы как «этап пройден», чего никто не измерял.
+
+    Единственный источник правды — эта функция: тренер и UI не пересчитывают
+    этапы каждый по-своему (RULES.md, золотое правило синхронизации п. 2).
+    Исторический баг: ``AsyncTrainer`` звал ``self.em.get_curriculum_progress``,
+    которого не существовало, вызов падал в ``except Exception`` и прогресс
+    всегда был 0.0.
+    """
+    step = max(0, int(step))
+    base = int(base_stage or 0)
+
+    pairs: List[tuple[int, int]] = []
+    for row in (schedule or []):
+        try:
+            threshold, stage = int(row[0]), int(row[1])
+        except (TypeError, ValueError, IndexError):
+            # Строка из UI-таблицы может быть недополнена; монитор не должен
+            # падать из-за этого — просто игнорируем мусор (видно в логе UI).
+            continue
+        pairs.append((threshold, stage))
+    pairs.sort(key=lambda p: p[0])
+
+    stage = base
+    for threshold, target in pairs:
+        if step >= threshold and target > stage:
+            stage = target
+    start = max((t for t, s in pairs if step >= t and s <= stage), default=0)
+    nxt = min((t for t, _s in pairs if t > step), default=None)
+
+    out: Dict[str, object] = {
+        "stage": stage,
+        "start_step": start,
+        "next_at_step": nxt,
+        "next_stage": None,
+        "progress": None,
+        "progress_percent": None,
+        "steps_remaining": None,
+        "mode": "fixed",
+    }
+    if nxt is None:
+        return out
+    out["mode"] = "schedule"
+    out["next_stage"] = min((s for t, s in pairs if t == nxt), default=None)
+    span = max(1, int(nxt) - int(start))
+    frac = max(0.0, min(1.0, (step - start) / span))
+    out["progress"] = round(frac, 6)
+    out["progress_percent"] = round(frac * 100.0, 2)
+    out["steps_remaining"] = max(0, int(nxt) - step)
+    return out

@@ -6,12 +6,13 @@ last values. Designed for ~120px tall panels stacked in the Monitoring tab.
 from __future__ import annotations
 
 from collections import deque
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from train_ui2.monitor import fmt_pct, rows_with_sticky
 from train_ui2.theme import DIM, FIELD, LINE, TXT, color_for
 
 # Русские названия действий модели (ключ — английское имя из action_names).
@@ -97,6 +98,13 @@ def action_ru(name: str) -> str:
             _load_build_captions()
         if b in _BUILD_CAPTION:
             return _BUILD_CAPTION[b]
+    # Голый id (без BUILD_): так называются действия в одиночной обёртке
+    # python/cpp_env.py — без этой ветки «WaterChannel» и «BUILD_WATERCHANNEL»
+    # дали бы две строки на одну шкалу.
+    if not _BUILD_CAPTION:
+        _load_build_captions()
+    if n in _BUILD_CAPTION:
+        return _BUILD_CAPTION[n]
     return name
 
 
@@ -244,19 +252,60 @@ def _fmt(v: float) -> str:
     return f"{v:.4f}"
 
 
-class Bars(QWidget):
-    """Horizontal percentage bars (top actions)."""
+_ROW_MIN_H = 9    # ниже этой высоты строка нечитаема — лучше обрезать список
+_LABEL_W = 130    # колонка подписей, как было исторически
+_TEXT_W = 112     # колонка «доля · легальность» справа
 
-    def __init__(self, title: str = "", height: int = 240, parent=None):
+
+class Bars(QWidget):
+    """Горизонтальные полоски долей действий (мониторинг политики).
+
+    Серый след под полоской = доля шагов роллаута, на которых действие было
+    ЛЕГАЛЬНЫМ (маска = 1). Без этой второй шкалы «строка пропала» невозможно
+    прочитать: политика разлюбила действие или оно весь роллаут было закрыто
+    (для водоканала — не было свободного участка с водой). Закреплённые
+    действия (`keep`) не исчезают при нулевой доле, а остаются серой строкой
+    с нулём — ровно тот случай, который раньше выглядел как баг мониторинга.
+    """
+
+    def __init__(self, title: str = "", height: int = 240,
+                 keep: Sequence[str] = (), legend: str = "", parent=None):
         super().__init__(parent)
         self.title = title
-        self.items: List[tuple] = []  # (name, pct)
+        self.legend = legend
+        self.keep: List[str] = list(keep or ())
+        # (имя, доля%, легальность% | None, липкая строка?)
+        self.items: List[tuple] = []
         self.setMinimumHeight(height)
         self.setMaximumHeight(height + 40)
 
-    def set_items(self, items: Dict[str, float]):
-        ru = {action_ru(k): v for k, v in items.items()}
-        self.items = sorted(ru.items(), key=lambda kv: -kv[1])[:15]
+    def _top_offset(self) -> int:
+        return 18 if self.title else 2
+
+    def set_items(self, items: Dict[str, float],
+                  legality: Optional[Dict[str, float]] = None) -> None:
+        """Принять доли (и, если есть, легальность) и перерисовать панель.
+
+        Сколько строк влезает — решает виджет, а не тренер: отсечка top-15 в
+        `rl/async_trainer.py` и вытеснение по индексу действия раньше прятали
+        живые строки. Обрезок здесь чисто визуальный (не влезло — не показано),
+        но закреплённые `self.keep` строки попадают в список всегда: нулевая
+        доля ключевого здания — это диагноз, а не пустое место.
+        """
+        avail_h = max(1, self.height() - self._top_offset() - 4)
+        max_rows = max(1, avail_h // _ROW_MIN_H)
+        rows = rows_with_sticky(items or {}, legality or {},
+                                keep=self.keep, max_rows=max_rows)
+        merged: Dict[str, tuple] = {}
+        for name, pct, legal, sticky in rows:
+            label = action_ru(name)
+            prev = merged.get(label)
+            # Две англ. подписи могут сойтись в одну русскую: оставляем строку
+            # с большей долей, чтобы панель не «съедала» реальное значение.
+            if prev is not None and prev[1] >= pct:
+                continue
+            merged[label] = (label, pct, legal, sticky)
+        self.items = list(merged.values())
         self.update()
 
     def paintEvent(self, _ev):
@@ -265,7 +314,7 @@ class Bars(QWidget):
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, QColor(FIELD))
 
-        top_offset = 18 if self.title else 2
+        top_offset = self._top_offset()
         if self.title:
             font = p.font()
             font.setBold(True)
@@ -274,6 +323,10 @@ class Bars(QWidget):
             p.drawText(QRectF(4, 2, w - 8, 16), Qt.AlignLeft | Qt.AlignVCenter, self.title)
             font.setBold(False)
             p.setFont(font)
+            if self.legend:
+                p.setPen(QColor(DIM))
+                p.drawText(QRectF(w * 0.42, 2, w * 0.58 - 6, 16),
+                           Qt.AlignRight | Qt.AlignVCenter, self.legend)
 
         if not self.items:
             p.setPen(QColor(DIM))
@@ -282,16 +335,29 @@ class Bars(QWidget):
             return
 
         avail_h = h - top_offset - 4
-        row_h = min(18, avail_h // max(1, len(self.items)))
-        max_pct = max((v for _, v in self.items), default=1.0) or 1.0
-        for i, (name, pct) in enumerate(self.items):
+        row_h = max(_ROW_MIN_H, min(18, avail_h // max(1, len(self.items))))
+        max_pct = max((r[1] for r in self.items), default=1.0) or 1.0
+        has_legality = any(r[2] is not None for r in self.items)
+        # Колонка цифр: без легальности второй надписи нет — не съедаем ширину
+        text_w = _TEXT_W if has_legality else 56
+        bar_x = _LABEL_W + 10
+        bar_w_total = max(8.0, w - bar_x - text_w - 6)
+        for i, (name, pct, legal, sticky) in enumerate(self.items):
             y = top_offset + i * row_h + 2
-            p.setPen(QColor(DIM))
-            p.drawText(QRectF(4, y, 130, row_h - 3), Qt.AlignLeft | Qt.AlignVCenter,
+            row_color = QColor(DIM) if sticky else color_for("return")
+            p.setPen(QColor(DIM) if sticky else QColor(TXT))
+            p.drawText(QRectF(4, y, _LABEL_W, row_h - 3), Qt.AlignLeft | Qt.AlignVCenter,
                        name[:18])
-            bar_w = (w - 200) * (pct / max_pct)
-            p.fillRect(QRectF(140, y + 2, max(2, bar_w), row_h - 8), color_for("return"))
+            if has_legality and legal is not None:
+                # «след» легальности: своя шкала 0..100% ширины панели
+                p.fillRect(QRectF(bar_x, y + 2, bar_w_total * min(1.0, legal / 100.0),
+                                  row_h - 8), QColor(LINE))
+            p.fillRect(QRectF(bar_x, y + 2,
+                              max(2.0, bar_w_total * (pct / max_pct)), row_h - 8), row_color)
             p.setPen(QColor(DIM))
-            p.drawText(QRectF(w - 56, y, 52, row_h - 3),
-                       Qt.AlignRight | Qt.AlignVCenter, f"{pct:.1f}%")
+            txt = fmt_pct(pct)
+            if has_legality:
+                txt += f" · {legal:.0f}% лег" if legal is not None else " · лег ?"
+            p.drawText(QRectF(w - _TEXT_W, y, _TEXT_W - 6, row_h - 3),
+                       Qt.AlignRight | Qt.AlignVCenter, txt)
         p.end()

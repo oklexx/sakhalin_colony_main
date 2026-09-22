@@ -44,6 +44,17 @@ def _safe_float(x: float, default: float = 0.0) -> float:
     return float(x)
 
 
+def _safe_int(x: int, default: int = 0) -> int:
+    """Целое из «сырого» числа метрик: NaN/inf/мусор не должны валить JSONL."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return default
+    if f != f or f in (float("inf"), float("-inf")):
+        return default
+    return int(f)
+
+
 @dataclass
 class ProgressMsg:
     done: int
@@ -57,6 +68,11 @@ class ProgressMsg:
     kl: float = 0.0
     ent_coef: float = 0.0  # display-only, always provided by caller
     top_actions: Dict[str, float] = field(default_factory=dict)
+    # Мониторинг действий (2026-09-23): сырые счётчики за роллаут и доля
+    # шагов, в которых действие было легальным (маска = 1). Без них «строка
+    # пропала» не читается: политика разлюбила или действие закрыто маской.
+    action_counts: Dict[str, int] = field(default_factory=dict)
+    action_legality: Dict[str, float] = field(default_factory=dict)
     loop_detected: bool = False
     loop_action_name: Optional[str] = None
     envs_with_loops: int = 0
@@ -65,6 +81,11 @@ class ProgressMsg:
     # Curriculum extended fields
     curriculum_stage: int = 0
     curriculum_progress_percent: float = 0.0
+    # False = прогресс не измерялся (нет расписания этапов или среда не
+    # отдаёт его): UI показывает «н/д», а не вечные 0%.
+    curriculum_progress_valid: bool = True
+    # Знаменатель долей действий = шагов в собранном роллауте (n_steps*n_envs).
+    action_total_steps: int = 0
     curriculum_available_actions: str = ""
     curriculum_upcoming_stages: List[Dict[str, int]] = field(default_factory=list)
     # Return statistics
@@ -89,6 +110,9 @@ class ProgressMsg:
             "kl": _safe_float(self.kl),
             "ent_coef": _safe_float(self.ent_coef),
             "top_actions": self.top_actions,
+            "action_counts": {k: _safe_int(v) for k, v in self.action_counts.items()},
+            "action_legality": {k: _safe_float(v) for k, v in self.action_legality.items()},
+            "action_total_steps": int(self.action_total_steps),
             "loop_detected": self.loop_detected,
             "loop_action_name": self.loop_action_name,
             "envs_with_loops": int(self.envs_with_loops),
@@ -100,6 +124,7 @@ class ProgressMsg:
             ),
             "curriculum_stage": int(self.curriculum_stage),
             "curriculum_progress_percent": _safe_float(self.curriculum_progress_percent),
+            "curriculum_progress_valid": bool(self.curriculum_progress_valid),
             "curriculum_available_actions": self.curriculum_available_actions,
             "curriculum_upcoming_stages": self.curriculum_upcoming_stages,
             "avg_return": _safe_float(self.avg_return),
@@ -280,6 +305,10 @@ def decode(line: str) -> Msg:
             curriculum_next_at_step=d.get("curriculum_next_at_step"),
             curriculum_stage=d.get("curriculum_stage", 0),
             curriculum_progress_percent=d.get("curriculum_progress_percent", 0.0),
+            curriculum_progress_valid=bool(d.get("curriculum_progress_valid", True)),
+            action_counts={k: _safe_int(v) for k, v in d.get("action_counts", {}).items()},
+            action_legality={k: _safe_float(v) for k, v in d.get("action_legality", {}).items()},
+            action_total_steps=_safe_int(d.get("action_total_steps", 0)),
             curriculum_available_actions=d.get("curriculum_available_actions", ""),
             curriculum_upcoming_stages=d.get("curriculum_upcoming_stages", []),
             avg_return=d.get("avg_return", 0.0),

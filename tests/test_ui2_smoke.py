@@ -110,6 +110,9 @@ def test_ui2_smoke(tmp_path, monkeypatch):
     prog = P.ProgressMsg(done=524288, total=3000000, fps=18500.0, episodes=700,
                          policy_loss=0.012, value_loss=0.5, entropy=1.35, kl=0.008,
                          top_actions={"build_wood": 0.4, "day": 0.25, "week": 0.2},
+                         action_counts={"build_wood": 4},
+                         action_legality={"build_wood": 37.5, "BUILD_WATERCHANNEL": 0.0},
+                         action_total_steps=1000,
                          median_return=-120.5, avg_return=-100.0,
                          min_return=-900.0, max_return=10.0,
                          curriculum_stage=3, curriculum_progress_percent=0.42,
@@ -126,8 +129,19 @@ def test_ui2_smoke(tmp_path, monkeypatch):
     check("progress: loop label", "3 env" in win.lbl_loop.text(), win.lbl_loop.text())
     check("progress: bars actions items", len(win.bars_actions.items) == 2,
           str(win.bars_actions.items))
-    check("progress: bars build items", len(win.bars_build.items) == 1,
+    # 2026-09-23: панель «Строительство зданий» держит и закреплённые здания
+    # (KEY_ACTIONS_MONITOR) с нулевой долей — строка не должна исчезать, когда
+    # действие просто не попадалось в окне. 1 реальная доля + 5 липких.
+    check("progress: bars build items", len(win.bars_build.items) == 6,
           str(win.bars_build.items))
+    check("progress: build panel keeps zero row",
+          any(n == "Водоканал" and p_ == 0.0 for n, p_, *_ in win.bars_build.items),
+          str(win.bars_build.items))
+    check("progress: key actions label", "Водоканал" in win.lbl_key_actions.text(),
+          win.lbl_key_actions.text())
+    check("progress: key actions distinguishes mask",
+          "заблокировано маской" in win.lbl_key_actions.text(),
+          win.lbl_key_actions.text())
 
     ev = P.LogMsg(message="[Eval @ 1,048,576] days=731.0 people=69.0 bases=5.0 "
                   "return=-3408.7 score=85.00 thresholds=(PASS)", level="info")
