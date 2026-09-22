@@ -26,7 +26,7 @@ using namespace colony;
 #define COLONY_GIT_SHA "unknown"
 #endif
 #ifndef COLONY_EXTENSION_VERSION
-#define COLONY_EXTENSION_VERSION 4
+#define COLONY_EXTENSION_VERSION 5
 #endif
 
 namespace {
@@ -176,6 +176,7 @@ PYBIND11_MODULE(colony_cpp, m) {
             "obs_v2",              // P0: obs v2 = 299-dim (+dx/dy ближайших ресурсов)
             "tax_to_debt",         // P0: налог → долг, календарь не замирает
             "mechanic_curriculum", // fixed manager logits, monotonic allow-list
+            "terminal_minimap",    // s_T minimap for GAE truncation bootstrap
         };
         d["src_sha"] = COLONY_GIT_SHA;
         return d;
@@ -653,6 +654,13 @@ PYBIND11_MODULE(colony_cpp, m) {
             std::vector<float> mm = v.minimap_batch();
             py::array_t<float> arr({(int)v.n_envs(), 8, 32, 32});
             std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
+            return arr;
+        })
+        .def("terminal_minimap_batch", [](const ColonyVecEnvCpp& v) {
+            std::vector<float> mm = v.terminal_minimap_batch();
+            py::array_t<float> arr({(int)v.n_envs(), 8, 32, 32});
+            if (!mm.empty())
+                std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
             return arr;
         })
         .def("action_masks_batch", [](ColonyVecEnvCpp& v) {

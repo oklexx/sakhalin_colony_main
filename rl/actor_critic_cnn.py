@@ -62,9 +62,11 @@ class ActorCriticCNN(ActorCriticBase):
         self.actor_head = nn.Linear(prev, n_actions).to(device)
         self.critic_head = nn.Linear(prev, 1).to(device)
         self.critic_mask_proj = nn.Linear(n_actions, 1, bias=False).to(device)
+        self.actor_mask_proj = nn.Linear(n_actions, n_actions, bias=False).to(device)
 
         self._init_weights()
         nn.init.constant_(self.critic_mask_proj.weight, 0.0)
+        nn.init.constant_(self.actor_mask_proj.weight, 0.0)
 
     def _init_weights(self) -> None:
         for m in self.modules():
@@ -78,9 +80,12 @@ class ActorCriticCNN(ActorCriticBase):
         h = h.flatten(1)
         h = self.trunk(h)
         values = self.critic_head(h)
+        logits = self.actor_head(h)
         if action_masks is not None:
-            values = values + self.critic_mask_proj(action_masks.float())
-        return self.actor_head(h), values
+            m = action_masks.float()
+            values = values + self.critic_mask_proj(m)
+            logits = logits + self.actor_mask_proj(m)
+        return logits, values
 
     def get_action_and_value(
         self,

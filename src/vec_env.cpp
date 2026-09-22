@@ -62,6 +62,9 @@ ColonyVecEnvCpp::ColonyVecEnvCpp(
     trunceds_.resize(n_envs_, false);
     episode_return_.resize(n_envs_, 0.0);
     episode_length_.resize(n_envs_, 0);
+    const size_t mm_per = (size_t)8 * 32 * 32;
+    terminal_minimap_buf_.assign((size_t)n_envs_ * mm_per, 0.0f);
+    terminal_minimap_valid_.assign((size_t)n_envs_, 0);
 
     // Initialize RMS with correct sizes
     obs_rms_ = RunningMeanStd(obs_size_);
@@ -162,16 +165,32 @@ StepBatchResult ColonyVecEnvCpp::step_wait_batch() {
     result.terminateds = terminateds_;
     result.trunceds = trunceds_;
     result.infos.resize(n_envs_);
+    std::fill(terminal_minimap_valid_.begin(), terminal_minimap_valid_.end(), 0);
+    std::fill(terminal_minimap_buf_.begin(), terminal_minimap_buf_.end(), 0.0f);
 
     for (int i = 0; i < n_envs_; ++i) {
         if (terminateds_[i] || trunceds_[i]) {
             // terminal_observation must be RAW (unnormalized), per SB3 convention
             std::vector<float> terminal_obs(raw_obs_buf_.begin() + (size_t)i * obs_size_,
                                             raw_obs_buf_.begin() + (size_t)(i + 1) * obs_size_);
+            // Normalized s_T — what the critic actually consumes (obs_buffer_
+            // is already normalized, auto-reset has not run yet).
+            std::vector<float> terminal_obs_norm(
+                obs_buffer_.begin() + (size_t)i * obs_size_,
+                obs_buffer_.begin() + (size_t)(i + 1) * obs_size_);
+
+            const size_t mm_per = (size_t)8 * 32 * 32;
+            std::vector<float> mm = envs_[(size_t)i].minimap();
+            if (mm.size() == mm_per) {
+                std::copy(mm.begin(), mm.end(),
+                          terminal_minimap_buf_.begin() + (size_t)i * mm_per);
+                terminal_minimap_valid_[(size_t)i] = 1;
+            }
 
             // Build info JSON
             nlohmann::json info;
             info["terminal_observation"] = terminal_obs;
+            info["terminal_observation_norm"] = terminal_obs_norm;
             double ep_r = std::isfinite(episode_return_[i]) ? episode_return_[i] : 0.0;
             info["episode"] = {
                 {"r", ep_r},

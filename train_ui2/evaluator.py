@@ -346,26 +346,26 @@ def run_eval(
                 log_file.write("-" * 120 + "\n")
             for step in range(max_days):
                 with torch.no_grad():
+                    mask_t = None
+                    if hasattr(env, "action_mask"):
+                        mask = env.action_mask()
+                        mask_t = torch.from_numpy(np.asarray(mask, dtype=np.float32)).to(dev).reshape(1, -1)
                     if is_hybrid:
                         flat_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(dev).reshape(1, -1)
                         mm = mm_wrap.minimap_obs()
                         mm_t = torch.from_numpy(np.ascontiguousarray(mm, dtype=np.float32)).to(dev).reshape(1, *mm.shape)
-                        logits, _values = policy(flat_t, mm_t)
+                        logits, _values = policy(flat_t, mm_t, action_masks=mask_t)
                     elif use_minimap:
                         mm = mm_wrap.minimap_obs()
                         obs_t = torch.from_numpy(np.ascontiguousarray(mm, dtype=np.float32)).to(dev).reshape(1, *mm.shape)
-                        logits, _values = policy(obs_t)
+                        logits, _values = policy(obs_t, action_masks=mask_t)
                     else:
                         obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(dev)
                         obs_t = obs_t.reshape(1, -1)
-                        logits, _values = policy(obs_t)
+                        logits, _values = policy(obs_t, action_masks=mask_t)
 
-                    # Apply action masking (match training behavior)
-                    if hasattr(env, "action_mask"):
-                        mask = env.action_mask()
-                        mask_t = torch.from_numpy(mask).to(dev).reshape(1, -1)
-                        # -1e9 like training (rl/ppo.py): robust to a fully-closed
-                        # mask, where -inf would put NaN into the top-3 log below.
+                    # Hard mask after the additive actor_mask_proj (match PPO).
+                    if mask_t is not None:
                         logits = logits.masked_fill(mask_t == 0, -1e9)
 
                     action = int(logits.argmax(dim=-1).item())

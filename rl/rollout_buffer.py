@@ -41,6 +41,9 @@ class RolloutBuffer:
         # GAE bootstrap mask so that truncated episodes keep their value
         # bootstrap. Defaults to `done` when not supplied (backwards compat).
         self.terminated = torch.empty(total, dtype=torch.bool, device=device)
+        # V(s_T) for time-limit truncation. Used as GAE bootstrap when
+        # done & ~terminated; ignored on true terminals and continuing steps.
+        self.trunc_values = torch.zeros(total, dtype=torch.float32, device=device)
         # Action masks: [total, n_actions] — 1.0=available, 0.0=blocked
         self.action_masks = torch.empty(total, n_actions, dtype=torch.float32, device=device)
 
@@ -60,6 +63,7 @@ class RolloutBuffer:
         done: torch.Tensor,
         terminated: Optional[torch.Tensor] = None,
         action_masks: Optional[torch.Tensor] = None,
+        trunc_value: Optional[torch.Tensor] = None,
     ):
         """Add one step of data. All tensors shape [n_envs].
 
@@ -79,6 +83,10 @@ class RolloutBuffer:
         self.values[start:end] = value
         self.dones[start:end] = done
         self.terminated[start:end] = done if terminated is None else terminated
+        if trunc_value is not None:
+            self.trunc_values[start:end] = trunc_value
+        else:
+            self.trunc_values[start:end] = 0.0
         if action_masks is not None:
             self.action_masks[start:end] = action_masks
         self.pos += 1
@@ -93,35 +101,35 @@ class RolloutBuffer:
         """Compute GAE advantages and returns.
 
         last_value: [n_envs] value of the state after the last step
-        last_done:  [n_envs] whether the last step terminated
+        last_done:  [n_envs] whether the last step *terminated* (not truncated)
         """
         n = self.n_steps * self.n_envs
         adv = torch.zeros_like(self.advantages)
-        last_gae = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
-
         next_adv = torch.zeros(self.n_envs, dtype=torch.float32, device=self.device)
 
         for t in range(self.n_steps - 1, -1, -1):
             start = t * self.n_envs
             end = start + self.n_envs
+            step_terminated = self.terminated[start:end]
+            step_done = self.dones[start:end]
+            truncated = step_done & ~step_terminated
             if t == self.n_steps - 1:
-                next_values = last_value
-                next_dones = last_done
+                next_values = torch.where(truncated, self.trunc_values[start:end], last_value)
+                next_terminated = last_done | step_terminated
             else:
                 next_start = (t + 1) * self.n_envs
                 next_values = self.values[next_start:next_start + self.n_envs]
-                # terminated[t] is transition-based: terminated[t] == terminal(s_{t+1}).
-                # The bootstrap mask for step t must use terminal(s_{t+1}), and must
-                # NOT treat time-limit truncation as terminal (so the value
-                # bootstrap is preserved across truncated episodes).
-                next_dones = self.terminated[start:end]
+                next_values = torch.where(truncated, self.trunc_values[start:end], next_values)
+                next_terminated = step_terminated
 
+            # Bootstrap zeros only on true terminal. Truncation keeps V(s_T).
+            # λ-trace cuts on any episode end so the next episode cannot leak.
             delta = (
                 self.rewards[start:end]
-                + self.gamma * next_values * (~next_dones)
+                + self.gamma * next_values * (~next_terminated)
                 - self.values[start:end]
             )
-            next_adv = delta + self.gamma * self.gae_lambda * (~next_dones) * next_adv
+            next_adv = delta + self.gamma * self.gae_lambda * (~step_done) * next_adv
             adv[start:end] = next_adv
 
         # Advantages and returns are regression TARGETS, never part of the
@@ -205,13 +213,14 @@ class _TensorRolloutBuffer(RolloutBuffer):
         self.values = torch.empty(total, dtype=torch.float32, device=device)
         self.dones = torch.empty(total, dtype=torch.bool, device=device)
         self.terminated = torch.empty(total, dtype=torch.bool, device=device)
+        self.trunc_values = torch.zeros(total, dtype=torch.float32, device=device)
         self.action_masks = torch.empty(total, n_actions, dtype=torch.float32, device=device)
         self.advantages = torch.empty(total, dtype=torch.float32, device=device)
         self.returns = torch.empty(total, dtype=torch.float32, device=device)
         self.pos = 0
         self.full = False
 
-    def add(self, obs, action, reward, log_prob, value, done, terminated=None, flat=None, action_masks=None):
+    def add(self, obs, action, reward, log_prob, value, done, terminated=None, flat=None, action_masks=None, trunc_value=None):
         """Add one step of data. All tensors shape [n_envs].
 
         `flat` is the flat observation tensor (shape [n_envs, flat_dim]) stored

@@ -265,3 +265,80 @@ def test_hybrid_buffer_no_flat():
     batches = list(buf.get_batches(4))
     for batch in batches:
         assert "flat" not in batch
+
+
+def test_hybrid_balanced_branches_contract():
+    """Ребаланс 2026-09-22: ветки уравновешены, flatten CNN не топит flat.
+
+    Контракт: CNN после адаптивного пула 2×2 (64*2*2=256) проецируется в
+    ширину flat-ствола; joint принимает 512 (=256+256), а не 65792; после
+    joint-линейного слоя стоит LayerNorm (выравнивает масштабы ветвей).
+    """
+    import torch.nn as nn
+
+    from rl.actor_critic_hybrid import ActorCriticHybrid
+
+    m = ActorCriticHybrid(
+        obs_size=289, n_channels=8, grid_size=32,
+        n_actions=45, hidden_sizes=[256, 256], device="cpu",
+    )
+    assert m.cnn_head[0].out_features == 256
+    assert m.flat_trunk[0].out_features == 256
+    assert m.joint[0].in_features == 512
+    assert m.joint[0].out_features == 256
+    assert any(isinstance(mod, nn.LayerNorm) for mod in m.joint)
+
+
+def test_hybrid_joint_weight_energy_parity():
+    """Анти-разбавление: энергия flat-колонок joint-веса сопоставима с CNN.
+
+    На старой архитектуре плоские колонки (256 из 65792) несли ~0.3%
+    энергии — «плоские подсказки» тонули. Равные ширины ветвей + общий
+    orthogonal init дают паритет порядка единицы; вываливание за [0.5, 2.0]
+    означает возврат к перекосу.
+    """
+    import torch
+
+    torch.manual_seed(0)
+    from rl.actor_critic_hybrid import ActorCriticHybrid
+
+    m = ActorCriticHybrid(
+        obs_size=289, n_channels=8, grid_size=32,
+        n_actions=45, hidden_sizes=[256, 256], device="cpu",
+    )
+    w = m.joint[0].weight            # [256, 512]
+    flat_part = w[:, :256].norm().item()
+    cnn_part = w[:, 256:].norm().item()
+    ratio = flat_part / max(cnn_part, 1e-12)
+    assert 0.5 <= ratio <= 2.0, f"branch energy ratio {ratio:.3f} out of parity"
+
+
+def test_hybrid_cnn_head_grid_independent():
+    """Ширина ветвей не зависит от размера миникарты (пул адаптивный)."""
+    from rl.actor_critic_hybrid import ActorCriticHybrid
+
+    for grid in (32, 33, 57):
+        m = ActorCriticHybrid(
+            obs_size=289, n_channels=8, grid_size=grid,
+            n_actions=45, hidden_sizes=[256, 256], device="cpu",
+        )
+        assert m.cnn_head[0].in_features == 256
+        assert m.joint[0].in_features == 512
+        flat = torch.randn(2, 289)
+        mm = torch.randn(2, 8, grid, grid)
+        logits, values = m(flat, mm)
+        assert logits.shape == (2, 45)
+        assert values.shape == (2, 1)
+
+
+def test_hybrid_actor_mask_proj_zero_init_is_noop(hybrid_model):
+    """Variant B: W=0 ⇒ logits identical with/without masks at init."""
+    flat = torch.randn(3, 289)
+    mm = torch.randn(3, 8, 32, 32)
+    masks = torch.ones(3, 45)
+    masks[:, 4] = 0.0
+    with torch.no_grad():
+        logits_a, _ = hybrid_model(flat, mm)
+        logits_b, _ = hybrid_model(flat, mm, action_masks=masks)
+    assert torch.allclose(logits_a, logits_b)
+    assert hybrid_model.actor_mask_proj.weight.abs().sum().item() == 0.0
