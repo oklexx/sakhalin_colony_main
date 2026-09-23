@@ -26,7 +26,7 @@ using namespace colony;
 #define COLONY_GIT_SHA "unknown"
 #endif
 #ifndef COLONY_EXTENSION_VERSION
-#define COLONY_EXTENSION_VERSION 5
+#define COLONY_EXTENSION_VERSION 6
 #endif
 
 namespace {
@@ -177,6 +177,7 @@ PYBIND11_MODULE(colony_cpp, m) {
             "tax_to_debt",         // P0: налог → долг, календарь не замирает
             "mechanic_curriculum", // fixed manager logits, monotonic allow-list
             "terminal_minimap",    // s_T minimap for GAE truncation bootstrap
+            "mask_reason_counts",  // action_mask_reason(s)(_batch)/(_counts) + UI-колонка причин
         };
         d["src_sha"] = COLONY_GIT_SHA;
         return d;
@@ -502,6 +503,19 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("set_step_log", &ColonyEnvCpp::set_step_log, py::arg("path"))
         .def("dump_obs", &ColonyEnvCpp::dump_obs)
         .def("action_mask", [](ColonyEnvCpp& env) { return env.action_mask(); })
+        // 2026-09 (docs/MONITOR_ACTIONS_2026_09.md §4): атрибуция причины
+        // закрытия бита — тем же проходом, что и маска. Причины: деньги /
+        // нет участка / курикулум (+ other/open) — см. MaskReason в constants.h.
+        .def("action_mask_reasons", [](ColonyEnvCpp& env) {
+            return env.action_mask_reasons();
+        })
+        .def("action_mask_reason_counts", [](ColonyEnvCpp& env) {
+            auto counts = env.action_mask_reason_counts();
+            py::dict d;
+            for (int i = 0; i < N_MASK_REASONS; ++i)
+                d[MASK_REASON_NAMES[i]] = counts[(size_t)i];
+            return d;
+        })
         .def("step", [](ColonyEnvCpp& env, int action) {
             return env_step_to_dict(env.step(action));
         })
@@ -668,6 +682,23 @@ PYBIND11_MODULE(colony_cpp, m) {
             py::array_t<float> arr({(int)v.n_envs(), v.n_actions()});
             std::memcpy(arr.mutable_data(), masks.data(), masks.size() * sizeof(float));
             return arr;
+        })
+        // Атрибуция причин (MaskReason) той же маски: заполняется внутри
+        // action_masks_batch() одним проходом — Python читает сразу после
+        // step_wait/reset (docs/MONITOR_ACTIONS_2026_09.md §4).
+        .def("action_mask_reasons_batch", [](ColonyVecEnvCpp& v) {
+            std::vector<uint8_t> reasons = v.action_mask_reasons_batch();
+            py::array_t<uint8_t> arr({(int)v.n_envs(), v.n_actions()});
+            if (!reasons.empty())
+                std::memcpy(arr.mutable_data(), reasons.data(), reasons.size());
+            return arr;
+        })
+        .def("action_mask_reason_counts", [](ColonyVecEnvCpp& v) {
+            auto counts = v.action_mask_reason_counts();
+            py::dict d;
+            for (int i = 0; i < N_MASK_REASONS; ++i)
+                d[MASK_REASON_NAMES[i]] = counts[(size_t)i];
+            return d;
         })
         .def("minimap_radius", &ColonyVecEnvCpp::minimap_radius)
         // P2-8: то же, что и для одиночной среды — no-op с DeprecationWarning.
