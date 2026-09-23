@@ -132,6 +132,32 @@ def test_hybrid_load_policy_detection(tmp_path):
     assert policy.n_actions == 45
 
 
+def test_rollout_buffer_default_masks_are_all_open():
+    """Дефолт action_masks — «все открыты» (ones), а не мусор torch.empty.
+
+    Регресс CI-флейка `test_hybrid_ppo_forward`: add() без action_masks
+    оставлял неинициализированную память, PPO.update() прогонял её через
+    masked_fill/mask-ветку политики — на CI это давало −1e9-/NaN-строки в
+    логитах Categorical (ValueError: invalid values). Свежие страницы
+    алокатора обнуляются, поэтому локально тест «случайно» проходил.
+    """
+    import torch
+    from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
+
+    cpu = torch.device("cpu")
+    buffers = (
+        RolloutBuffer(n_steps=4, n_envs=2, obs_size=10, n_actions=45,
+                      gamma=0.99, gae_lambda=0.95, device=cpu),
+        _TensorRolloutBuffer(n_steps=4, n_envs=2, obs_shape=(8, 32, 32),
+                             n_actions=45, gamma=0.99, gae_lambda=0.95,
+                             device=cpu, flat_dim=289),
+    )
+    for buf in buffers:
+        assert torch.all(buf.action_masks == 1.0), (
+            f"{type(buf).__name__}: action_masks по умолчанию должны быть все открыты "
+            "(ones), иначе update() без масок коллектора видит неинициализированную память")
+
+
 def test_hybrid_ppo_forward():
     import torch
     from rl.actor_critic_hybrid import ActorCriticHybrid

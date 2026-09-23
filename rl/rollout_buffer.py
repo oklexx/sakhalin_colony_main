@@ -44,8 +44,11 @@ class RolloutBuffer:
         # V(s_T) for time-limit truncation. Used as GAE bootstrap when
         # done & ~terminated; ignored on true terminals and continuing steps.
         self.trunc_values = torch.zeros(total, dtype=torch.float32, device=device)
-        # Action masks: [total, n_actions] — 1.0=available, 0.0=blocked
-        self.action_masks = torch.empty(total, n_actions, dtype=torch.float32, device=device)
+        # Action masks: [total, n_actions] — 1.0=available, 0.0=blocked.
+        # ones («все открыты»), НЕ torch.empty: add() без action_masks раньше
+        # оставлял неинициализированную память, и PPO.update() видел мусор
+        # (−1e9-/NaN-строки в логитах; CI-флейк test_hybrid_ppo_forward).
+        self.action_masks = torch.ones(total, n_actions, dtype=torch.float32, device=device)
 
         self.advantages = torch.empty(total, dtype=torch.float32, device=device)
         self.returns = torch.empty(total, dtype=torch.float32, device=device)
@@ -214,7 +217,9 @@ class _TensorRolloutBuffer(RolloutBuffer):
         self.dones = torch.empty(total, dtype=torch.bool, device=device)
         self.terminated = torch.empty(total, dtype=torch.bool, device=device)
         self.trunc_values = torch.zeros(total, dtype=torch.float32, device=device)
-        self.action_masks = torch.empty(total, n_actions, dtype=torch.float32, device=device)
+        # «Все открыты» по умолчанию — см. комментарий в RolloutBuffer (ones,
+        # а не torch.empty: мусор в масках = NaN-строки в логитах на update).
+        self.action_masks = torch.ones(total, n_actions, dtype=torch.float32, device=device)
         self.advantages = torch.empty(total, dtype=torch.float32, device=device)
         self.returns = torch.empty(total, dtype=torch.float32, device=device)
         self.pos = 0
