@@ -372,12 +372,13 @@ def test_watch_report_prefers_panel_shares_over_recount():
                         names=["BUILD_WATERCHANNEL", "BUILD_ROAD", "BUILD_HOUSE"])
     assert len(rows) == 3
     assert rows[0] == {"name": "BUILD_WATERCHANNEL", "count": 4,
-                       "pct": pytest.approx(0.4), "legal": 12.0, "verdict": "выбирает"}
+                       "pct": pytest.approx(0.4), "legal": 12.0, "verdict": "выбирает",
+                       "reason": None}
     assert rows[1]["pct"] == pytest.approx(40.0)
     # Действие вне счётчиков = ноль, а не KeyError; легальности нет → честное
     # «нет данных», а не «заблокировано маской»
     assert rows[2] == {"name": "BUILD_HOUSE", "count": 0, "pct": 0.0, "legal": None,
-                       "verdict": "нет данных о легальности"}
+                       "verdict": "нет данных о легальности", "reason": None}
 
     # Тот самый сценарий жалобы: построил — окно легальности закрылось
     zero = watch_report({"BUILD_WATERCHANNEL": 0}, {"BUILD_WATERCHANNEL": 0.0},
@@ -411,6 +412,7 @@ def test_protocol_roundtrip_new_monitor_fields():
         top_actions={"BUILD_WATERCHANNEL": 0.4},
         action_counts={"BUILD_WATERCHANNEL": 12, "DAY": 900},
         action_legality={"BUILD_WATERCHANNEL": 37.5, "DAY": 100.0},
+        action_mask_reasons={"BUILD_WATERCHANNEL": "no_lot"},
         action_total_steps=1000,
         curriculum_progress_percent=0.42,
         curriculum_progress_valid=False,
@@ -418,6 +420,7 @@ def test_protocol_roundtrip_new_monitor_fields():
     back = P.decode(P.encode(msg))
     assert back.action_counts == {"BUILD_WATERCHANNEL": 12, "DAY": 900}
     assert back.action_legality == {"BUILD_WATERCHANNEL": 37.5, "DAY": 100.0}
+    assert back.action_mask_reasons == {"BUILD_WATERCHANNEL": "no_lot"}
     assert back.action_total_steps == 1000
     assert back.curriculum_progress_valid is False
 
@@ -433,6 +436,7 @@ def test_protocol_decodes_legacy_progress_lines_without_new_fields():
     back = P.decode(legacy)
     assert back.top_actions == {"DAY": 100.0}
     assert back.action_counts == {} and back.action_legality == {}
+    assert back.action_mask_reasons == {}
     assert back.action_total_steps == 0
     assert back.curriculum_progress_valid is True
 
@@ -452,7 +456,8 @@ def test_worker_forwards_monitor_fields():
     """Имена полей в воркере обязаны совпадать с TrainMetrics (опечатка = молчаливый 0)."""
     src = (ROOT / "train_ui2" / "worker.py").read_text(encoding="utf-8")
     for field in ("top_actions", "action_counts", "action_legality",
-                  "action_total_steps", "curriculum_progress_valid"):
+                  "action_mask_reasons", "action_total_steps",
+                  "curriculum_progress_valid"):
         pat = re.compile(rf"{field}\s*=\s*.*getattr\(metrics,\s*['\"]{field}['\"]")
         assert pat.search(src), f"воркер не прокидывает metrics.{field}"
 
@@ -465,15 +470,16 @@ def test_metrics_have_the_fields_worker_reads():
     from rl.async_trainer import TrainMetrics
 
     names = {f.name for f in dc_fields(TrainMetrics)}
-    assert {"top_actions", "action_counts", "action_legality", "action_total_steps",
+    assert {"top_actions", "action_counts", "action_legality", "action_mask_reasons",
+            "action_total_steps",
             "curriculum_progress_valid", "curriculum_progress_percent"} <= names
 
 
 def test_bars_widget_sourced_without_qt_import_side_effects():
-    """main_window обязан передавать легальность в Bars (иначе след не отрисуется)."""
+    """main_window обязан передавать легальность и причины в Bars."""
     src = (ROOT / "train_ui2" / "main_window.py").read_text(encoding="utf-8")
-    assert "set_items(actions_dict, legality)" in src
-    assert "set_items(build_dict, legality)" in src
+    assert "set_items(actions_dict, legality, reasons)" in src
+    assert "set_items(build_dict, legality, reasons)" in src
     assert "keep=KEY_ACTIONS_MONITOR" in src
 
 
@@ -486,3 +492,177 @@ def test_config_has_monitor_knobs():
     assert cfg.monitor_action_legality is True
     cfg2 = Config.from_dict(cfg.to_dict())
     assert cfg2.monitor_action_top == 0 and cfg2.monitor_action_legality is True
+
+
+# ── 6. атрибуция причины закрытой маски: деньги / нет участка / курикулум ────
+# docs/MONITOR_ACTIONS_2026_09.md §4: биндинг action_mask_reason_counts() в
+# src/bindings.cpp + «та же колонка в панели». Коды причин — это W2 из
+# water_mask_check (first-fail: курикулум → деньги → нет клетки), но уже
+# по каждому действию, а не только по водоканалу.
+
+def _cpp_mask_reason_names() -> List[str]:
+    """MASK_REASON_NAMES из include/colony/constants.h (регресс против рассинхрона)."""
+    src = (ROOT / "include" / "colony" / "constants.h").read_text(encoding="utf-8")
+    m = re.search(
+        r"MASK_REASON_NAMES\[N_MASK_REASONS\]\s*=\s*\{(.*?)\}", src, re.DOTALL)
+    assert m, "MASK_REASON_NAMES не найден в include/colony/constants.h"
+    return re.findall(r'"([a-z_]+)"', m.group(1))
+
+
+def test_mask_reason_keys_in_sync_with_cpp():
+    """Python-ключи причин обязаны совпадать с таблицей в constants.h."""
+    _require_torch()
+    from rl.action_monitor import MASK_REASON_KEYS
+
+    assert list(MASK_REASON_KEYS) == _cpp_mask_reason_names(), (
+        f"рассинхрон Python/C++ причин маски: {MASK_REASON_KEYS}")
+    # порядок first-fail из W2 (water_mask_check): курикулум → деньги → участок
+    assert MASK_REASON_KEYS == ("open", "curriculum", "money", "no_lot", "other")
+
+
+def test_mask_reason_monitor_dominant_reason_per_action():
+    """Окно = роллаут; на каждый action — доминирующая причина закрытия."""
+    _require_torch()
+    import numpy as np
+
+    from rl.action_monitor import MaskReasonMonitor
+
+    mon = MaskReasonMonitor(n_actions=3)
+    # коды: 0=open, 2=money, 3=no_lot — два env-шага подряд
+    mon.add_step(np.array([[0, 2, 3],
+                           [0, 2, 3]], dtype=np.uint8))
+    per = mon.pop_dominant(["DAY", "BUILD_WATERCHANNEL", "BUILD_FARM"])
+    assert per == {"BUILD_WATERCHANNEL": "money", "BUILD_FARM": "no_lot"}
+    # действие, открытое все шаги, в ответ не попадает (причины нет — не врём)
+    # pop закрывает окно: следующий роллаут считается заново
+    assert mon.pop_dominant(["DAY"]) == {}
+
+    # Всегда открытое окно → пустой ответ, а не «open» в каждой строке
+    mon.add_step(np.array([[0, 0, 0]], dtype=np.uint8))
+    assert mon.pop_dominant(["DAY", "WEEK", "X"]) == {}
+
+
+def test_mask_reason_monitor_tie_prefers_earlier_key():
+    """Тай-брейк = порядок MASK_REASON_KEYS[1:] (курикулум раньше денег)."""
+    _require_torch()
+    import numpy as np
+
+    from rl.action_monitor import MaskReasonMonitor
+
+    mon = MaskReasonMonitor(n_actions=2)
+    # action1: равное число money(2) и curriculum(1) → curriculum (argmax первым)
+    mon.add_step(np.array([[0, 2],
+                           [0, 1]], dtype=np.uint8))
+    per = mon.pop_dominant(["DAY", "BUILD_X"])
+    assert per == {"BUILD_X": "curriculum"}
+
+
+def test_mask_reason_monitor_tolerates_bad_shapes():
+    """Старый .pyd без биндинга / 1D-мусор / коды вне корзин — не роняем шаг."""
+    _require_torch()
+    import numpy as np
+
+    from rl.action_monitor import MaskReasonMonitor
+
+    mon = MaskReasonMonitor(n_actions=3)
+    mon.add_step(None)
+    mon.add_step(np.zeros((2,), dtype=np.uint8))          # 1D — молча мимо
+    mon.add_step(np.full((2, 5), 99, dtype=np.uint8))     # мусорные коды мимо корзин
+    per = mon.pop_dominant(["A", "B", "C"])
+    assert per == {}  # ни одного валидно-закрытого шага
+    assert mon.steps == 0
+    # форма шире окна — обрезаем, уже накопленное не теряем
+    mon.add_step(np.array([[0, 2, 3, 7, 8]], dtype=np.uint8))
+    assert mon.pop_dominant(["A", "B", "C"]) == {"B": "money", "C": "no_lot"}
+
+
+def test_env_manager_exposes_reason_bridge():
+    """Мост «причины из vec_env → метрика»: метод есть, окно закрывается за pop."""
+    _require_torch()
+    import numpy as np
+
+    from rl.action_monitor import MaskReasonMonitor
+    from rl.env_manager import EnvManager
+
+    assert hasattr(EnvManager, "pop_action_mask_reasons")
+    em = EnvManager.__new__(EnvManager)  # без __init__: реальная C++-среда не нужна
+    em.vec_env = SimpleNamespace(action_names=lambda: ["DAY", "WEEK", "BUILD_X"])
+    em._action_reasons = MaskReasonMonitor(3)
+    em._action_reasons.add_step(np.array([[0, 2, 3]], dtype=np.uint8))
+    assert em.pop_action_mask_reasons() == {"WEEK": "money", "BUILD_X": "no_lot"}
+    assert em.pop_action_mask_reasons() == {}  # окно закрыто
+    em._action_reasons = None  # флаг monitor_action_legality = False
+    assert em.pop_action_mask_reasons() == {}
+
+
+def test_cpp_vecenv_sources_cache_mask_reasons():
+    """Кэш причин в CppVecEnv: обновляется там же, где _action_masks."""
+    src = (ROOT / "python" / "cpp_vecenv.py").read_text(encoding="utf-8")
+    assert "action_mask_reasons_batch" in src, \
+        "step_wait/reset должны читать причины из того же action_masks_batch"
+    assert re.search(r"def mask_reasons\s*\(", src), \
+        "у CppVecEnv нужен свойство mask_reasons (читает EnvManager)"
+    assert "_mask_reasons" in src
+
+
+def test_action_verdict_with_reason_attribute():
+    """«Заблокировано: деньги» / «нет участка» / «курикулум» вместо обобщённого."""
+    from train_ui2.monitor import action_verdict
+
+    assert action_verdict(0.0, 0.0, "money") == "заблокировано: деньги"
+    assert action_verdict(0.0, 0.5, "no_lot") == "заблокировано: нет участка"
+    assert action_verdict(0.0, 5.0, "curriculum") == "окно легальности узкое: курикулум"
+    # Без причины — прежние строки (контракт 2026-09-23 не меняем задним числом)
+    assert action_verdict(0.0, 0.0) == "заблокировано маской"
+    assert action_verdict(0.0, 5.0) == "окно легальности узкое"
+    # «выбирает» раньше причин: доля есть — вопрос о маске неактуален
+    assert action_verdict(1.5, 12.0, "money") == "выбирает"
+    # Легальность неизвестна — причина из маски не выдумывается
+    assert action_verdict(0.0, None, "money") == "нет данных о легальности"
+
+
+def test_watch_report_carries_reason_into_verdict():
+    from train_ui2.monitor import watch_report
+
+    rows = watch_report({"BUILD_WATERCHANNEL": 0}, {"BUILD_WATERCHANNEL": 0.0},
+                        total_actions=1000, names=["BUILD_WATERCHANNEL"],
+                        reasons={"BUILD_WATERCHANNEL": "no_lot"})
+    assert rows[0]["reason"] == "no_lot"
+    assert rows[0]["verdict"] == "заблокировано: нет участка"
+    # Без переданной причины — None в строке и прежний вердикт
+    rows = watch_report({}, {}, total_actions=0, names=["DAY"])
+    assert rows[0]["reason"] is None
+    assert rows[0]["verdict"] == "нет данных о легальности"
+
+
+def test_protocol_roundtrip_action_mask_reasons():
+    """Поле протокола: строковые значения, legacy-лог и мусор не валят encode."""
+    import json
+
+    from train_ui2 import protocol as P
+
+    msg = P.ProgressMsg(done=1, total=2,
+                        action_mask_reasons={"BUILD_WATERCHANNEL": "money"})
+    back = P.decode(P.encode(msg))
+    assert back.action_mask_reasons == {"BUILD_WATERCHANNEL": "money"}
+
+    # Мусорные значения: None выкидываем, прочее приводим к строке (JSON-safe)
+    msg2 = P.ProgressMsg(done=1, total=2,
+                         action_mask_reasons={"DAY": None, "WEEK": 5,
+                                              "BUILD_X": "no_lot"})
+    back2 = P.decode(P.encode(msg2))
+    assert back2.action_mask_reasons == {"WEEK": "5", "BUILD_X": "no_lot"}
+
+    # decode: вместо dict — {}
+    legacy = json.dumps({"type": "progress", "done": 1, "total": 2,
+                         "action_mask_reasons": "oops"})
+    assert P.decode(legacy).action_mask_reasons == {}
+
+
+def test_bars_sources_render_reason_column():
+    """Bars обязан уметь колонку причин (set_items + отрисовка)."""
+    src = (ROOT / "train_ui2" / "charts.py").read_text(encoding="utf-8")
+    assert "reasons" in src, "charts.Bars.set_items должен принимать reasons"
+    assert re.search(r"def set_items\s*\(\s*self\s*,\s*items[^)]*reasons", src), \
+        "set_items(..., reasons=None) — третий аргумент обязателен"
+    assert "_reasons" in src, "причины должны кэшироваться на уровне label'ов"

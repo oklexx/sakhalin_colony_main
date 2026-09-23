@@ -1277,8 +1277,9 @@ class MainWindow2(QMainWindow):
             actions_dict, build_dict = split_by_panel(d.get("top_actions", {}),
                                                        ALL_BUILD_IDS)
             legality = d.get("action_legality", {}) or {}
-            self.bars_actions.set_items(actions_dict, legality)
-            self.bars_build.set_items(build_dict, legality)
+            reasons = d.get("action_mask_reasons", {}) or {}
+            self.bars_actions.set_items(actions_dict, legality, reasons)
+            self.bars_build.set_items(build_dict, legality, reasons)
             self._update_key_actions(d)
             if d.get("loop_detected"):
                 self.lbl_loop.setText(
@@ -1323,6 +1324,7 @@ class MainWindow2(QMainWindow):
             KEY_ACTIONS_MONITOR,
             total_actions=int(d.get("action_total_steps", 0) or 0),
             shares=d.get("top_actions", {}) or {},
+            reasons=d.get("action_mask_reasons", {}) or {},
         )
         total = int(d.get("action_total_steps", 0) or 0)
         head = (f"ключевые действия (доля из {total:,} шагов роллаута):"

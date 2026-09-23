@@ -163,6 +163,27 @@ inline constexpr int ROAD_DIR_DX[N_ROAD_DIRS] = {1, -1, 0, 0};   // E, W, S, N
 inline constexpr int ROAD_DIR_DY[N_ROAD_DIRS] = {0, 0, 1, -1};
 inline constexpr const char* ROAD_DIR_NAMES[N_ROAD_DIRS] = {
     "ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"};
+
+// ── Атрибуция причины закрытого бита маски (2026-09, action_mask_reasons) ────
+// docs/MONITOR_ACTIONS_2026_09.md §4: панель мониторинга не только показывает
+// «маска закрыла», но и ПОЧЕМУ (W2 из water_mask_check: деньги / нет
+// участка / курикулум). Код пишется тем же проходом action_mask(), что и бит:
+// open ⇔ бит 1; для закрытых — first-fail в порядке проверок (курикулум →
+// деньги → участок → прочая применимость). Порядок кодов НЕ менять:
+// rl/action_monitor.py MASK_REASON_KEYS и тест
+// test_monitor_action_stats.py::test_mask_reason_keys_in_sync_with_cpp
+// обязаны совпадать с MASK_REASON_NAMES построчно.
+enum MaskReason : uint8_t {
+    MR_OPEN = 0,        // бит открыт (или действие всегда доступно)
+    MR_CURRICULUM = 1,  // закрыто курикулумом (build_allowed / механика)
+    MR_MONEY = 2,       // не хватает денег
+    MR_NO_LOT = 3,      // нет легального участка (find_lot / find_lot_dir)
+    MR_OTHER = 4,       // прочая применимость (PAY_TAX, лимит банка, «нет цели»…)
+};
+constexpr int N_MASK_REASONS = 5;
+inline constexpr const char* MASK_REASON_NAMES[N_MASK_REASONS] = {
+    "open", "curriculum", "money", "no_lot", "other"};
+
 // P0 (2026-09-17): obs v2 — сколько ближайших ресурсных тайлов (кроме воды)
 // отдаётся векторами (dx, dy). Порядок: wood, coal, iron, oil, gold.
 constexpr int N_NEAREST_LOTS = 5;

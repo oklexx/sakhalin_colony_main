@@ -12,7 +12,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from train_ui2.monitor import fmt_pct, rows_with_sticky
+from train_ui2.monitor import LEGAL_NARROW_PCT, REASON_RU, fmt_pct, rows_with_sticky
 from train_ui2.theme import DIM, FIELD, LINE, TXT, color_for
 
 # Русские названия действий модели (ключ — английское имя из action_names).
@@ -276,6 +276,9 @@ class Bars(QWidget):
         self.keep: List[str] = list(keep or ())
         # (имя, доля%, легальность% | None, липкая строка?)
         self.items: List[tuple] = []
+        # label → русская причина закрытия маски («деньги», «нет участка», …);
+        # параллельно items, чтобы не ломать контракт 4-кортежей строк.
+        self._reasons: Dict[str, str] = {}
         self.setMinimumHeight(height)
         self.setMaximumHeight(height + 40)
 
@@ -283,20 +286,26 @@ class Bars(QWidget):
         return 18 if self.title else 2
 
     def set_items(self, items: Dict[str, float],
-                  legality: Optional[Dict[str, float]] = None) -> None:
-        """Принять доли (и, если есть, легальность) и перерисовать панель.
+                  legality: Optional[Dict[str, float]] = None,
+                  reasons: Optional[Dict[str, str]] = None) -> None:
+        """Принять доли (и, если есть, легальность с причинами) и перерисовать.
 
         Сколько строк влезает — решает виджет, а не тренер: отсечка top-15 в
         `rl/async_trainer.py` и вытеснение по индексу действия раньше прятали
         живые строки. Обрезок здесь чисто визуальный (не влезло — не показано),
         но закреплённые `self.keep` строки попадают в список всегда: нулевая
         доля ключевого здания — это диагноз, а не пустое место.
+
+        `reasons` — action_mask_reasons ({action: MASK_REASON_KEY}); для строк
+        с узким окном легальности подписывается короткая причина закрытия
+        («· деньги»), перевод ярлыка — monitor.REASON_RU.
         """
         avail_h = max(1, self.height() - self._top_offset() - 4)
         max_rows = max(1, avail_h // _ROW_MIN_H)
         rows = rows_with_sticky(items or {}, legality or {},
                                 keep=self.keep, max_rows=max_rows)
         merged: Dict[str, tuple] = {}
+        merged_reasons: Dict[str, str] = {}
         for name, pct, legal, sticky in rows:
             label = action_ru(name)
             prev = merged.get(label)
@@ -305,7 +314,11 @@ class Bars(QWidget):
             if prev is not None and prev[1] >= pct:
                 continue
             merged[label] = (label, pct, legal, sticky)
+            ru = REASON_RU.get((reasons or {}).get(name, ""), "")
+            if ru:
+                merged_reasons[label] = ru
         self.items = list(merged.values())
+        self._reasons = merged_reasons
         self.update()
 
     def paintEvent(self, _ev):
@@ -338,8 +351,12 @@ class Bars(QWidget):
         row_h = max(_ROW_MIN_H, min(18, avail_h // max(1, len(self.items))))
         max_pct = max((r[1] for r in self.items), default=1.0) or 1.0
         has_legality = any(r[2] is not None for r in self.items)
-        # Колонка цифр: без легальности второй надписи нет — не съедаем ширину
+        has_reason = bool(self._reasons)
+        # Колонка цифр: без легальности второй надписи нет — не съедаем ширину;
+        # причина («· нет участка») шире процентов — колонка шире на 40px
         text_w = _TEXT_W if has_legality else 56
+        if has_reason:
+            text_w += 40
         bar_x = _LABEL_W + 10
         bar_w_total = max(8.0, w - bar_x - text_w - 6)
         for i, (name, pct, legal, sticky) in enumerate(self.items):
@@ -356,8 +373,15 @@ class Bars(QWidget):
                               max(2.0, bar_w_total * (pct / max_pct)), row_h - 8), row_color)
             p.setPen(QColor(DIM))
             txt = fmt_pct(pct)
-            if has_legality:
+            rsn = self._reasons.get(name)
+            # Причина — только когда маска реально резала (узкое окно):
+            # при легальности 100% показывать «· деньги» было бы враньём.
+            if rsn and (legal is None or legal < LEGAL_NARROW_PCT):
+                if has_legality and legal is not None:
+                    txt += f" · {legal:.0f}%"
+                txt += f" · {rsn}"
+            elif has_legality:
                 txt += f" · {legal:.0f}% лег" if legal is not None else " · лег ?"
-            p.drawText(QRectF(w - _TEXT_W, y, _TEXT_W - 6, row_h - 3),
+            p.drawText(QRectF(w - text_w, y, text_w - 6, row_h - 3),
                        Qt.AlignRight | Qt.AlignVCenter, txt)
         p.end()

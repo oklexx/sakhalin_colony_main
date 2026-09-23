@@ -18,15 +18,18 @@ from __future__ import annotations
 import os
 
 #: Extension API version Python expects.
-EXTENSION_MIN_VERSION = 5
+EXTENSION_MIN_VERSION = 6
 
 #: Capability flags (see `colony_cpp.extension_info()["features"]`) that must
 #: be present. PR 1 replaced the (stage, unlock_ids) pair with set_curriculum();
 #: PR 4 needs resource weights + priority_reached (a binary that silently
 #: ignores them would resurrect the dead-setting bug). P0 (2026-09-17) needs
 #: obs_v2 (направления к ближайшим ресурсам) и tax_to_debt (налог → долг,
-#: иначе календарь замирает на 365-й день).
-REQUIRED_FEATURES = ("set_curriculum", "resource_curriculum", "obs_v2", "tax_to_debt", "mechanic_curriculum", "terminal_minimap")
+#: иначе календарь замирает на 365-й день). 2026-09: mask_reason_counts —
+#: атрибуция причины закрытой маски (деньги / нет участка / курикулум) через
+#: action_mask_reason_counts() и action_mask_reasons_batch() — колонка в
+#: панели мониторинга (docs/MONITOR_ACTIONS_2026_09.md §4).
+REQUIRED_FEATURES = ("set_curriculum", "resource_curriculum", "obs_v2", "tax_to_debt", "mechanic_curriculum", "terminal_minimap", "mask_reason_counts")
 
 #: Env var escape hatch (same effect as --allow-stale-pyd).
 STALE_ENV_VAR = "COLONY_ALLOW_STALE_PYD"

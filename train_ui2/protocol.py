@@ -73,6 +73,9 @@ class ProgressMsg:
     # пропала» не читается: политика разлюбила или действие закрыто маской.
     action_counts: Dict[str, int] = field(default_factory=dict)
     action_legality: Dict[str, float] = field(default_factory=dict)
+    # Доминирующая причина закрытия маски (MASK_REASON_KEYS): {action: reason}.
+    # Пусто = не измерялось; UI не гадает и показывает прежний вердикт.
+    action_mask_reasons: Dict[str, str] = field(default_factory=dict)
     loop_detected: bool = False
     loop_action_name: Optional[str] = None
     envs_with_loops: int = 0
@@ -112,6 +115,11 @@ class ProgressMsg:
             "top_actions": self.top_actions,
             "action_counts": {k: _safe_int(v) for k, v in self.action_counts.items()},
             "action_legality": {k: _safe_float(v) for k, v in self.action_legality.items()},
+            # JSON-safe: None выкидываем, прочее → строка (значения — ключи MASK_REASON_KEYS)
+            "action_mask_reasons": {
+                str(k): str(v) for k, v in self.action_mask_reasons.items()
+                if v is not None
+            },
             "action_total_steps": int(self.action_total_steps),
             "loop_detected": self.loop_detected,
             "loop_action_name": self.loop_action_name,
@@ -308,6 +316,10 @@ def decode(line: str) -> Msg:
             curriculum_progress_valid=bool(d.get("curriculum_progress_valid", True)),
             action_counts={k: _safe_int(v) for k, v in d.get("action_counts", {}).items()},
             action_legality={k: _safe_float(v) for k, v in d.get("action_legality", {}).items()},
+            action_mask_reasons=(
+                {str(k): str(v) for k, v in d.get("action_mask_reasons").items()}
+                if isinstance(d.get("action_mask_reasons"), dict) else {}
+            ),
             action_total_steps=_safe_int(d.get("action_total_steps", 0)),
             curriculum_available_actions=d.get("curriculum_available_actions", ""),
             curriculum_upcoming_stages=d.get("curriculum_upcoming_stages", []),

@@ -249,12 +249,39 @@ std::vector<float> ColonyVecEnvCpp::action_masks_batch() const {
     const int n = (int)envs_.size();
     const int na = n_actions_;
     std::vector<float> out((size_t)n * na, 0.0f);
+    mask_reasons_batch_.assign((size_t)n * (size_t)na, (uint8_t)MR_OTHER);
     for (int i = 0; i < n; i++) {
-        // action_mask() is non-const (find_lot mutates cell_cache_), so cast
-        std::vector<float> mask = const_cast<ColonyEnvCpp&>(envs_[(size_t)i]).action_mask();
+        // action_mask() is non-const (find_lot mutates cell_cache_), so cast.
+        // Один проход отдаёт и маску, и атрибуцию причин (без второго BFS —
+        // см. P2-11 в src/action_mask.cpp и docs/MONITOR_ACTIONS_2026_09.md §4).
+        std::vector<uint8_t> reasons;
+        std::vector<float> mask =
+            const_cast<ColonyEnvCpp&>(envs_[(size_t)i]).action_mask(&reasons);
         std::copy(mask.begin(), mask.end(), out.begin() + (size_t)i * na);
+        std::copy(reasons.begin(), reasons.end(),
+                  mask_reasons_batch_.begin() + (size_t)i * na);
     }
     return out;
+}
+
+std::vector<uint8_t> ColonyVecEnvCpp::action_mask_reasons_batch() const {
+    // Ленивая инициализация: без предыдущего action_masks_batch() причины
+    // считаются здесь, дальше читаются из того же кэша (свежие ровно тогда,
+    // когда свежи маски — Python вызывает оба в step_wait/reset).
+    if (mask_reasons_batch_.size() !=
+        (size_t)n_envs_ * (size_t)n_actions_) {
+        (void)action_masks_batch();
+    }
+    return mask_reasons_batch_;
+}
+
+std::array<int64_t, N_MASK_REASONS> ColonyVecEnvCpp::action_mask_reason_counts() const {
+    const std::vector<uint8_t> reasons = action_mask_reasons_batch();
+    std::array<int64_t, N_MASK_REASONS> counts{};
+    for (uint8_t r : reasons) {
+        if (r < (uint8_t)N_MASK_REASONS) counts[(size_t)r]++;
+    }
+    return counts;
 }
 
 void ColonyVecEnvCpp::save_normalization(const std::string& path) {

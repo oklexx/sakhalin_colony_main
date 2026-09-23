@@ -15,7 +15,7 @@
 | [Makefile](Makefile) | Команды: `make build`, `make test`, `make gui`, `make watch`, `make tb` |
 | [requirements.txt](requirements.txt) | Python-стек (torch, numpy, PySide6, …) |
 | [pyproject.toml](pyproject.toml) | Конфигурация ruff/mypy (стандарты для кода) |
-| [tests/](tests/) | 44 тест-файла + 23 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
+| [tests/](tests/) | 45 тест-файлов + 24 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
 | [docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md) | Наблюдение за чемпионом в GUI-окне: IPC-протокол, таймауты, диагностика «окно не запустилось» |
 
 > **Отчёты по проекту:** `REPORT.md`, `REPORT_2026_09.md`, `TRAINING_REPORT.md`,
@@ -134,7 +134,7 @@ sakhalin_colony_main/
                               # test_reward_clip, test_milestones, test_curriculum,
                               # test_exp_configs, test_reward_field_sync,
                               # test_trainer_bootstrap, test_watch_visual, test_models, ...) +
-                              # bench_per_step.py, conftest.py и cpp/ — 23 C++-пробы
+                              # bench_per_step.py, conftest.py и cpp/ — 24 C++-пробы
                               # (scripts/cpp_checks.sh)
 ```
 
@@ -482,7 +482,7 @@ freeze/no-minimap), поэтому протокол наблюдения про�
 
 | Job | Что делает | Зависимости |
 |---|---|---|
-| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 23 проб + прогон 8 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`, `stage1_gate_check`) | только g++ |
+| `cpp-probes` | `./scripts/cpp_checks.sh`: компиляция всех 24 проб + прогон 9 проверок с кодом возврата (`curriculum_check`, `reward_regressions`, `road_direction_check`, `water_mask_check`, `p0_p1_check`, `gui_watch_check`, `reward_v4_longrun`, `stage1_gate_check`, `mask_reason_check`) | только g++ |
 | `python-tests` | сборка `colony_cpp` через CMake → handshake → полный `pytest` (включая Qt-тесты: `libegl1 libgl1 libxkbcommon0 libdbus-1-3`) | Python 3.11, torch (CPU-индекс), pybind11, PySide6 |
 
 Тот же набор локально: `./scripts/cpp_checks.sh` и `python -m pytest`.

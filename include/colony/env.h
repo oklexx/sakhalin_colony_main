@@ -167,7 +167,17 @@ public:
                (curriculum_.obs_version >= 2 ? 2 * N_NEAREST_LOTS : 0);
     }
     // Action mask: 1.0 = available, 0.0 = blocked. Size = n_actions().
-    std::vector<float> action_mask();
+    // `reasons` (optional, size = n_actions): той же функцией в тот же проход
+    // пишется код MaskReason, почему бит закрыт (0 ⇒ MR_OPEN). Один вызов —
+    // один BFS find_lot: атрибуция не должна стоить второго обхода карты
+    // (см. P2-11 кеш lot_cache внутри action_mask).
+    std::vector<float> action_mask(std::vector<uint8_t>* reasons = nullptr);
+    // Коды причин по каждому действию (длина = n_actions(), значения MaskReason).
+    // Эквивалент action_mask(&reasons), но возвращает только атрибуцию.
+    std::vector<uint8_t> action_mask_reasons();
+    // Гистограмма причин по ТЕКУЩЕМУ состоянию: индексы = MaskReason,
+    // сумма элементов == n_actions(), counts[MR_OPEN] == popcount(action_mask()).
+    std::array<int64_t, N_MASK_REASONS> action_mask_reason_counts();
     const std::vector<std::string>& build_ids() const { return build_ids_; }
     const std::vector<const BaseData*>& build_data() const { return build_data_; }
     const Game& game() const { return game_; }
@@ -337,6 +347,15 @@ public:
     std::vector<float> terminal_minimap_batch() const;
     // Action masks for all envs: [n_envs * n_actions]
     std::vector<float> action_masks_batch() const;
+    // Причины закрытых бит той же маски: [n_envs * n_actions], коды MaskReason.
+    // Заполняется ПАРАЛЛЕЛЬНО с action_masks_batch() (один проход action_mask
+    // на среду — без второго BFS); без предыдущего вызова action_masks_batch
+    // досчитывается лениво. Python читает сразу после step_wait/reset, т.е.
+    // ровно то состояние, из которого сэмплировалось действие.
+    std::vector<uint8_t> action_mask_reasons_batch() const;
+    // Агрегат по всем средам последнего action_masks_batch(): индексы MaskReason,
+    // сумма == n_envs * n_actions().
+    std::array<int64_t, N_MASK_REASONS> action_mask_reason_counts() const;
 
     void save_normalization(const std::string& path);
     void load_normalization(const std::string& path);
@@ -402,6 +421,9 @@ private:
     std::vector<float> raw_obs_buf_;      // for terminal_observation (reusable)
     std::vector<float> terminal_minimap_buf_;  // [n_envs * 8 * 32 * 32]
     std::vector<char> terminal_minimap_valid_; // per-env, last step
+    // Атрибуция причин закрытых бит маски [n_envs * n_actions] (MaskReason);
+    // mutable — заполняется внутри const action_masks_batch() тем же проходом.
+    mutable std::vector<uint8_t> mask_reasons_batch_;
     std::vector<double> rewards_;         // [n_envs]
     std::vector<double> old_rew_buffer_;  // for reward RMS
     std::vector<bool> terminateds_;

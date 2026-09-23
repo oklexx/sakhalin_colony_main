@@ -138,6 +138,9 @@ class CppVecEnv(VecEnv):
 
         # Action masks: [n_envs, n_actions] float32 (1.0=available, 0.0=blocked)
         self._action_masks = np.ones((n_envs, n_actions), dtype=np.float32)
+        # Причины закрытых бит той же маски (MaskReason, uint8) — обновляются
+        # одним вызовом action_masks_batch() внутри C++ (docs/MONITOR_ACTIONS_2026_09.md §4)
+        self._mask_reasons: Optional[np.ndarray] = None
 
         # Init SB3 VecEnv (sets self.num_envs, self.observation_space, self.action_space)
         super().__init__(n_envs, observation_space, action_space)
@@ -187,6 +190,7 @@ class CppVecEnv(VecEnv):
         self._action_masks = np.asarray(
             self.cpp_vec.action_masks_batch(), dtype=np.float32
         )
+        self._mask_reasons = self._read_mask_reasons()
         self.reset_infos = [{} for _ in range(self.num_envs)]
         self._reset_seeds()
         self._reset_options()
@@ -204,10 +208,11 @@ class CppVecEnv(VecEnv):
         trunceds = np.array(result.trunceds, dtype=bool)
         dones = terminateds | trunceds
 
-        # Update action masks after step
+        # Update action masks after step (+ причины закрытия тем же проходом)
         self._action_masks = np.asarray(
             self.cpp_vec.action_masks_batch(), dtype=np.float32
         )
+        self._mask_reasons = self._read_mask_reasons()
 
         infos = []
         for i in range(self.num_envs):
@@ -247,6 +252,31 @@ class CppVecEnv(VecEnv):
     def action_masks(self) -> np.ndarray:
         """Return current action masks [n_envs, n_actions]."""
         return self._action_masks
+
+    def _read_mask_reasons(self) -> Optional[np.ndarray]:
+        """Коды MaskReason [n_envs, n_actions] к свежим маскам или None.
+
+        None — старый бинарь под COLONY_ALLOW_STALE_PYD (нет биндинга):
+        наблюдательная метрика, шаг тренировки из-за неё не падает.
+        """
+        fn = getattr(self.cpp_vec, "action_mask_reasons_batch", None)
+        if fn is None:
+            return None
+        try:
+            raw = fn()
+        except Exception:  # noqa: BLE001 — наблюдательная метрика не валит шаг
+            return None
+        arr = np.asarray(raw, dtype=np.uint8)
+        return arr.reshape(self.num_envs, -1)
+
+    @property
+    def mask_reasons(self) -> Optional[np.ndarray]:
+        """Причины закрытых бит текущей маски [n_envs, n_actions] (или None).
+
+        Тот же вызов action_masks_batch(), что и `action_masks` — состояние
+        согласовано: EnvManager читает оба свойства до step (см. collect_step).
+        """
+        return self._mask_reasons
 
     @property
     def action_names(self) -> List[str]:
