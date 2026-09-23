@@ -51,6 +51,10 @@ class TrainMetrics:
     # 0..100. Без неё «строка пропала» неоднозначна: политика разлюбила или
     # действие закрыто маской (для водоканала — не было свободного LT_WATER).
     action_legality: Dict[str, float] = field(default_factory=dict)
+    # Доминирующая причина закрытия маски за роллаут ("money"/"no_lot"/
+    # "curriculum"/"other") по действию; пусто = не измерялось или маска не
+    # закрывалась (rl/action_monitor.MaskReasonMonitor, §4 панели).
+    action_mask_reasons: Dict[str, str] = field(default_factory=dict)
     # Знаменатель долей = шагов в собранном роллауте (n_steps*n_envs).
     action_total_steps: int = 0
     loop_detected: bool = False
@@ -396,6 +400,23 @@ class AsyncTrainer:
             return dict(pop() or {})
         except Exception as e:  # noqa: BLE001 - наблюдательная метрика не валит обучение
             self._monitor_warn_once(f"pop_action_legality упал: {type(e).__name__}: {e}")
+            return {}
+
+    def _pop_action_mask_reasons(self) -> Dict[str, str]:
+        """Доминирующая причина закрытой маски (деньги / нет участка / курикулум)."""
+        pop = getattr(self.em, "pop_action_mask_reasons", None)
+        if pop is None:
+            self._monitor_warn_once(
+                "env_manager не предоставляет pop_action_mask_reasons — "
+                "атрибуция причины маски не измеряется (в колонке панели "
+                "останется обобщённое «заблокировано маской»)"
+            )
+            return {}
+        try:
+            return dict(pop() or {})
+        except Exception as e:  # noqa: BLE001 - наблюдательная метрика не валит обучение
+            self._monitor_warn_once(
+                f"pop_action_mask_reasons упал: {type(e).__name__}: {e}")
             return {}
 
     def _curriculum_progress_view(self, step: int) -> Tuple[float, bool]:
@@ -828,6 +849,7 @@ class AsyncTrainer:
                 if cnt > 0
             }
             action_legality = self._pop_action_legality()
+            action_mask_reasons = self._pop_action_mask_reasons()
 
             # Return statistics
             avg_return = 0.0
@@ -888,6 +910,7 @@ class AsyncTrainer:
             self.metrics.top_actions = top_actions
             self.metrics.action_counts = counts_by_name
             self.metrics.action_legality = action_legality
+            self.metrics.action_mask_reasons = action_mask_reasons
             self.metrics.action_total_steps = int(total_actions)
             self.metrics.loop_detected = envs_with_loops > 0
             self.metrics.loop_action_name = loop_action_name

@@ -68,11 +68,10 @@ WaterChannel action was masked on 0/2000 random steps») и
 
 ## 4. Что осталось за кадром (осознанно)
 
-- **Атрибуция причины маски** (деньги / нет клетки / курикулум) живёт в C++
-  (`water_mask_check` W2) и в UI не переносится: для неё нужен новый биндинг и
-  rebuild `colony_cpp` (handshake), а цель правки — снять неоднозначность
-  «нельзя vs не хочет» малой ценой. Следующий шаг, если потребуется:
-  `action_mask_reason_counts()` в `src/bindings.cpp` → та же колонка в панели.
+- ~~**Атрибуция причины маски** (деньги / нет клетки / курикулум)~~ —
+  **СДЕЛАНО (2026-09)**: `action_mask_reason_counts()` /
+  `action_mask_reason(s)(_batch)` в `src/bindings.cpp`, версия handshake 5→6
+  (фича `mask_reason_counts`), колонка в панели — см. §6.
 - `loop_detector` по-прежнему смотрит последние 1000 действий: у детектора
   своя семантика (недавний цикл), расширение окна сделало бы «циклы»
   срабатывающими на весь роллаут.
@@ -99,3 +98,64 @@ WaterChannel action was masked on 0/2000 random steps») и
 - Тесты: `tests/test_monitor_action_stats.py` (25), обновлённые
   `tests/test_async_trainer.py::test_top_actions_dict_omits_zeros_and_maps_names`
   и `tests/test_ui2_smoke.py` (панель теперь 1 + 5 закрепленных строк).
+
+## 6. Атрибуция причины маски (2026-09, СДЕЛАНО)
+
+«Та же колонка в панели», но с ответом НЕ ТОЛЬКО «маска закрыла», а ПОЧЕМУ:
+деньги / нет участка / курикулум (порядок first-fail W2 из
+`water_mask_check`: курикулум → деньги → нет клетки → прочее).
+
+**C++ (один проход, без второго BFS):**
+
+- `include/colony/constants.h` — enum `MaskReason` (`MR_OPEN/CURRICULUM/
+  MONEY/NO_LOT/OTHER`) + таблица `MASK_REASON_NAMES` (единственный источник
+  ключей; паритет с Python — регресс-тест).
+- `src/action_mask.cpp` — `action_mask(std::vector<uint8_t>* reasons =
+  nullptr)` пишет причину каждого бита тем же проходом, что и маску
+  (lot_cache/P2-11 не задваивается). Плюс `action_mask_reasons()` и
+  `action_mask_reason_counts()` (гистограмма, сумма == `n_actions()`).
+- `src/vec_env.cpp` — `action_masks_batch()` параллельно заполняет буфер
+  `mask_reasons_batch_`; `action_mask_reasons_batch()` /
+  `action_mask_reason_counts()` читают его (лениво досчитывают).
+- `src/bindings.cpp` — биндинги на обеих средах + фича
+  `mask_reason_counts`, `COLONY_EXTENSION_VERSION` 5→6.
+
+**Handshake:** `python/colony_cpp_api.py` — `EXTENSION_MIN_VERSION = 6`,
+`REQUIRED_FEATURES += "mask_reason_counts"`: старый .pyd падает с ошибкой
+«rebuild», а не молча без колонки (escape: `--allow-stale-pyd` /
+`COLONY_ALLOW_STALE_PYD=1`, тогда поле в протоколе пустое и UI честно
+показывает прежний вердикт).
+
+**Проводка (зеркало легальности, тот же флаг `monitor_action_legality`):**
+
+`CppVecEnv.mask_reasons` (кэш обновляется в `reset()`/`step_wait()` тем же
+`action_masks_batch()`, что и `action_masks`) → `EnvManager.collect_step`
+(читается ДО шага, как маска у актора) → `MaskReasonMonitor.add_step` /
+`pop_dominant(names)` (окно = роллаут, доминирующая причина, тай-брейк =
+порядок `MASK_REASON_KEYS[1:]`; действия, не закрывавшиеся ни разу, в ответ
+не попадают) → `TrainMetrics.action_mask_reasons` → воркер →
+`ProgressMsg.action_mask_reasons` (JSON-safe: None выкидывается, прочее →
+строка) → `main_window`: `watch_report(reasons=…)` кладёт `reason` в строку
+и уточняет вердикт («заблокировано: деньги», «окно легальности узкое: нет
+участка»), `Bars.set_items(items, legality, reasons)` подписывает короткую
+причину справа («· деньги») только при легальности < 25%.
+
+**Русские ярлыки** — `train_ui2/monitor.py::REASON_RU` («деньги» / «нет
+участка» / «курикулум» / «иное»).
+
+**Тесты:**
+
+- `tests/cpp/mask_reason_check.cpp` (R1..R5: паритет open⇔бит и сумма counts
+  на каждом шаге, независимая first-fail перепроверка BUILD, money=0 /
+  all_builds=false принудительно, менеджеры/PAY_TAX/DAY-WEEK, masked-random
+  роллаут) — в `CHECKS` `scripts/cpp_checks.sh`.
+- `tests/test_monitor_action_stats.py` §6: синхронность `MASK_REASON_KEYS` ↔
+  `MASK_REASON_NAMES`, `MaskReasonMonitor` (доминанта/тай-брейк/мусор),
+  мост `EnvManager.pop_action_mask_reasons`, кэш `CppVecEnv.mask_reasons`,
+  `action_verdict(reason=…)`, `watch_report(reasons=…)`, roundtrip протокола,
+  проводка воркера/`TrainMetrics`/`set_items`.
+- `tests/test_extension_handshake.py`: фича в `REQUIRED_FEATURES`,
+  версия ≥ 6.
+- Смоук (3 среды × сброс): `open=60, money=36, no_lot=27, other=24`,
+  сумма == `n_envs * n_actions`; WaterChannel → `no_lot` (совпадает с W2:
+  457 состояний, деньги 240 / нет клетки 210 / курикулум 0).

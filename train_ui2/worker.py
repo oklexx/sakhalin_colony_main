@@ -238,6 +238,7 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
                 top_actions=dict(getattr(metrics, 'top_actions', {})),
                 action_counts=dict(getattr(metrics, 'action_counts', {})),
                 action_legality=dict(getattr(metrics, 'action_legality', {})),
+                action_mask_reasons=dict(getattr(metrics, 'action_mask_reasons', {})),
                 action_total_steps=int(getattr(metrics, 'action_total_steps', 0) or 0),
                 loop_detected=bool(getattr(metrics, 'loop_detected', False)),
                 loop_action_name=getattr(metrics, 'loop_action_name', None),

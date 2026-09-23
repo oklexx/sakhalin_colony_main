@@ -23,8 +23,20 @@ _BUILD_MARKERS: Tuple[str, ...] = ("BUILD:", "A_BUILD", "BUILD_")
 
 # Пороги вердикта (в процентах шагов роллаута). Это эвристика подписи, а не
 # параметр обучения: менять их в Config нельзя, там живут только режимы сбора.
-_LEGAL_NONE_PCT: float = 1.0     # ниже — действие практически всегда закрыто маской
-_LEGAL_NARROW_PCT: float = 25.0  # ниже — окно легальности узкое, доля закономерно скачет
+_LEGAL_NONE_PCT: float = 1.0   # ниже — действие практически всегда закрыто маской
+LEGAL_NARROW_PCT: float = 25.0  # ниже — окно легальности узкое, доля закономерно скачет
+# (публичный — charts.py показывает колонку причин только при узком окне)
+
+# Русские ярлыки причин закрытия маски. Ключи — из rl/action_monitor.
+# MASK_REASON_KEYS (= MASK_REASON_NAMES в include/colony/constants.h, сверка
+# test_mask_reason_keys_in_sync_with_cpp): деньги / нет участка / курикулум.
+REASON_RU: Dict[str, str] = {
+    "curriculum": "курикулум",
+    "money": "деньги",
+    "no_lot": "нет участка",
+    "other": "иное",
+    "open": "открыто",
+}
 
 
 def is_build_action(name: str, build_ids: Optional[Iterable[str]] = None) -> bool:
@@ -58,21 +70,28 @@ def split_by_panel(top_actions: Dict[str, float],
     return actions, builds
 
 
-def action_verdict(pct: float, legal_pct: Optional[float]) -> str:
+def action_verdict(pct: float, legal_pct: Optional[float],
+                   reason: Optional[str] = None) -> str:
     """Одна фраза диагностики: действие закрыто маской или его не выбирают.
 
     `legal_pct is None` — легальность не измерялась (нет масок/флаг выключен):
     выдумывать «заблокировано» нельзя, поэтому вердикт пустой либо честное
     «нет данных о легальности».
+
+    `reason` — доминирующая причина закрытия из action_mask_reasons
+    (MASK_REASON_KEYS): «заблокировано маской» уточняется до
+    «заблокировано: деньги / нет участка / курикулум» (docs/MONITOR_ACTIONS_2026_09.md §4).
+    Без причины (None/неизвестный ключ) — прежние строки без изменений.
     """
     if legal_pct is None:
         return "" if pct > 0.0 else "нет данных о легальности"
     if pct > 0.0:
         return "выбирает"
+    ru = REASON_RU.get(reason or "", "")
     if legal_pct < _LEGAL_NONE_PCT:
-        return "заблокировано маской"
-    if legal_pct < _LEGAL_NARROW_PCT:
-        return "окно легальности узкое"
+        return f"заблокировано: {ru}" if ru else "заблокировано маской"
+    if legal_pct < LEGAL_NARROW_PCT:
+        return f"окно легальности узкое: {ru}" if ru else "окно легальности узкое"
     return "легально, но не выбирает"
 
 
@@ -132,14 +151,18 @@ def fmt_pct(v: float) -> str:
 def watch_report(counts: Dict[str, int], legality: Dict[str, float],
                  names: Sequence[str], total_actions: int = 0,
                  shares: Optional[Dict[str, float]] = None,
+                 reasons: Optional[Dict[str, str]] = None,
                  ) -> List[Dict[str, object]]:
-    """Отчёт по закреплённым действиям: {name, count, pct, legal, verdict}.
+    """Отчёт по закреплённым действиям: {name, count, pct, legal, reason, verdict}.
 
     `shares` (готовые доли из `top_actions`) имеют приоритет над пересчётом из
     счётчиков: цифра в подписи обязана совпадать с цифрой на шкале, иначе
     панель начнёт «врать двумя способами сразу». Сырой `count` рядом нужен
     потому, что на длинном роллауте доля редкого действия мельчает до 0.01%,
     а «4 шага» читается сразу.
+
+    `reasons` — action_mask_reasons из протокола ({action: MASK_REASON_KEY});
+    уходит в поле `reason` строки и в вердикт (см. action_verdict).
     """
     total = max(int(total_actions or 0), 0)
     out: List[Dict[str, object]] = []
@@ -154,6 +177,8 @@ def watch_report(counts: Dict[str, int], legality: Dict[str, float],
         if pct is None:
             pct = round(cnt / total * 100.0, 3) if total > 0 else 0.0
         legal = (legality or {}).get(name)
+        reason = (reasons or {}).get(name)
         out.append({"name": name, "count": cnt, "pct": pct, "legal": legal,
-                    "verdict": action_verdict(pct, legal)})
+                    "reason": reason,
+                    "verdict": action_verdict(pct, legal, reason)})
     return out

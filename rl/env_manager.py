@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
-from rl.action_monitor import ActionLegalityMonitor
+from rl.action_monitor import ActionLegalityMonitor, MaskReasonMonitor
 from rl.config import Config
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -224,6 +224,14 @@ class EnvManager:
             if bool(getattr(cfg, "monitor_action_legality", True))
             else None
         )
+        # Та же причина закрытия (деньги / нет участка / курикулум) — едет тем
+        # же флагом, что и легальность: колонка панели появляется только там,
+        # где вообще считается след маски (docs/MONITOR_ACTIONS_2026_09.md §4).
+        self._action_reasons: Optional[MaskReasonMonitor] = (
+            MaskReasonMonitor(self.n_actions)
+            if self._action_legality is not None
+            else None
+        )
 
     # ── observation helpers ──
 
@@ -274,6 +282,9 @@ class EnvManager:
         # поэтому доля легальных шагов считается честно (rl/action_monitor.py).
         if self._action_legality is not None:
             self._action_legality.add_step(action_masks_np)
+        if self._action_reasons is not None:
+            # причины из того же кэша, что и маски выше (до step — как актор)
+            self._action_reasons.add_step(getattr(self.vec_env, "mask_reasons", None))
 
         if self.cfg.obs_mode == "hybrid":
             flat_obs, minimap_obs = self._obs
@@ -351,6 +362,18 @@ class EnvManager:
         if self._action_legality is None:
             return {}
         return self._action_legality.pop_percent(self.action_names)
+
+    def pop_action_mask_reasons(self) -> Dict[str, str]:
+        """Доминирующая причина закрытия маски по действию за роллаут.
+
+        Возвращает {имя: "money" | "no_lot" | "curriculum" | "other"} — только
+        для действий, которые хотя бы раз были закрыты. Пустой dict = причины
+        не измерялись (флаг monitor_action_legality выключен) — UI обязан
+        показать прежний вердикт без колонки причин, а не угадывать.
+        """
+        if self._action_reasons is None:
+            return {}
+        return self._action_reasons.pop_dominant(self.action_names)
 
     def get_curriculum_progress(self, step: int) -> Dict[str, object]:
         """Прогресс текущего этапа курикулума в шагах (для подписи в UI).

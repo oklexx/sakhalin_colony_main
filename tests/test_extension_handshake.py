@@ -87,11 +87,12 @@ def test_custom_required_subset_checked(fake_colony):
 # ── happy path ───────────────────────────────────────────────────────────
 
 def test_fresh_binary_returns_info(fake_colony):
+    # «свежий бинарь» обязан покрывать весь REQUIRED-набор: после добавления
+    # новой фичи фиксированный список здесь обновляем, а не обходной рукой.
     fake_colony(extension_info=lambda: {
         "version": EXTENSION_MIN_VERSION,
-        "features": ["set_curriculum", "curriculum", "resource_curriculum", "minimap",
-                     "action_masks_batch", "obs_v2", "tax_to_debt",
-                     "mechanic_curriculum", "terminal_minimap"],
+        "features": sorted(set(REQUIRED_FEATURES) | {
+            "curriculum", "minimap", "action_masks_batch"}),
         "src_sha": "deadbee"})
     info = require_colony()
     assert info["version"] == EXTENSION_MIN_VERSION
@@ -103,7 +104,10 @@ def test_required_features_contract():
     assert "set_curriculum" in REQUIRED_FEATURES
     assert "resource_curriculum" in REQUIRED_FEATURES
     assert {"obs_v2", "tax_to_debt", "mechanic_curriculum", "terminal_minimap"} <= set(REQUIRED_FEATURES)
-    assert EXTENSION_MIN_VERSION >= 5
+    # 2026-09: атрибуция причины маски (деньги / нет участка / курикулум)
+    # через action_mask_reason_counts() — см. docs/MONITOR_ACTIONS_2026_09.md §4.
+    assert "mask_reason_counts" in REQUIRED_FEATURES
+    assert EXTENSION_MIN_VERSION >= 6
 
 
 # ── escape hatch ─────────────────────────────────────────────────────────
