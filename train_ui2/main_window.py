@@ -642,14 +642,17 @@ class MainWindow2(QMainWindow):
         self.cmb_stage.blockSignals(True)
         self.cmb_stage.setCurrentIndex(0)
         self.cmb_stage.blockSignals(False)
-        # критерии проверки подбираются под задачу этапа
-        if pid == "stage1":
-            eval_rows = self.pgroups.get("Оценка и сохранение")
-            if eval_rows is not None:
-                if "eval_min_days" in eval_rows.rows:
-                    eval_rows.rows["eval_min_days"].set_value(365.0)
-                if "eval_min_bases" in eval_rows.rows:
-                    eval_rows.rows["eval_min_bases"].set_value(3)
+        # Скорость обучения и критерии проверки должны следовать пресету, а
+        # не оставаться случайно от предыдущего режима (Этап 1 -> Этап 2).
+        ppo_rows = self.pgroups.get("PPO")
+        if ppo_rows is not None and "learning_rate" in ppo_rows.rows:
+            ppo_rows.rows["learning_rate"].set_value(p["learning_rate"])
+        eval_rows = self.pgroups.get("Оценка и сохранение")
+        if eval_rows is not None:
+            if "eval_min_days" in eval_rows.rows:
+                eval_rows.rows["eval_min_days"].set_value(p["eval_min_days"])
+            if "eval_min_bases" in eval_rows.rows:
+                eval_rows.rows["eval_min_bases"].set_value(p["eval_min_bases"])
         self._update_preset_status()
         self._on_curriculum_changed()
         self.log("info", f"Режим обучения: {p['title']} — {p['summary']}")
@@ -790,8 +793,10 @@ class MainWindow2(QMainWindow):
         bar = QHBoxLayout()
         bar.addWidget(T.button("⟳ Обновить", self._refresh_models))
         bar.addWidget(T.button("👁 Наблюдать", self._watch_selected_model, "primary"))
-        bar.addWidget(T.button("🎓 Дообучить", self._finetune_selected,
-                               tooltip="Старт с весами выбранной модели (--resume-model)"))
+        bar.addWidget(T.button(
+            "🎓 Дообучить", self._finetune_selected,
+            tooltip=("Этап 2: автоматически открыть всю экономику, поставить LR=0.00003 "
+                     "и начать с весов выбранной модели.")))
         bar.addWidget(T.button("📂 Папка", self._open_selected_folder))
         bar.addWidget(T.button("🗑 Удалить", self._delete_selected, "danger"))
         bar.addStretch(1)
@@ -1535,6 +1540,11 @@ class MainWindow2(QMainWindow):
         if model_file is None:
             QMessageBox.warning(self, "Модели", "Нет final/best/checkpoint .pt")
             return
+        # The stage-2 preset explicitly documents that «Дообучить» applies the
+        # full action/build/resource space. Do this before serializing the UI
+        # config, so the worker receives the lower stage-2 LR and strict eval
+        # thresholds rather than stale stage-1 values.
+        self._apply_preset("full")
         self._start_training(resume_model=model_file)
 
     def _open_selected_folder(self):

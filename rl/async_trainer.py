@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from rl.config import Config
 from rl.env_manager import EnvManager
+from rl.episode_diagnostics import EpisodeDiagnosticsWriter
 from rl.loop_detector import LoopDetector
 
 
@@ -102,6 +103,9 @@ class AsyncTrainer:
         self._ep_returns: list[float] = []
         self._ep_returns_maxlen = 10000
         self._ep_lengths: list[int] = []
+        self._episode_diagnostics: Optional[EpisodeDiagnosticsWriter] = None
+        self._diagnostic_total_timesteps = 0
+        self._episode_diagnostics_warned = False
         self._curriculum_stage = getattr(cfg, "curriculum_stage", 0)
         self._curriculum_progress_step = 0
 
@@ -161,6 +165,22 @@ class AsyncTrainer:
             return True
         return False
 
+    def _record_episode_diagnostic(self, info: Dict[str, Any], env_index: int) -> None:
+        writer = self._episode_diagnostics
+        if writer is None:
+            return
+        try:
+            writer.append_episode(
+                info,
+                total_timesteps=self._diagnostic_total_timesteps,
+                env_index=env_index,
+                curriculum_stage=self._curriculum_stage,
+            )
+        except Exception as exc:  # diagnostics must never take down PPO training
+            if not self._episode_diagnostics_warned:
+                self._episode_diagnostics_warned = True
+                self._log(f"[EpisodeDiagnostics] WARNING: не удалось записать JSONL: {exc}")
+
     def _collect_rollout(self, obs: torch.Tensor) -> Dict[str, Any]:
         """Collect n_steps of transitions."""
         n_envs = self.em.n_envs
@@ -174,15 +194,18 @@ class AsyncTrainer:
                 break
 
             new_obs, infos = self.em.collect_step(obs)
+            self._diagnostic_total_timesteps += n_envs
 
             # Действия шага: счётчик долей (весь роллаут) + история для
             # детектора циклов (недавний хвост).
             self._track_step_actions(n_envs, action_names)
 
-            # Track per-episode returns
-            for info in infos:
+            # Terminal infos carry complete C++ EpisodeMetrics. Persist them
+            # independently from the transient progress/UI stream.
+            for env_index, info in enumerate(infos):
                 ep = info.get("episode")
                 if ep is not None:
+                    self._record_episode_diagnostic(info, env_index)
                     r = ep.get("r")
                     l = ep.get("l")
                     if r is not None:
@@ -762,9 +785,32 @@ class AsyncTrainer:
         self._log(f"[Trainer] curriculum_stage={self._curriculum_stage}, "
                   f"schedule={self.cfg.curriculum_schedule}")
 
+        save_dir = Path(self.cfg.model_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        self._diagnostic_total_timesteps = 0
+        self._episode_diagnostics_warned = False
+        try:
+            self._episode_diagnostics = EpisodeDiagnosticsWriter(
+                save_dir / "episode_diagnostics.jsonl",
+                metadata={
+                    "run_name": save_dir.name,
+                    "seed": getattr(self.cfg, "seed", None),
+                    "n_envs": n_envs,
+                    "map_size": getattr(self.cfg, "map_size", None),
+                    "difficulty": getattr(self.cfg, "difficulty", None),
+                    "obs_mode": getattr(self.cfg, "obs_mode", "flat"),
+                    "obs_version": getattr(self.cfg, "obs_version", None),
+                    "curriculum_stage": self._curriculum_stage,
+                    "learning_rate": getattr(self.cfg, "learning_rate", None),
+                },
+            )
+        except Exception as exc:  # keep diagnostics optional if disk is read-only/full
+            self._episode_diagnostics = None
+            self._episode_diagnostics_warned = True
+            self._log(f"[EpisodeDiagnostics] WARNING: JSONL отключён: {exc}")
+
         obs = self.em.reset()
-        Path(self.cfg.model_dir).mkdir(parents=True, exist_ok=True)
-        (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(Path(self.cfg.model_dir) / "normalization.json"))
+        (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(save_dir / "normalization.json"))
         t_start = time.perf_counter()
         total_done = 0
         rollout_idx = 0
@@ -1184,6 +1230,19 @@ class AsyncTrainer:
         self._log(f"[Done] {total_done:,} steps in {elapsed:.1f}s "
                   f"({final_fps:,.0f} FPS), best_reward={self.best_reward:.2f}, "
                   f"episodes={self.metrics.n_episodes}")
+        if self._episode_diagnostics is not None:
+            try:
+                self._episode_diagnostics.close(
+                    total_timesteps=self._diagnostic_total_timesteps,
+                    status="stopped" if self._stop else "completed",
+                )
+                self._log(f"[EpisodeDiagnostics] {Path(self.cfg.model_dir) / 'episode_diagnostics.jsonl'}")
+            except Exception as exc:
+                if not self._episode_diagnostics_warned:
+                    self._episode_diagnostics_warned = True
+                    self._log(f"[EpisodeDiagnostics] WARNING: закрытие JSONL не удалось: {exc}")
+            finally:
+                self._episode_diagnostics = None
 
         return self.metrics
 

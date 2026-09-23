@@ -71,6 +71,36 @@ def test_ui2_smoke(tmp_path, monkeypatch):
 
     win = MainWindow2(models_dir=Path(__file__).resolve().parent.parent / "models")
 
+    # ── stage presets and «Дообучить» hand-off ──
+    from train_ui2.constants import PRESETS
+    win._apply_preset("stage1")
+    check("stage 1 LR and eval thresholds",
+          abs(win.pgroups["PPO"].rows["learning_rate"].value() - 3e-4) < 1e-10
+          and win.pgroups["Оценка и сохранение"].rows["eval_min_days"].value() == 365.0
+          and win.pgroups["Оценка и сохранение"].rows["eval_min_bases"].value() == 3)
+    win._apply_preset("full")
+    check("stage 2 LR and eval thresholds",
+          abs(win.pgroups["PPO"].rows["learning_rate"].value() - 3e-5) < 1e-10
+          and win.pgroups["Оценка и сохранение"].rows["eval_min_days"].value() == 730.0
+          and win.pgroups["Оценка и сохранение"].rows["eval_min_bases"].value() == 5)
+    source_run = tmp_path / "fine_tune_source"
+    source_run.mkdir()
+    source_model = source_run / "best_model.pt"
+    source_model.write_bytes(b"fixture")
+    started = {}
+    win._selected_model_path = lambda: source_run
+    win._start_training = lambda **kwargs: started.update(kwargs)
+    win._apply_preset("stage1")
+    win._finetune_selected()
+    check("fine-tune starts from selected model", started.get("resume_model") == source_model)
+    check("fine-tune switches to stage 2",
+          abs(win.pgroups["PPO"].rows["learning_rate"].value() - PRESETS["full"]["learning_rate"]) < 1e-10
+          and win.pgroups["Оценка и сохранение"].rows["eval_min_days"].value() == 730.0
+          and win.pgroups["Оценка и сохранение"].rows["eval_min_bases"].value() == 5
+          and all(chk.isChecked() for chk in win._building_checks.values())
+          and all(chk.isChecked() for chk in win._resource_checks.values())
+          and all(chk.isChecked() for chk in win._mechanic_checks.values()))
+
     # ── tabs ──
     check("6 tabs", win.tabs.count() == 6, f"got {win.tabs.count()}")
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]

@@ -89,6 +89,16 @@ namespace colony {
         return n;
     }
 
+    void ColonyEnvCpp::update_episode_resource_metrics() {
+        episode_metrics_.reached_resources = (int64_t)extracted_.size();
+        episode_metrics_.priority_reached = count_priority_reached();
+        episode_metrics_.reached_resource_ids.clear();
+        for (int r = 0; r < SUNDUK_SIZE; ++r) {
+            if (extracted_.count(r))
+                episode_metrics_.reached_resource_ids.emplace_back(Sunduk::resource_name(r));
+        }
+    }
+
 
 std::vector<float> ColonyEnvCpp::obs() const { return obs(game_); }
 

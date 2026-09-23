@@ -27,6 +27,7 @@ from rl.config import (
 from rl.curriculum import allowed_ids
 from rl.env_manager import EnvManager
 from rl.async_trainer import AsyncTrainer
+from training_lr import apply_configured_learning_rate
 
 
 def parse_args():
@@ -259,10 +260,15 @@ def main():
                 print("[Resume] optimizer state loaded")
             except Exception as e:
                 print(f"[Resume] optimizer state NOT loaded: {e}")
-        if args.resume_lr > 0:
-            em.ppo.lr = args.resume_lr
-            for g in em.ppo.optimizer.param_groups:
-                g["lr"] = args.resume_lr
+        # Use --resume-lr when explicitly positive; otherwise honor --lr (the
+        # configured run LR). Optimizer.load_state_dict restores checkpoint
+        # param-group rates, so also reset the fresh PPO scheduler's base rates.
+        resume_lr = args.resume_lr if args.resume_lr > 0 else cfg.learning_rate
+        previous_lrs = apply_configured_learning_rate(
+            em.ppo.optimizer, resume_lr, scheduler=em.ppo.scheduler)
+        em.ppo.lr = resume_lr
+        print(f"[Resume] learning rate {previous_lrs} -> {resume_lr:g} "
+              f"({'--resume-lr' if args.resume_lr > 0 else '--lr'})")
         norm_candidates = [
             Path(args.resume_model).with_suffix(".norm.json"),
             Path(args.resume_model).parent / "normalization.json",

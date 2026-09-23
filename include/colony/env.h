@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -116,11 +117,15 @@ public:
     std::vector<float> minimap() const;
 
     struct EpisodeMetrics {
-        int64_t total_reward = 0;
+        double total_reward = 0.0;
         int64_t days_survived = 0;
         int64_t total_builds = 0;
         int64_t unique_build_types = 0;
+        // Number of unique (consumer building id, consumed resource) pairs
+        // that had a working producer in the same season during this episode.
         int64_t chains_activated = 0;
+        // Longest simple path (number of resource conversions) in any one
+        // season's active resource-flow graph; 0 means no active conversion.
         int64_t max_chain_depth = 0;
         int64_t reached_resources = 0;
         int64_t priority_reached = 0;  // PR 4: из них — с весом курикулума > 0
@@ -129,6 +134,8 @@ public:
         int64_t base_count_peak = 0;
         int64_t net_worth = 0;
         int64_t population_peak = 0;
+        std::unordered_map<std::string, int64_t> builds_by_type;
+        std::vector<std::string> reached_resource_ids;
     };
 
     struct StepOut {
@@ -226,6 +233,7 @@ private:
     void compute_catalog();
     // PR 4: |extracted_ ∩ {w>0}| — сколько приоритетных ресурсов уже открыто.
     int64_t count_priority_reached() const;
+    void update_episode_resource_metrics();
 
     struct PairHash {
         size_t operator()(const std::pair<int, int>& p) const {

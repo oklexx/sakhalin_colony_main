@@ -20,6 +20,39 @@ namespace {
 
 const char* SEASON_NAMES_ENV[4] = {"spring", "summer", "autumn", "winter"};
 
+// Measure resource-flow depth without letting cycles (coal <-> energy, for
+// example) inflate the result indefinitely. There are only SUNDUK_SIZE resource
+// nodes, so memoizing (current resource, visited-resource bitset) is bounded by
+// 9 * 2^9 states. Edge A->B means a working consumer used A and produced B in
+// the same season, with a working A-producer also present that season.
+int longest_active_resource_chain(
+    const std::array<uint16_t, SUNDUK_SIZE>& outgoing) {
+    constexpr int MASK_COUNT = 1 << SUNDUK_SIZE;
+    std::array<std::array<int, MASK_COUNT>, SUNDUK_SIZE> memo{};
+    for (auto& row : memo) row.fill(-1);
+
+    auto depth = [&](auto&& self, int current, uint16_t visited) -> int {
+        int& cached = memo[(size_t)current][(size_t)visited];
+        if (cached >= 0) return cached;
+        int best = 0;
+        for (int next = 0; next < SUNDUK_SIZE; ++next) {
+            const uint16_t bit = (uint16_t)(1u << next);
+            if ((outgoing[(size_t)current] & bit) == 0 || (visited & bit) != 0)
+                continue;
+            best = std::max(best, 1 + self(self, next, (uint16_t)(visited | bit)));
+        }
+        cached = best;
+        return best;
+    };
+
+    int best = 0;
+    for (int start = 0; start < SUNDUK_SIZE; ++start) {
+        if (outgoing[(size_t)start] == 0) continue;
+        best = std::max(best, depth(depth, start, (uint16_t)(1u << start)));
+    }
+    return best;
+}
+
 
 }  // namespace
 
@@ -347,8 +380,9 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         ep_return_ += rew;
         last_reward_ = rew;
         last_tax_borrowed_ = 0;
-        episode_metrics_.total_reward = (int64_t)ep_return_;
+        episode_metrics_.total_reward = ep_return_;
         episode_metrics_.days_survived = g.days_alive;
+        update_episode_resource_metrics();
         episode_metrics_.net_worth = net_worth();
         StepOut out;
         out.obs = obs();
@@ -471,8 +505,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             ep_return_ += rew;
             last_reward_ = rew;
             episode_metrics_.total_reward = ep_return_;
-            episode_metrics_.reached_resources = (int64_t)extracted_.size();
-            episode_metrics_.priority_reached = count_priority_reached();
+            update_episode_resource_metrics();
             episode_metrics_.days_survived = g.days_alive;
             episode_metrics_.net_worth = net_worth();
             StepOut out;
@@ -521,6 +554,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             days_since_last_build_ = 0;
             has_ever_built_ = true;
             episode_metrics_.total_builds++;
+            episode_metrics_.builds_by_type[d->id]++;
             bool is_road = (d->id == ROAD_ID);
             bool is_new_type = unique_build_ids_.insert(d->id).second;
             if (is_new_type)
@@ -892,6 +926,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     for (Season season : seasons) {
         std::vector<std::pair<int, int>> day_working;
         std::vector<std::vector<std::pair<int, int>>> producers(SUNDUK_SIZE);
+        std::array<uint16_t, SUNDUK_SIZE> resource_edges{};
         for (const Base& b : g.bases) {
             if (b.build_days == 0 && !b.preserved && b.state_empty() &&
                 b.data->season_works(season)) {
@@ -912,6 +947,10 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
             const BaseData& d = *b->data;
             for (int i = 0; i < SUNDUK_SIZE; i++) {
                 if (d.consume[i] <= 0 || producers[i].empty()) continue;
+                for (int output = 0; output < SUNDUK_SIZE; ++output) {
+                    if (d.profit[output] > 0)
+                        resource_edges[(size_t)i] |= (uint16_t)(1u << output);
+                }
                 auto key = std::make_pair(d.id, i);
                 if (!chain_done_.count(key)) {
                     chain_done_.insert(key);
@@ -922,6 +961,9 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
                 chain_daily += cfg_.chain_daily;
             }
         }
+        episode_metrics_.max_chain_depth = std::max<int64_t>(
+            episode_metrics_.max_chain_depth,
+            longest_active_resource_chain(resource_edges));
     }
 
     std::vector<char> ever_produced(SUNDUK_SIZE, 0);
@@ -1111,8 +1153,7 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
 
     // Fill episode metrics
     episode_metrics_.total_reward = ep_return_;
-    episode_metrics_.reached_resources = (int64_t)extracted_.size();
-    episode_metrics_.priority_reached = count_priority_reached();
+    update_episode_resource_metrics();
     episode_metrics_.days_survived = g.days_alive;
     episode_metrics_.net_worth = net_worth();
     if (g.people > episode_metrics_.population_peak)

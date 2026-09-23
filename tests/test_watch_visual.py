@@ -18,6 +18,7 @@ import json
 import os
 import stat
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -134,7 +135,8 @@ def _fake_colony_cpp() -> types.ModuleType:
     mod.extension_info = lambda: {
         "version": 99,
         "features": ["set_curriculum", "resource_curriculum", "obs_v2",
-                     "tax_to_debt", "mechanic_curriculum", "minimap"],
+                     "tax_to_debt", "mechanic_curriculum", "minimap",
+                     "terminal_minimap", "mask_reason_counts", "episode_metrics"],
         "src_sha": "test-stub",
     }
     return mod
@@ -171,7 +173,7 @@ def wc():
 
 FAKE_GUI = r'''#!/usr/bin/env python3
 """Двойник sakhalin_colony_gui.exe --headless-ai (тот же файловый протокол)."""
-import json, os, sys, time
+import json, os, subprocess, sys, time
 from pathlib import Path
 
 def arg(name, default=None):
@@ -183,6 +185,12 @@ TERMINATE_AFTER = int(os.environ.get("FAKE_GUI_TERMINATE_AFTER", "4"))
 LIFETIME = float(os.environ.get("FAKE_GUI_LIFETIME", "60"))
 OBS_N = int(os.environ.get("FAKE_GUI_OBS", "299"))
 MM_N = int(os.environ.get("FAKE_GUI_MM", "8192"))
+CHILD_PID_FILE = os.environ.get("FAKE_GUI_CHILD_PID_FILE", "")
+
+if MODE == "child":
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    if CHILD_PID_FILE:
+        Path(CHILD_PID_FILE).write_text(str(child.pid), encoding="utf-8")
 
 actions_file = Path(arg("--actions-file"))
 state_file = Path(arg("--state-file"))
@@ -559,6 +567,77 @@ def test_resolve_model_file_last_checkpoint_and_missing(wc, tmp_path):
     empty.mkdir()
     # ничего нет → возвращаем запрошенный путь, чтобы ошибка назвала его же
     assert wc.resolve_model_file(empty, "best_model.pt") == empty / "best_model.pt"
+
+
+def _process_is_running(pid: int) -> bool:
+    if os.name != "nt":
+        stat_path = Path(f"/proc/{pid}/stat")
+        try:
+            # A terminated orphan can briefly remain as a zombie until init
+            # reaps it; it is no longer running and cannot hold IPC files open.
+            if stat_path.read_text(encoding="ascii").split()[2] == "Z":
+                return False
+        except (OSError, IndexError):
+            pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def test_visual_watch_stops_gui_descendants_before_ipc_cleanup(watch, monkeypatch):
+    """A child launched by the fake GUI must not survive the watch run."""
+    monkeypatch.setenv("FAKE_GUI_MODE", "child")
+    child_pid_file = watch.tmp / "child.pid"
+    monkeypatch.setenv("FAKE_GUI_CHILD_PID_FILE", str(child_pid_file))
+
+    assert watch.run() == 0
+    assert child_pid_file.is_file(), "fake GUI did not launch its child process"
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    deadline = time.monotonic() + 5.0
+    while _process_is_running(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _process_is_running(child_pid), f"orphan GUI child still running: {child_pid}"
+
+
+def test_terminate_process_tree_uses_taskkill_on_windows(wc, monkeypatch):
+    """Windows cleanup must request /T, not only kill the cmd wrapper."""
+    calls = []
+
+    class _Proc:
+        pid = 4321
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(wc.subprocess, "run", fake_run)
+    wc._terminate_process_tree(_Proc(), windows=True)
+    assert calls
+    assert calls[0][0] == ["taskkill", "/PID", "4321", "/T", "/F"]
+    assert calls[0][1]["check"] is False
+
+
+def test_configure_utf8_stdio_uses_safe_utf8_error_handling(wc):
+    calls = []
+
+    class _Stream:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    stream = _Stream()
+    wc._configure_utf8_stdio([stream, stream])
+    assert calls == [{"encoding": "utf-8", "errors": "backslashreplace"}]
 
 
 def test_make_ipc_dir_unique_even_in_same_millisecond(wc, monkeypatch, tmp_path):

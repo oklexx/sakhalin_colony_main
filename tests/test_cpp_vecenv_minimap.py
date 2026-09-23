@@ -151,6 +151,15 @@ def test_hybrid_pair_matches_current_state_live():
                 assert "terminal_observation" in infos[0]
                 assert "terminal_minimap" in infos[0], (
                     "C++ must stash s_T minimap before auto-reset")
+                episode = infos[0].get("episode")
+                assert episode is not None, "VecEnv must preserve the terminal episode info"
+                metrics = episode.get("metrics")
+                assert isinstance(metrics, dict), "terminal EpisodeMetrics were dropped by CppVecEnv"
+                assert {"chains_activated", "max_chain_depth", "builds_by_type",
+                        "reached_resources", "reached_resource_ids"} <= set(metrics)
+                assert isinstance(episode.get("seed"), int)
+                assert isinstance(metrics["builds_by_type"], dict)
+                assert isinstance(metrics["reached_resource_ids"], list)
                 tmm = np.asarray(infos[0]["terminal_minimap"])
                 assert tmm.shape == (8, 32, 32)
                 # Post-reset pair is a NEW map; terminal minimap is the old one

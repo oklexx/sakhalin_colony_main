@@ -27,6 +27,7 @@ if str(PROJECT_ROOT / "python") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
 from train_ui2 import protocol as P
+from training_lr import apply_configured_learning_rate
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -333,12 +334,22 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         em.model.load_state_dict(clean, strict=False)
         log("info", f"[Worker] loaded weights from {resume_model}")
 
+        optimizer_loaded = False
         if "optimizer_state" in ckpt:
             try:
                 em.ppo.optimizer.load_state_dict(ckpt["optimizer_state"])
-                log("info", "[Worker] loaded optimizer state")
+                optimizer_loaded = True
+                log("info", "[Worker] loaded optimizer moments")
             except Exception as e:
                 log("warn", f"[Worker] optimizer state not loaded: {e}")
+        previous_lrs = apply_configured_learning_rate(
+            em.ppo.optimizer, cfg.learning_rate, scheduler=em.ppo.scheduler)
+        em.ppo.lr = float(cfg.learning_rate)
+        if optimizer_loaded:
+            log("info", "[Worker] fine-tune LR: checkpoint "
+                f"{previous_lrs} -> configured {cfg.learning_rate}")
+        else:
+            log("info", f"[Worker] fine-tune LR from config: {cfg.learning_rate}")
 
         norm_candidates = [
             rm_path.with_name(rm_path.name.replace(".pt", ".norm.json")),
@@ -372,6 +383,9 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
     elapsed = time.perf_counter() - t0
     run_dir = Path(cfg.model_dir)
     final_path = run_dir / "final_model.pt"
+    episode_diagnostics_path = run_dir / "episode_diagnostics.jsonl"
+    if episode_diagnostics_path.is_file():
+        log("info", f"[Worker] episode diagnostics: {episode_diagnostics_path}")
 
     meta = {
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -379,6 +393,9 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         "best_reward": float(metrics.best_reward) if metrics.best_reward != float("-inf") else 0.0,
         "episodes": int(metrics.n_episodes),
         "train_time_sec": float(elapsed),
+        "episode_diagnostics_file": (
+            episode_diagnostics_path.name if episode_diagnostics_path.is_file() else None
+        ),
         "config": cfg.to_dict(),
     }
     meta_path = run_dir / "meta.json"

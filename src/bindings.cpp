@@ -26,7 +26,7 @@ using namespace colony;
 #define COLONY_GIT_SHA "unknown"
 #endif
 #ifndef COLONY_EXTENSION_VERSION
-#define COLONY_EXTENSION_VERSION 6
+#define COLONY_EXTENSION_VERSION 7
 #endif
 
 namespace {
@@ -178,6 +178,7 @@ PYBIND11_MODULE(colony_cpp, m) {
             "mechanic_curriculum", // fixed manager logits, monotonic allow-list
             "terminal_minimap",    // s_T minimap for GAE truncation bootstrap
             "mask_reason_counts",  // action_mask_reason(s)(_batch)/(_counts) + UI-колонка причин
+            "episode_metrics",      // terminal chain/build/resource diagnostics via VecEnv
         };
         d["src_sha"] = COLONY_GIT_SHA;
         return d;
@@ -477,7 +478,9 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def_readonly("births", &ColonyEnvCpp::EpisodeMetrics::births)
         .def_readonly("base_count_peak", &ColonyEnvCpp::EpisodeMetrics::base_count_peak)
         .def_readonly("net_worth", &ColonyEnvCpp::EpisodeMetrics::net_worth)
-        .def_readonly("population_peak", &ColonyEnvCpp::EpisodeMetrics::population_peak);
+        .def_readonly("population_peak", &ColonyEnvCpp::EpisodeMetrics::population_peak)
+        .def_readonly("builds_by_type", &ColonyEnvCpp::EpisodeMetrics::builds_by_type)
+        .def_readonly("reached_resource_ids", &ColonyEnvCpp::EpisodeMetrics::reached_resource_ids);
 
     py::class_<ColonyEnvCpp>(m, "ColonyEnvCpp")
         .def(py::init([](const std::vector<BaseData>& base_data,
