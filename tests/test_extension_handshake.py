@@ -107,7 +107,8 @@ def test_required_features_contract():
     # 2026-09: атрибуция причины маски (деньги / нет участка / курикулум)
     # через action_mask_reason_counts() — см. docs/MONITOR_ACTIONS_2026_09.md §4.
     assert "mask_reason_counts" in REQUIRED_FEATURES
-    assert EXTENSION_MIN_VERSION >= 6
+    assert "episode_metrics" in REQUIRED_FEATURES
+    assert EXTENSION_MIN_VERSION >= 7
 
 
 # ── escape hatch ─────────────────────────────────────────────────────────

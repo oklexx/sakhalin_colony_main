@@ -130,6 +130,12 @@ def test_stage1_preset_name():
     assert PRESETS["stage1"]["buildings"] == parse_unlock_ids(
         STAGE1_PRESET["unlock_ids"]), "UI-пресет stage1 разошёлся с rl STAGE1_PRESET"
     assert set(PRESETS["stage1"]["mechanics"]) == {"sell", "credit"}
+    assert PRESETS["stage1"]["learning_rate"] == 3e-4
+    assert PRESETS["stage1"]["eval_min_days"] == 365.0
+    assert PRESETS["stage1"]["eval_min_bases"] == 3
+    assert PRESETS["full"]["learning_rate"] == 3e-5
+    assert PRESETS["full"]["eval_min_days"] == 730.0
+    assert PRESETS["full"]["eval_min_bases"] == 5
     assert PRESET_ORDER == ["stage1", "full"]
 
 

@@ -77,8 +77,20 @@ class FakeEnvManager:
     def get_infos(self):
         if self._step_count >= 3:
             return [
-                {"episode": {"r": self._episode_returns[0], "l": 50}},
-                {"episode": {"r": self._episode_returns[1], "l": 80}},
+                {"episode": {
+                    "r": self._episode_returns[0], "l": 50, "seed": 7,
+                    "metrics": {"chains_activated": 2, "max_chain_depth": 1,
+                                "total_builds": 4, "builds_by_type": {"Farm": 1},
+                                "reached_resources": 1,
+                                "reached_resource_ids": ["food"]},
+                }},
+                {"episode": {
+                    "r": self._episode_returns[1], "l": 80, "seed": 8,
+                    "metrics": {"chains_activated": 3, "max_chain_depth": 2,
+                                "total_builds": 6, "builds_by_type": {"Road": 3},
+                                "reached_resources": 2,
+                                "reached_resource_ids": ["food", "water"]},
+                }},
             ]
         return [{}, {}]
 
@@ -108,6 +120,17 @@ def test_per_env_episode_tracking(tmp_path):
     assert trainer.best_reward == 200.0, f"Expected best_reward=200.0, got {trainer.best_reward}"
     assert 100.0 in trainer._ep_returns
     assert 200.0 in trainer._ep_returns
+
+    import json
+    diagnostics = tmp_path / "episode_diagnostics.jsonl"
+    records = [json.loads(line) for line in diagnostics.read_text(encoding="utf-8").splitlines()]
+    episodes = [row for row in records if row["record_type"] == "episode"]
+    assert len(episodes) == 2
+    assert {row["episode_metrics"]["max_chain_depth"] for row in episodes} == {1, 2}
+    assert sum(row["episode_metrics"]["chains_activated"] for row in episodes) == 5
+    assert all(row["metrics_available"] for row in episodes)
+    assert all(row["total_timesteps"] == 6 for row in episodes)
+    assert records[-1]["record_type"] == "run_end"
 
 
 def test_eval_and_best_model_saving(tmp_path):

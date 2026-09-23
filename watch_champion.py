@@ -11,6 +11,7 @@ import itertools
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -379,6 +380,112 @@ def describe_gui_failure(proc, exe_path, gui_log: "Path | None", ipc_dir: Path,
     return "\n".join(lines)
 
 
+def _terminate_process_tree(proc, *, windows: bool | None = None,
+                            grace_seconds: float = 2.0) -> None:
+    """Stop the GUI process and every child before removing its IPC directory.
+
+    On Windows ``Popen.kill()`` only terminates the batch/cmd wrapper (the
+    common ``.cmd -> python fake/launcher -> GUI`` case), leaving descendants to
+    hold actions.txt/state.json open. ``taskkill /T`` follows the process tree.
+    On POSIX the GUI is started in a fresh session, so signalling its process
+    group also catches grandchildren.
+    """
+    if proc is None:
+        return
+    if windows is None:
+        windows = os.name == "nt"
+
+    pid = getattr(proc, "pid", None)
+    if windows:
+        if pid is not None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=max(3.0, grace_seconds + 1.0),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except (OSError, subprocess.SubprocessError):
+                # Fallback below still stops the wrapper if taskkill is missing
+                # or the system refuses the tree-level request.
+                pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except (OSError, ProcessLookupError):
+                pass
+    else:
+        if pid is not None:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                try:
+                    proc.terminate()
+                except (OSError, ProcessLookupError):
+                    pass
+        elif proc.poll() is None:
+            try:
+                proc.terminate()
+            except (OSError, ProcessLookupError):
+                pass
+
+        try:
+            proc.wait(timeout=max(0.0, grace_seconds))
+        except subprocess.TimeoutExpired:
+            pass
+        # The group may outlive its leader (or ignore SIGTERM). Always send the
+        # final group signal, even if proc.wait() already observed the leader.
+        if pid is not None:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except (OSError, ProcessLookupError):
+                        pass
+
+    try:
+        proc.wait(timeout=max(0.1, grace_seconds))
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except (OSError, ProcessLookupError):
+            pass
+        try:
+            proc.wait(timeout=1.0)
+        except (subprocess.SubprocessError, OSError):
+            pass
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+
+def _configure_utf8_stdio(streams=None) -> None:
+    """Prefer UTF-8 for console output (notably the Windows cp1251 console)."""
+    if streams is None:
+        streams = (sys.stdout, sys.stderr, sys.__stdout__, sys.__stderr__)
+    seen = set()
+    for stream in streams:
+        if stream is None or id(stream) in seen:
+            continue
+        seen.add(id(stream))
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            # pytest/IDE capture streams and some embedded consoles cannot be
+            # reconfigured; file logs are explicitly opened as UTF-8 anyway.
+            continue
+
+
 def launch_visual_watch(
     model_dir: Path,
     exe_path: str,
@@ -430,6 +537,10 @@ def launch_visual_watch(
         args.extend(["--minimap-radius", str(minimap_radius)])
     workdir = str(PROJECT_ROOT)
     kwargs: dict = {"cwd": workdir}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kwargs["start_new_session"] = True
     if gui_log is not None:
         # line-buffered text file: строки ошибки видны в логе UI сразу. Ручку
         # закрываем у себя — дочерний процесс уже унаследовал дескриптор.
@@ -639,6 +750,7 @@ def run_visual_watch(
                     restarts += 1
                     _log(f"[GUI process exited, restarting… {restarts}/"
                          f"{MAX_GUI_RESTARTS}]", level="warning")
+                    _terminate_process_tree(proc)
                     proc = _launch()
                     state = _handshake(proc)
                 continue
@@ -688,6 +800,7 @@ def run_visual_watch(
                 restarts += 1
                 _log(f"[GUI process exited, restarting… {restarts}/"
                      f"{MAX_GUI_RESTARTS}]", level="warning")
+                _terminate_process_tree(proc)
                 proc = _launch()
                 state = _handshake(proc)
                 continue
@@ -713,8 +826,7 @@ def run_visual_watch(
     except KeyboardInterrupt:
         pass
     finally:
-        if proc is not None and proc.poll() is None:
-            proc.kill()
+        _terminate_process_tree(proc)
         # IPC-каталог свой у каждого запуска — удаляем целиком (actions.txt,
         # state.json, reward_config.json, gui_output.log).
         shutil.rmtree(ipc_dir, ignore_errors=True)
@@ -723,6 +835,7 @@ def run_visual_watch(
 
 
 def main():
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Watch champion model play")
     parser.add_argument("--model-dir", type=str, required=True,
                         help="Path to model directory (contains best_model.pt)")

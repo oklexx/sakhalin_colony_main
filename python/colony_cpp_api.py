@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 
 #: Extension API version Python expects.
-EXTENSION_MIN_VERSION = 6
+EXTENSION_MIN_VERSION = 7
 
 #: Capability flags (see `colony_cpp.extension_info()["features"]`) that must
 #: be present. PR 1 replaced the (stage, unlock_ids) pair with set_curriculum();
@@ -28,8 +28,9 @@ EXTENSION_MIN_VERSION = 6
 #: иначе календарь замирает на 365-й день). 2026-09: mask_reason_counts —
 #: атрибуция причины закрытой маски (деньги / нет участка / курикулум) через
 #: action_mask_reason_counts() и action_mask_reasons_batch() — колонка в
-#: панели мониторинга (docs/MONITOR_ACTIONS_2026_09.md §4).
-REQUIRED_FEATURES = ("set_curriculum", "resource_curriculum", "obs_v2", "tax_to_debt", "mechanic_curriculum", "terminal_minimap", "mask_reason_counts")
+#: панели мониторинга (docs/MONITOR_ACTIONS_2026_09.md §4). episode_metrics
+#: сохраняет полные терминальные цепочки/строительство/ресурсы из VecEnv.
+REQUIRED_FEATURES = ("set_curriculum", "resource_curriculum", "obs_v2", "tax_to_debt", "mechanic_curriculum", "terminal_minimap", "mask_reason_counts", "episode_metrics")
 
 #: Env var escape hatch (same effect as --allow-stale-pyd).
 STALE_ENV_VAR = "COLONY_ALLOW_STALE_PYD"

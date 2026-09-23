@@ -192,9 +192,34 @@ StepBatchResult ColonyVecEnvCpp::step_wait_batch() {
             info["terminal_observation"] = terminal_obs;
             info["terminal_observation_norm"] = terminal_obs_norm;
             double ep_r = std::isfinite(episode_return_[i]) ? episode_return_[i] : 0.0;
+            const auto metrics = envs_[(size_t)i].metrics();
+            const auto& final_game = envs_[(size_t)i].game();
+            nlohmann::json episode_metrics = {
+                {"total_reward", metrics.total_reward},
+                {"days_survived", metrics.days_survived},
+                {"total_builds", metrics.total_builds},
+                {"unique_build_types", metrics.unique_build_types},
+                {"builds_by_type", metrics.builds_by_type},
+                {"chains_activated", metrics.chains_activated},
+                {"max_chain_depth", metrics.max_chain_depth},
+                {"reached_resources", metrics.reached_resources},
+                {"reached_resource_ids", metrics.reached_resource_ids},
+                {"priority_reached", metrics.priority_reached},
+                {"deaths", metrics.deaths},
+                {"births", metrics.births},
+                {"base_count_peak", metrics.base_count_peak},
+                {"net_worth", metrics.net_worth},
+                {"population_peak", metrics.population_peak}
+            };
             info["episode"] = {
                 {"r", ep_r},
-                {"l", episode_length_[i]}
+                {"l", episode_length_[i]},
+                {"seed", final_game.earth.seed()},
+                {"days", metrics.days_survived},
+                {"people", final_game.people},
+                {"money", final_game.money},
+                {"bases", final_game.bases.size()},
+                {"metrics", std::move(episode_metrics)}
             };
             result.infos[i] = info.dump();
 
