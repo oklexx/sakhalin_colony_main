@@ -352,15 +352,15 @@ def test_action_verdict_separates_cant_from_wont():
 
     assert action_verdict(0.0, 0.0) == "заблокировано маской"
     assert action_verdict(0.0, 0.5) == "заблокировано маской"
-    assert action_verdict(0.0, 5.0) == "окно легальности узкое"
-    assert action_verdict(0.0, 70.0) == "легально, но не выбирает"
+    assert action_verdict(0.0, 5.0) == "окно доступности узкое"
+    assert action_verdict(0.0, 70.0) == "доступно, но не выбирает"
     assert action_verdict(1.5, 70.0) == "выбирает"
     # Доля есть, легальность узкая — это уже «выбирает», а не жалоба на маску:
     # вердикт про маску интересует только нулевые строки.
     assert action_verdict(0.4, 12.0) == "выбирает"
     # Легальность неизвестна — вердикт про маску выдумывать нельзя
     assert action_verdict(1.5, None) == ""
-    assert action_verdict(0.0, None) == "нет данных о легальности"
+    assert action_verdict(0.0, None) == "нет данных о доступности"
 
 
 def test_watch_report_prefers_panel_shares_over_recount():
@@ -378,7 +378,7 @@ def test_watch_report_prefers_panel_shares_over_recount():
     # Действие вне счётчиков = ноль, а не KeyError; легальности нет → честное
     # «нет данных», а не «заблокировано маской»
     assert rows[2] == {"name": "BUILD_HOUSE", "count": 0, "pct": 0.0, "legal": None,
-                       "verdict": "нет данных о легальности", "reason": None}
+                       "verdict": "нет данных о доступности", "reason": None}
 
     # Тот самый сценарий жалобы: построил — окно легальности закрылось
     zero = watch_report({"BUILD_WATERCHANNEL": 0}, {"BUILD_WATERCHANNEL": 0.0},
@@ -611,14 +611,14 @@ def test_action_verdict_with_reason_attribute():
 
     assert action_verdict(0.0, 0.0, "money") == "заблокировано: деньги"
     assert action_verdict(0.0, 0.5, "no_lot") == "заблокировано: нет участка"
-    assert action_verdict(0.0, 5.0, "curriculum") == "окно легальности узкое: курикулум"
+    assert action_verdict(0.0, 5.0, "curriculum") == "окно доступности узкое: курикулум"
     # Без причины — прежние строки (контракт 2026-09-23 не меняем задним числом)
     assert action_verdict(0.0, 0.0) == "заблокировано маской"
-    assert action_verdict(0.0, 5.0) == "окно легальности узкое"
+    assert action_verdict(0.0, 5.0) == "окно доступности узкое"
     # «выбирает» раньше причин: доля есть — вопрос о маске неактуален
     assert action_verdict(1.5, 12.0, "money") == "выбирает"
     # Легальность неизвестна — причина из маски не выдумывается
-    assert action_verdict(0.0, None, "money") == "нет данных о легальности"
+    assert action_verdict(0.0, None, "money") == "нет данных о доступности"
 
 
 def test_watch_report_carries_reason_into_verdict():
@@ -632,7 +632,7 @@ def test_watch_report_carries_reason_into_verdict():
     # Без переданной причины — None в строке и прежний вердикт
     rows = watch_report({}, {}, total_actions=0, names=["DAY"])
     assert rows[0]["reason"] is None
-    assert rows[0]["verdict"] == "нет данных о легальности"
+    assert rows[0]["verdict"] == "нет данных о доступности"
 
 
 def test_protocol_roundtrip_action_mask_reasons():

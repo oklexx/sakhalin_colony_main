@@ -4,6 +4,7 @@
 #include "colony/env.h"
 #include "colony/game.h"
 #include "colony/earth.h"
+#include "colony/watch_ipc.h"
 
 #include <algorithm>
 #include <chrono>
@@ -445,33 +446,13 @@ static float ai_build_msg_timer = 0.0f;
 static int ai_step_count = 0;
 static FILE* ai_debug_log = nullptr;
 
-static int ai_read_action() {
-    // Read action from file. Returns -1 if no new action available.
-    if (ai_actions_path.empty()) return -1;
-    std::ifstream f(ai_actions_path);
-    if (!f.is_open()) return -1;
-    int action = -1;
-    const bool parsed = static_cast<bool>(f >> action);
-    f.close();
-    if (!parsed || action < 0) {
-        // Файл есть, но действия в нём нет (пустой/недописанный). НЕ удаляем:
-        // удаление означало бы «прочитано», драйвер ждал бы state.json, окно —
-        // actions.txt, и наблюдение зависало навсегда (окно открыто, игра стоит,
-        // в логе тишина). Python пишет действие атомарно (tmp + rename), так что
-        // следующий кадр прочитает его целиком.
-        return -1;
-    }
-    // Delete the file so Python knows the action was consumed.
-    // Using remove() avoids the race condition with truncation:
-    // Python may write a new action between f.close() and an ofstream open.
-    // error_code-версия: на Windows remove бросает исключение, если файл в этот
-    // момент открыт другим процессом — краш GUI из-за гонки IPC нам не нужен.
-    std::error_code ec;
-    std::filesystem::remove(ai_actions_path, ec);
-    return action;
+// Разбор actions.txt — colony/watch_ipc.h (NONE / OK / INVALID, P3-4 ревью).
+static ActionReadResult ai_read_action(int n_actions) {
+    if (ai_actions_path.empty()) return {};
+    return read_action_file(ai_actions_path, n_actions);
 }
 
-static void ai_write_state(const Game& g, const std::vector<float>& obs, int action, bool terminated, const std::vector<float>& mask, const std::vector<float>& minimap, double reward = 0.0) {
+static void ai_write_state(const Game& g, const std::vector<float>& obs, int action, bool terminated, const std::vector<float>& mask, const std::vector<float>& minimap, double reward = 0.0, const std::string& error = std::string()) {
     // Write state JSON to file (includes obs, action_mask, and minimap for Python policy)
     if (ai_state_path.empty()) return;
     // Атомарно: сначала .tmp, затем rename. Драйвер (watch_champion.py) читает
@@ -490,8 +471,11 @@ static void ai_write_state(const Game& g, const std::vector<float>& obs, int act
           << "\"money\":" << g.money << ","
           << "\"reward\":" << reward << ","
           << "\"action\":" << action << ","
-          << "\"terminated\":" << (terminated ? "true" : "false") << ","
-          << "\"obs\":[";
+          << "\"terminated\":" << (terminated ? "true" : "false") << ",";
+        // Ответ на невалидное действие: шаг НЕ делался, obs — текущее состояние.
+        // Строка формируется окном (без кавычек/обратных слешей) — экранировать нечего.
+        if (!error.empty()) f << "\"error\":\"" << error << "\",";
+        f << "\"obs\":[";
         for (size_t i = 0; i < obs.size(); i++) {
             f << obs[i];
             if (i + 1 < obs.size()) f << ",";
@@ -1040,7 +1024,22 @@ int main(int argc, char* argv[]) {
                 // Draw game-over screen (reuse existing code below)
                 // ... fall through to draw ...
             } else {
-                int action = ai_read_action();
+                const ActionReadResult rd = ai_read_action(env.n_actions());
+                if (rd.kind == ActionRead::INVALID) {
+                    // Файл уже удалён; отвечаем текущим состоянием с ошибкой,
+                    // иначе драйвер ждал бы state.json до таймаута.
+                    char err[96];
+                    snprintf(err, sizeof(err), "invalid action %d (expected 0..%d)",
+                             rd.action, env.n_actions() - 1);
+                    if (!ai_debug_log) ai_debug_log = fopen("ai_debug_gui.log", "a");
+                    if (ai_debug_log) {
+                        fprintf(ai_debug_log, "INVALID: %s, path='%s'\n", err, ai_actions_path.c_str());
+                        fflush(ai_debug_log);
+                    }
+                    ai_write_state(env.game(), env.obs(), -1, false, env.action_mask(),
+                                   env.minimap(), 0.0, err);
+                }
+                const int action = rd.kind == ActionRead::OK ? rd.action : -1;
                 if (action >= 0) {
                     ai_step_count++;
                     if (!ai_debug_log) {
@@ -1078,7 +1077,7 @@ int main(int argc, char* argv[]) {
                     }
                     // Write state including obs, action_mask, and minimap for Python policy
                     ai_write_state(env.game(), out.obs, action, out.terminated, env.action_mask(), env.minimap(), out.rew);
-                } else {
+                } else if (rd.kind == ActionRead::NONE) {
                     // No action available yet - log once
                     if (!ai_debug_log) {
                         ai_debug_log = fopen("ai_debug_gui.log", "a");

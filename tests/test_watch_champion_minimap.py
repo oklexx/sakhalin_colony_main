@@ -3,7 +3,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
-from rl.config import Config
 
 
 def test_hybrid_model_act_with_minimap():

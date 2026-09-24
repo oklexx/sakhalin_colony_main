@@ -179,6 +179,7 @@ PYBIND11_MODULE(colony_cpp, m) {
             "terminal_minimap",    // s_T minimap for GAE truncation bootstrap
             "mask_reason_counts",  // action_mask_reason(s)(_batch)/(_counts) + UI-колонка причин
             "episode_metrics",      // terminal chain/build/resource diagnostics via VecEnv
+            "terminal_minimap_toggle", // set_terminal_minimap_enabled + terminal_minimap_missing (P3-6)
         };
         d["src_sha"] = COLONY_GIT_SHA;
         return d;
@@ -676,10 +677,16 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("terminal_minimap_batch", [](const ColonyVecEnvCpp& v) {
             std::vector<float> mm = v.terminal_minimap_batch();
             py::array_t<float> arr({(int)v.n_envs(), 8, 32, 32});
+            // Непроинициализированный py::array — мусор; всегда заполняем целиком.
+            std::fill(arr.mutable_data(), arr.mutable_data() + arr.size(), 0.0f);
             if (!mm.empty())
-                std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
+                std::memcpy(arr.mutable_data(), mm.data(),
+                            std::min(mm.size(), (size_t)arr.size()) * sizeof(float));
             return arr;
         })
+        .def("set_terminal_minimap_enabled", &ColonyVecEnvCpp::set_terminal_minimap_enabled,
+             py::arg("on"))
+        .def("terminal_minimap_enabled", &ColonyVecEnvCpp::terminal_minimap_enabled)
         .def("action_masks_batch", [](ColonyVecEnvCpp& v) {
             std::vector<float> masks = v.action_masks_batch();
             py::array_t<float> arr({(int)v.n_envs(), v.n_actions()});

@@ -18,7 +18,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, TextIO
+from typing import Any, Callable, Dict, Optional, TextIO
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -92,74 +92,138 @@ class MsgFile:
             os.fsync(self._fh.fileno())
 
 
-def _watch_stdin(stop_event: threading.Event, command_queue: Optional[_queue.Queue] = None) -> None:
-    """Watch stdin for commands and either set stop event or queue the command."""
+def _default_warn(message: str) -> None:
+    import logging
+    logging.getLogger("Worker").warning(message)
+
+
+WarnFn = Callable[[str], None]
+
+
+def dispatch_command(d: Any, stop_event: threading.Event,
+                     command_queue: Optional[_queue.Queue] = None,
+                     warn: WarnFn = _default_warn, source: str = "command") -> bool:
+    """Разобрать одну команду UI и передать её трейнеру. True = пришёл «Стоп».
+
+    Единая точка для stdin- и файлового каналов (P1-2/P1-4 ревью 2026-09-24):
+    * имя приводится к каноническому (`P.normalize_command`), неизвестное —
+      предупреждение, а не молчаливый no-op;
+    * «Стоп» ставит `stop_event`: трейнер опрашивает его на КАЖДОМ шаге среды
+      (`AsyncTrainer._check_stop`), поэтому остановка не ждёт конца роллаута,
+      а штатный путь сохранения (final_model, meta.json, run_end) успевает
+      отработать до того, как UI применит жёсткий fallback;
+    * переполненная очередь — громкое предупреждение с именем команды.
+    """
+    if not isinstance(d, dict):
+        warn(f"[Worker] {source}: команда должна быть JSON-объектом, получено {type(d).__name__}")
+        return False
+    raw = d.get("cmd")
+    payload = d.get("payload") or {}
+    if not isinstance(payload, dict):
+        warn(f"[Worker] {source}: payload команды {raw!r} не объект — игнорирую payload")
+        payload = {}
+    cmd = P.normalize_command(raw)
+    if cmd is None:
+        warn(f"[Worker] {source}: неизвестная команда {raw!r} — пропущена "
+             f"(известные: {sorted(P.KNOWN_COMMANDS)})")
+        return False
+    if cmd == P.CMD_STOP:
+        stop_event.set()
+        # Дублируем в очередь, чтобы трейнер залогировал причину остановки;
+        # сама остановка от очереди не зависит (её несёт stop_event).
+        if command_queue is not None:
+            try:
+                command_queue.put_nowait(("command", {"cmd": cmd, "payload": payload}))
+            except _queue.Full:
+                pass  # stop_event уже выставлен — потеря дубля безвредна
+        return True
+    if command_queue is None:
+        warn(f"[Worker] {source}: нет очереди команд — {cmd!r} не доставлена")
+        return False
+    try:
+        command_queue.put(("command", {"cmd": cmd, "payload": payload}), timeout=1)
+    except _queue.Full:
+        warn(f"[Worker] {source}: очередь команд переполнена "
+             f"({command_queue.maxsize}) — команда {cmd!r} ПОТЕРЯНА")
+    return False
+
+
+def _parse_command_line(line: str, warn: WarnFn, source: str) -> Optional[Any]:
+    """JSON одной строки команды; битая строка — предупреждение и None."""
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError as e:
+        warn(f"[Worker] {source}: битая строка команды пропущена ({e}): {line[:120]!r}")
+        return None
+
+
+def _watch_stdin(stop_event: threading.Event, command_queue: Optional[_queue.Queue] = None,
+                 warn: WarnFn = _default_warn) -> None:
+    """Команды из stdin (резервный канал; UI пишет в файл команд)."""
     try:
         for line in sys.stdin:
             line = line.strip()
             if not line:
                 continue
-            try:
-                d = json.loads(line)
-            except json.JSONDecodeError as e:
-                import logging
-                logging.getLogger("Worker").warning(f"Invalid JSON: {e}")
+            d = _parse_command_line(line, warn, "stdin")
+            if d is None:
                 continue
-
-            cmd = d.get("cmd")
-            payload = d.get("payload", {})
-
-            if command_queue is not None and cmd in ("pause", "resume", "boost_entropy", "reset_curriculum"):
-                try:
-                    command_queue.put(("command", {"cmd": cmd, "payload": payload}), timeout=1)
-                except _queue.Full:
-                    import logging
-                    logging.getLogger("Worker").warning(f"Command queue full, dropping command: {cmd}")
-                    continue
-            elif cmd == "stop":
-                stop_event.set()
+            if dispatch_command(d, stop_event, command_queue, warn, "stdin"):
                 return
     except (ValueError, OSError) as e:
-        import logging
-        logging.getLogger("Worker").error(f"Stdin error: {e}")
+        # stdin закрыт/не читается (запуск без консоли) — канал просто недоступен
+        warn(f"[Worker] stdin недоступен: {e}")
+
+
+def process_command_lines(data: str, stop_event: threading.Event,
+                          command_queue: Optional[_queue.Queue] = None,
+                          warn: WarnFn = _default_warn) -> bool:
+    """Обработать порцию строк файла команд. True = получен «Стоп»."""
+    for line in data.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        d = _parse_command_line(line, warn, "command-file")
+        if d is None:
+            continue
+        if dispatch_command(d, stop_event, command_queue, warn, "command-file"):
+            return True
+    return False
 
 
 def _watch_commands(command_file: str, stop_event: threading.Event,
-                    command_queue: Optional[_queue.Queue] = None) -> None:
-    """Watch a JSONL command file for commands from the UI."""
+                    command_queue: Optional[_queue.Queue] = None,
+                    warn: WarnFn = _default_warn) -> None:
+    """Файл команд JSONL от UI (основной канал)."""
     offset = 0
     while not stop_event.is_set():
         try:
             size = os.path.getsize(command_file)
         except OSError:
-            time.sleep(0.5)
+            time.sleep(0.5)  # файла ещё нет: UI создаёт его первой командой
             continue
         if size <= offset:
             time.sleep(0.5)
             continue
         try:
-            with open(command_file, "r", encoding="utf-8") as f:
+            with open(command_file, "rb") as f:
                 f.seek(offset)
-                data = f.read()
-                offset = f.tell()
-        except (OSError, UnicodeDecodeError):
+                chunk = f.read()
+        except OSError as e:
+            warn(f"[Worker] файл команд не читается ({e}), повтор")
             time.sleep(0.5)
             continue
-        for line in data.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-                cmd = d.get("cmd")
-                payload = d.get("payload", {})
-                if cmd == "stop":
-                    stop_event.set()
-                    return
-                if command_queue is not None:
-                    command_queue.put(("command", {"cmd": cmd, "payload": payload}), timeout=1)
-            except (json.JSONDecodeError, _queue.Full, Exception):
-                pass
+        # Недописанную последнюю строку оставляем до следующего опроса, иначе
+        # она разобьётся на две «битые» половины.
+        cut = chunk.rfind(b"\n")
+        if cut < 0:
+            time.sleep(0.2)
+            continue
+        chunk = chunk[:cut + 1]
+        offset += len(chunk)
+        data = chunk.decode("utf-8", errors="replace")
+        if process_command_lines(data, stop_event, command_queue, warn):
+            return
         time.sleep(0.5)
 
 
@@ -292,7 +356,7 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         if _st.all_resources:
             _prio = "all"
         else:
-            _picked = [r for r, w in zip(_RES_NAMES, _st.resource_weights) if w > 0]
+            _picked = [r for r, w in zip(_RES_NAMES, _st.resource_weights, strict=False) if w > 0]
             _w = "[" + ",".join(str(int(w)) for w in _st.resource_weights) + "]"
             _prio = f"{','.join(_picked)} (weights={_w})"
         log("info", f"[Worker] curriculum: stage={cfg.curriculum_stage} "
@@ -314,10 +378,8 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
             state = ckpt["model_state"]
         else:
             state = ckpt
-        clean = {}
-        for k, v in state.items():
-            ck = k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k
-            clean[ck] = v
+        from rl._nn_common import clean_policy_state, load_policy_state
+        clean = clean_policy_state(state)
         # PR 5: a v0 checkpoint on a v1 env (or vice versa) must fail here
         # with a clear message, not in load_state_dict with a shape error.
         from rl.curriculum import (
@@ -331,7 +393,8 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         if _flat_w is not None:
             check_policy_obs_compat(
                 _flat_w, int(em.obs_size), ckpt_path=resume_model)
-        em.model.load_state_dict(clean, strict=False)
+        load_policy_state(em.model, clean, ckpt_path=resume_model,
+                          log=lambda m: log("info", f"[Worker] {m}"))
         log("info", f"[Worker] loaded weights from {resume_model}")
 
         optimizer_loaded = False
@@ -393,6 +456,17 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         "best_reward": float(metrics.best_reward) if metrics.best_reward != float("-inf") else 0.0,
         "episodes": int(metrics.n_episodes),
         "train_time_sec": float(elapsed),
+        # «completed» | «stopped» (кнопка «Стоп») | «early_stopped». При
+        # остановке пользователем финальный турнир не запускается, и
+        # best_model.pt — от последнего eval (tournament="skipped_user_stop").
+        "status": (
+            "completed" if not metrics.stop_reason
+            else "early_stopped" if metrics.stop_reason == "early_stop"
+            else "stopped"
+        ),
+        "stop_reason": metrics.stop_reason or None,
+        "tournament": metrics.tournament or None,
+        "final_model": final_path.name if final_path.is_file() else None,
         "episode_diagnostics_file": (
             episode_diagnostics_path.name if episode_diagnostics_path.is_file() else None
         ),
@@ -436,6 +510,25 @@ def run_eval(model_path: str, episodes: int, max_days: int, seed: int,
     return 0
 
 
+def _install_termination_handler() -> None:
+    """SIGTERM → SystemExit, чтобы `AsyncTrainer.train` дописал `run_end`.
+
+    Жёсткое завершение — это fallback UI после таймаута мягкой остановки.
+    Без обработчика SIGTERM убивает процесс мгновенно, и
+    `episode_diagnostics.jsonl` остаётся без `run_end` — неотличим от падения.
+    С обработчиком исключение раскручивает стек, и трейнер закрывает JSONL
+    со `status="killed"`. На Windows `TerminateProcess` перехватить нельзя —
+    там спасает только мягкий путь (команда stop_training).
+    """
+    import signal
+
+    def _on_sigterm(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+
+    if hasattr(signal, "SIGTERM") and threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGTERM, _on_sigterm)
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
@@ -445,16 +538,27 @@ def main() -> int:
 
     stop_event = threading.Event()
 
-    command_queue = _queue.Queue(maxsize=100)
+    command_queue: _queue.Queue = _queue.Queue(maxsize=max(1, int(args.command_queue_size)))
 
-    stdin_thread = threading.Thread(target=_watch_stdin, args=(stop_event, command_queue), daemon=True)
+    def warn(message: str) -> None:
+        # Проблемы с командами видны в логе UI, а не только в stderr воркера
+        # (UI запускает его с stderr=DEVNULL).
+        if mf:
+            mf.write(P.LogMsg(level="warn", message=message))
+        else:
+            _default_warn(message)
+
+    _install_termination_handler()
+
+    stdin_thread = threading.Thread(target=_watch_stdin, args=(stop_event, command_queue, warn),
+                                    daemon=True)
     stdin_thread.start()
 
     # Start file-based command watcher if command file is provided
     cmd_file = getattr(args, 'command_file', '')
     if cmd_file:
         cmd_thread = threading.Thread(
-            target=_watch_commands, args=(cmd_file, stop_event, command_queue), daemon=True)
+            target=_watch_commands, args=(cmd_file, stop_event, command_queue, warn), daemon=True)
         cmd_thread.start()
 
     if mf:

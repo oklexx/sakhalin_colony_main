@@ -1,6 +1,5 @@
 """Integration test: 100k steps, measure FPS and GPU utilization."""
 import subprocess
-import time
 import sys
 from pathlib import Path
 

@@ -17,11 +17,11 @@ from core.bases import STATE_NEED_SUNDUK, STATE_NEED_WORKERS
 from core.game import Game, new_game
 from core.resources import Sunduk
 from core.save import load_game, save_game
-from ui.render import (BASE_ICON, BG, CURSOR_COLOR, FG, FG_ACCENT, FG_DIM,
-                       FG_ERROR, FG_MENU, FG_TITLE, ICON_BUILD, ICON_DEAD,
-                       ICON_GOOD, ICON_NEED_SUNDUK, ICON_NEED_WORKERS,
+from ui.render import (BG, FG, FG_ACCENT, FG_DIM,
+                       FG_MENU, FG_TITLE, ICON_BUILD, ICON_DEAD,
+                       ICON_NEED_SUNDUK, ICON_NEED_WORKERS,
                        ICON_NO_SEASON, ICON_PRESERVE, LEGEND, LEGEND_BG,
-                       LOT_NAMES, PANEL_BG, PANEL_FG, PANEL_HEAD, RES_SHORT,
+                       PANEL_BG, PANEL_FG, PANEL_HEAD, RES_SHORT,
                        TERRAIN_BG, _asset, _scaled, earth_img, icon,
                        lot_caption, base_resource_caption)
 
@@ -182,7 +182,6 @@ class TextDialog(Dialog):
         return None
 
     def click(self, row: int) -> int | None:
-        w = 640
         h = (2 + len(self.lines) + 2) * CH + 10
         y = (WINDOW_H - h) // 2
         gy = (row - (y + 4) - (2 + len(self.lines)) * CH) // CH
@@ -258,7 +257,6 @@ class MarketDialog:
             self.trade(int(key) - 1)
 
     def click(self, row: int) -> None:
-        w = 640
         h = (2 + len(self.lines()) + 2) * CH + 10
         y = (WINDOW_H - h) // 2
         if y + 4 + 3 * CH <= row < y + 4 + 4 * CH:
@@ -348,7 +346,6 @@ class NalogDialog:
             self.msg = self.game.pay_main_tax() or "сделано"
 
     def click(self, row: int) -> None:
-        w = 640
         h = (2 + len(self.lines()) + 2) * CH + 10
         y = (WINDOW_H - h) // 2
         if y + 4 + 6 * CH <= row < y + 4 + 7 * CH:
@@ -978,8 +975,6 @@ class GameWindow:
 
     # ================================================================ input
     def _click_menu(self, px: int, py: int) -> None:
-        col = px // CW
-        row = py // CH
         if self.menu_open:
             items = MENU_ITEMS[self.menu_open]
             x = MENU_X[self.menu_open]

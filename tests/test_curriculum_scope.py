@@ -195,8 +195,6 @@ def test_run_eval_builds_env_with_restored_curriculum(tmp_path, monkeypatch):
             self.action_space = types.SimpleNamespace(n=6)
             self._action_names = ["DAY", "WEEK", "BUILD_FARM", "BUILD_WATERCHANNEL",
                                   "BUILD_GOLDMINE", "PAY_TAX"]
-            outer = self
-
             class Norm:
                 _obs_size = 8
 

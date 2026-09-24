@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -24,8 +25,16 @@ def _utc_now() -> str:
 
 
 def _json_safe(value: Any) -> Any:
-    """Convert common Python/numpy scalars and containers to JSON values."""
-    if value is None or isinstance(value, (str, int, float, bool)):
+    """Convert common Python/numpy scalars and containers to JSON values.
+
+    NaN/±Inf → None (JSON null): запись идёт с `allow_nan=False`, и один
+    нефинитный reward (расходящееся обучение) давал ValueError внутри
+    `append_episode`; трейнер ловит его как «warning once», так что
+    диагностика молча прекращалась до конца прогона (P3-5 ревью 2026-09-24).
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is None or isinstance(value, (str, int, bool)):
         return value
     if isinstance(value, Mapping):
         return {str(k): _json_safe(v) for k, v in value.items()}

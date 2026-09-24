@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from train_ui2.models import ModelRegistry, ModelInfo
+from train_ui2.models import ModelRegistry
 
 
 def _make_model(root: Path, name: str, meta: dict | None = None) -> Path:

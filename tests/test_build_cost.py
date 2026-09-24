@@ -87,9 +87,8 @@ def test_build_cost_deducts_from_build_reward():
                     env_high.reset(seed=42)
                 continue
 
-            # Build succeeded on this step — compute expected delta
-            expected_delta = (PENALTY_HIGH - PENALTY_LOW) * abs(rew_low + 99.0) / PENALTY_LOW
-            # Actually simpler: the non-build components are identical,
+            # Build succeeded on this step.
+            # Simpler than an explicit delta: the non-build components are identical,
             # so rew_low - rew_high = (PENALTY_HIGH - PENALTY_LOW) * price
             # We don't know price directly, but we know:
             # rew_low  = X - PENALTY_LOW  * price

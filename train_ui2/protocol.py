@@ -179,13 +179,51 @@ class ErrorMsg:
         return {"type": "error", "message": self.message}
 
 
+# ── Команды UI → worker → trainer ─────────────────────────────────────────
+# Единственный источник строк команд (P1-4 ревью 2026-09-24). Раньше контракт
+# жил в трёх несогласованных видах: UI писал `stop_training`/`pause_training`,
+# stdin-читатель воркера понимал `stop`/`pause`, а трейнер — только
+# `*_training`; `pause` из stdin уходил в трейнер и молча игнорировался.
+# Теперь UI, воркер и `AsyncTrainer._process_commands` берут строки отсюда,
+# а старые короткие имена приводятся к каноническим через `normalize_command`.
+CMD_STOP = "stop_training"
+CMD_PAUSE = "pause_training"
+CMD_RESUME = "resume_training"
+CMD_BOOST_ENTROPY = "boost_entropy"
+CMD_RESET_CURRICULUM = "reset_curriculum"
+
+
 class CommandType(str, Enum):
-    START_TRAINING = "start"
-    PAUSE_TRAINING = "pause"
-    RESUME_TRAINING = "resume"
-    STOP_TRAINING = "stop"
-    BOOST_ENTROPY = "boost_entropy"
-    RESET_CURRICULUM = "reset_curriculum"
+    """Канонические команды; значения совпадают с константами `CMD_*`."""
+
+    STOP_TRAINING = CMD_STOP
+    PAUSE_TRAINING = CMD_PAUSE
+    RESUME_TRAINING = CMD_RESUME
+    BOOST_ENTROPY = CMD_BOOST_ENTROPY
+    RESET_CURRICULUM = CMD_RESET_CURRICULUM
+
+
+#: Всё, что трейнер обязан уметь обработать (тест паритета UI → trainer).
+KNOWN_COMMANDS: frozenset = frozenset(c.value for c in CommandType)
+
+#: Устаревшие короткие имена (stdin-протокол, `encode_stop` до 2026-09-24).
+LEGACY_COMMAND_ALIASES: Dict[str, str] = {
+    "stop": CMD_STOP,
+    "pause": CMD_PAUSE,
+    "resume": CMD_RESUME,
+}
+
+
+def normalize_command(cmd: Any) -> Optional[str]:
+    """Каноническое имя команды или None, если команда неизвестна.
+
+    None — сигнал вызывающему громко предупредить (опечатка, чужой формат),
+    а не молча выбросить команду, как это было до 2026-09-24.
+    """
+    if not isinstance(cmd, str):
+        return None
+    name = LEGACY_COMMAND_ALIASES.get(cmd, cmd)
+    return name if name in KNOWN_COMMANDS else None
 
 
 @dataclass
@@ -342,7 +380,7 @@ def decode(line: str) -> Msg:
 
 
 def encode_stop() -> str:
-    """Encode stop command with optional final save flag."""
+    """Команда мягкой остановки: трейнер сохраняет final_model/мету и выходит."""
     payload = {"final_save": True}
-    msg = CommandMsg(cmd="stop", payload=payload)
+    msg = CommandMsg(cmd=CMD_STOP, payload=payload)
     return json.dumps(msg.to_dict(), ensure_ascii=False, allow_nan=False)

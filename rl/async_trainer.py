@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import time
-import threading
 import queue
 from collections import deque
 import numpy as np
@@ -15,6 +14,7 @@ from rl.config import Config
 from rl.env_manager import EnvManager
 from rl.episode_diagnostics import EpisodeDiagnosticsWriter
 from rl.loop_detector import LoopDetector
+from train_ui2 import protocol as P
 
 
 @dataclass
@@ -71,6 +71,13 @@ class TrainMetrics:
     curriculum_available_actions: str = ""
     curriculum_next_at_step: Optional[int] = None
     curriculum_upcoming_stages: List = field(default_factory=list)
+    # Итог прогона (P1-1 ревью 2026-09-24): воркер пишет их в meta.json, чтобы
+    # остановку пользователем можно было отличить от завершения по шагам.
+    # stop_reason: "" (дошли до total) | "user" | "early_stop".
+    stop_reason: str = ""
+    # tournament: "done" | "skipped_user_stop" | "interrupted_user_stop" |
+    # "error" | "" (не дошли).
+    tournament: str = ""
 
 
 class AsyncTrainer:
@@ -92,6 +99,11 @@ class AsyncTrainer:
         self.stop_check = stop_check
 
         self._stop = False
+        # Почему выставлен _stop: "user" (команда/stop_check) | "early_stop".
+        self._stop_reason: str = ""
+        # Очередь команд текущего train(): опрашивается и внутри роллаута.
+        self._command_queue: Optional[queue.Queue] = None
+        self._paused = False
         self._queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=cfg.queue_size)
 
         self.metrics = TrainMetrics()
@@ -148,7 +160,9 @@ class AsyncTrainer:
         self._rollout_action_counts: np.ndarray = np.zeros(n_act, dtype=np.int64)
         self._monitor_warned: bool = False
 
-    def _request_stop(self):
+    def _request_stop(self, reason: str = "user") -> None:
+        if not self._stop:
+            self._stop_reason = reason
         self._stop = True
 
     def _log(self, msg: str):
@@ -161,7 +175,7 @@ class AsyncTrainer:
         if self._stop:
             return True
         if self.stop_check and self.stop_check():
-            self._stop = True
+            self._request_stop("user")
             return True
         return False
 
@@ -190,6 +204,11 @@ class AsyncTrainer:
         self._reset_rollout_actions()
 
         for _ in range(self.cfg.n_steps):
+            # Команды опрашиваются на каждом шаге среды, а не раз в роллаут:
+            # при n_steps*n_envs = 32768 «Стоп» иначе ждал бы минуты. Пауза,
+            # пришедшая посреди роллаута, применяется на его границе.
+            if self._command_queue is not None and not self._command_queue.empty():
+                self._process_commands(self._command_queue)
             if self._check_stop():
                 break
 
@@ -225,6 +244,11 @@ class AsyncTrainer:
                         self.best_reward = float(ep_ret)
 
             obs = new_obs
+
+        if self._stop:
+            # Роллаут неполный и в PPO не пойдёт (train() выходит сразу) —
+            # бутстрап по недособранному буферу не считаем.
+            return {"stopped": True, "final_obs": obs}
 
         # Single terminated read after loop (not per step)
         last_pos = self.em.buffer.pos - 1
@@ -472,39 +496,44 @@ class AsyncTrainer:
                 f"get_curriculum_progress вернул progress={raw!r} (не число)")
             return 0.0, False
 
-    def _process_commands(self, command_queue: Optional[queue.Queue]):
-        """Process queued commands from the UI."""
+    def _process_commands(self, command_queue: Optional[queue.Queue]) -> None:
+        """Выполнить команды UI из очереди (строки — `train_ui2.protocol.CMD_*`)."""
         if command_queue is None:
             return
-        while not command_queue.empty():
+        while True:
             try:
                 _, cmd_data = command_queue.get_nowait()
-                cmd = cmd_data["cmd"]
-                payload = cmd_data.get("payload", {})
-                if cmd == "boost_entropy":
-                    factor = payload.get("factor", 2.0)
-                    old = self.em.ppo.ent_coef
-                    new = min(old * factor, 0.05)
-                    self.em.ppo.ent_coef = new
-                    self.metrics.ent_coef = new
-                    self._log(f"[Command] Boost ent_coef: {old:.5f} -> {new:.5f}")
-                elif cmd == "reset_curriculum":
-                    stage = payload.get("stage", 0)
-                    self.em.set_curriculum_stage(stage)
-                    self._curriculum_stage = stage
-                    self._log(f"[Command] Reset curriculum to stage {stage}")
-                elif cmd == "pause_training":
-                    self._paused = True
-                    self._log("[Command] Training paused")
-                elif cmd == "resume_training":
-                    self._paused = False
-                    self._log("[Command] Training resumed")
-                elif cmd == "stop_training":
-                    self._stop = True
-                    self._log("[Command] Training stop requested")
-                    return
             except queue.Empty:
                 break
+            raw = cmd_data.get("cmd") if isinstance(cmd_data, dict) else None
+            payload = (cmd_data.get("payload") or {}) if isinstance(cmd_data, dict) else {}
+            cmd = P.normalize_command(raw)
+            if cmd == P.CMD_BOOST_ENTROPY:
+                factor = payload.get("factor", 2.0)
+                old = self.em.ppo.ent_coef
+                new = min(old * factor, 0.05)
+                self.em.ppo.ent_coef = new
+                self.metrics.ent_coef = new
+                self._log(f"[Command] Boost ent_coef: {old:.5f} -> {new:.5f}")
+            elif cmd == P.CMD_RESET_CURRICULUM:
+                stage = payload.get("stage", 0)
+                self.em.set_curriculum_stage(stage)
+                self._curriculum_stage = stage
+                self._log(f"[Command] Reset curriculum to stage {stage}")
+            elif cmd == P.CMD_PAUSE:
+                self._paused = True
+                self._log("[Command] Training paused")
+            elif cmd == P.CMD_RESUME:
+                self._paused = False
+                self._log("[Command] Training resumed")
+            elif cmd == P.CMD_STOP:
+                self._request_stop("user")
+                self._log("[Command] Training stop requested — сохраняю final_model и выхожу")
+                return
+            else:
+                # Раньше незнакомая команда исчезала без следа (P1-4).
+                self._log(f"[Command] WARNING: unknown command {raw!r} — ignored "
+                          f"(known: {sorted(P.KNOWN_COMMANDS)})")
 
     def _update_ppo(self, rollout: Dict[str, Any]) -> Dict[str, float]:
         """Run PPO update on GPU."""
@@ -523,6 +552,27 @@ class AsyncTrainer:
             stats["gpu_mem_reserved_mb"] = torch.cuda.memory_reserved(self.device) / (1024 * 1024)
 
         return stats
+
+    def _update_loop_detector(self, window: int, total_done: int) -> Tuple[int, Optional[str]]:
+        """Прогнать детектор циклов по хвосту истории действий после роллаута.
+
+        Возвращает (число сред с циклом, имя зацикленного действия или None).
+        `_action_history` — deque(maxlen=1000): срез deque бросает TypeError,
+        из-за чего включённый `loop_detection_enabled` ронял обучение на первом
+        же роллауте (ревью 2026-09-24, P3-3/P3-8). Окно фактически ≤ 1000
+        записей — семантика «цикл только что был» (STATE.md).
+        """
+        if self.loop_detector is None or not self._action_history or window <= 0:
+            return 0, None
+        recent = list(self._action_history)[-window:]
+        action_data = [
+            {"env_idx": env_idx, "action": action_name, "step": total_done + i}
+            for i, (env_idx, action_name) in enumerate(recent)
+        ]
+        alerts = self.loop_detector.update_batch(action_data)
+        envs_with_loops = len(alerts)
+        loop_action_name = self._get_current_loop_action({}) if envs_with_loops > 0 else None
+        return envs_with_loops, loop_action_name
 
     def _get_current_loop_action(self, stats: Dict[str, Any]) -> Optional[str]:
         """Get the action name currently in loop if any."""
@@ -775,7 +825,6 @@ class AsyncTrainer:
               command_queue: Optional[queue.Queue] = None) -> TrainMetrics:
         total = total_timesteps or self.cfg.total_timesteps
         n_envs = self.em.n_envs
-        steps_per_rollout = self.cfg.n_steps * n_envs
 
         self._log(f"[Trainer] Starting: total={total:,} steps, n_envs={n_envs}, "
                   f"n_steps={self.cfg.n_steps}, batch={self.cfg.batch_size}, "
@@ -809,6 +858,51 @@ class AsyncTrainer:
             self._episode_diagnostics_warned = True
             self._log(f"[EpisodeDiagnostics] WARNING: JSONL отключён: {exc}")
 
+        self._command_queue = command_queue
+        try:
+            self._train_body(total, save_dir, command_queue)
+        except BaseException as exc:
+            # Любой аварийный выход (исключение, SIGTERM → SystemExit из
+            # воркера, Ctrl+C) всё равно закрывает JSONL записью run_end —
+            # иначе файл неотличим от «процесс исчез» (P1-1).
+            if isinstance(exc, SystemExit):
+                status = "killed"
+            elif isinstance(exc, KeyboardInterrupt):
+                status = "interrupted"
+            else:
+                status = "error"
+            self._close_episode_diagnostics(status)
+            raise
+        finally:
+            self._command_queue = None
+        self._close_episode_diagnostics(self._run_status())
+        return self.metrics
+
+    def _run_status(self) -> str:
+        """Статус для run_end: completed | stopped (пользователь) | early_stopped."""
+        if not self._stop:
+            return "completed"
+        return "early_stopped" if self._stop_reason == "early_stop" else "stopped"
+
+    def _close_episode_diagnostics(self, status: str) -> None:
+        """Записать run_end ровно один раз (повторный вызов — no-op)."""
+        writer = self._episode_diagnostics
+        if writer is None:
+            return
+        self._episode_diagnostics = None
+        try:
+            writer.close(total_timesteps=self._diagnostic_total_timesteps, status=status)
+            self._log(f"[EpisodeDiagnostics] run_end status={status}: {writer.path}")
+        except Exception as exc:  # диагностика не должна маскировать исходную ошибку
+            if not self._episode_diagnostics_warned:
+                self._episode_diagnostics_warned = True
+                self._log(f"[EpisodeDiagnostics] WARNING: закрытие JSONL не удалось: {exc}")
+
+    def _train_body(self, total: int, save_dir: Path,
+                    command_queue: Optional[queue.Queue]) -> None:
+        """Цикл обучения + финальное сохранение и турнир (без закрытия JSONL)."""
+        n_envs = self.em.n_envs
+        steps_per_rollout = self.cfg.n_steps * n_envs
         obs = self.em.reset()
         (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(save_dir / "normalization.json"))
         t_start = time.perf_counter()
@@ -831,34 +925,25 @@ class AsyncTrainer:
             # Process commands from UI
             self._process_commands(command_queue)
 
-            # Wait if paused
-            while self._paused and not self._stop:
+            # Wait if paused. _check_stop(), а не голый self._stop: «Стоп» из UI
+            # приходит через stop_check (stop_event воркера), и раньше пауза
+            # его не видела — мягкая остановка зависала до жёсткого kill.
+            while self._paused and not self._check_stop():
                 time.sleep(0.5)
                 self._process_commands(command_queue)
 
             if self._stop:
                 break
 
-            t_rollout_start = time.perf_counter()
             rollout = self._collect_rollout(obs)
-            rollout_time = time.perf_counter() - t_rollout_start
+            # Следующий роллаут продолжает с текущего состояния среды. Раньше
+            # здесь оставался obs первого reset(): collect_step(obs) затирал им
+            # em._obs, и первый шаг КАЖДОГО роллаута выбирал действие по
+            # наблюдению со старта обучения (ревью 2026-09-24, P1-5).
+            obs = rollout["final_obs"]
 
-            # Update loop detector after each rollout
-            loop_detected = False
-            loop_action_name = None
-            envs_with_loops = 0
-
-            if self.loop_detector and self._action_history:
-                recent = self._action_history[-(self.cfg.n_steps * n_envs):]
-                action_data = [
-                    {"env_idx": env_idx, "action": action_name, "step": total_done + i}
-                    for i, (env_idx, action_name) in enumerate(recent)
-                ]
-                alerts = self.loop_detector.update_batch(action_data)
-                envs_with_loops = len(alerts)
-                if envs_with_loops > 0:
-                    loop_detected = True
-                    loop_action_name = self._get_current_loop_action({})
+            envs_with_loops, loop_action_name = self._update_loop_detector(
+                self.cfg.n_steps * n_envs, total_done)
 
             if self._stop:
                 break
@@ -891,7 +976,9 @@ class AsyncTrainer:
             top_actions = self._top_actions_dict(action_counts, total_actions)
             counts_by_name = {
                 name: int(cnt)
-                for name, cnt in zip(self._action_names, action_counts)
+                # strict=False осознанно: fallback-имена могут не совпасть по длине
+                # с n_actions — счётчики для UI не должны ронять обучение.
+                for name, cnt in zip(self._action_names, action_counts, strict=False)
                 if cnt > 0
             }
             action_legality = self._pop_action_legality()
@@ -1036,8 +1123,10 @@ class AsyncTrainer:
                 self._log(f"[Curriculum] Mechanics -> {list(target_mechanics)} at step {total_done:,}")
             self._curriculum_progress_step = total_done
 
-            # Run eval
-            if eval_every > 0 and rollout_idx % eval_every == 0:
+            # Run eval (не при остановке: eval идёт минутами, а мягкий «Стоп»
+            # должен уложиться в таймаут UI; stop_check опрашиваем здесь, т.к.
+            # во время PPO-апдейта stop_event никто не читал).
+            if eval_every > 0 and rollout_idx % eval_every == 0 and not self._check_stop():
                 eval_result = self._eval(total_done)
 
                 es_patience = getattr(self.cfg, "early_stopping_patience", 0)
@@ -1051,7 +1140,7 @@ class AsyncTrainer:
                         self._log(f"[EarlyStop] {self._es_patience}/{es_patience} evals without improvement")
                         if self._es_patience >= es_patience:
                             self._log(f"[EarlyStop] Stopping at step {total_done:,} (best_score={self.best_score:.2f})")
-                            self._stop = True
+                            self._request_stop("early_stop")
 
                 if self.progress_callback:
                     try:
@@ -1077,150 +1166,170 @@ class AsyncTrainer:
         self._log(f"[Save] Final model: {final_path}")
 
         # End-of-Training Tournament: evaluate all candidates and ensure best_model.pt is the true champion
-        try:
-            from train_ui2.evaluator import run_eval
-            self._log("[Tournament] Running end-of-training model tournament across checkpoints & final...")
-            best_cand_path = None
-            best_cand_score = -1e9
-            cand_paths = sorted(save_dir.glob("checkpoint_*_steps.pt")) + [final_path]
-            if (save_dir / "best_model.pt").exists():
-                cand_paths.append(save_dir / "best_model.pt")
-            # Keep the progress denominator stable and do not evaluate the same
-            # path twice if best_model.pt happens to be a listed candidate.
-            cand_paths = sorted(set(cand_paths), key=lambda p: str(p).lower())
-            tournament_total = len(cand_paths)
-            tournament_done = 0
-            tournament_started = time.perf_counter()
-            self._log(f"[Tournament] Progress: 0.0% (0/{tournament_total})")
+        # Остановка пользователем («Стоп» в UI) турнир пропускает: он занимает
+        # минуты (кандидаты × 5 сидов × eval_episodes), а мягкий стоп должен
+        # укладываться в таймаут UI. best_model.pt остаётся от последнего eval;
+        # в meta.json это видно по полю tournament="skipped_user_stop".
+        if self._stop and self._stop_reason == "user":
+            self.metrics.tournament = "skipped_user_stop"
+            self._log("[Tournament] Skipped: training stopped by user "
+                      "(best_model.pt — по последнему eval)")
+        else:
+            self.metrics.tournament = "done"
+            try:
+                from train_ui2.evaluator import run_eval
+                self._log("[Tournament] Running end-of-training model tournament across checkpoints & final...")
+                best_cand_path = None
+                best_cand_score = -1e9
+                cand_paths = sorted(save_dir.glob("checkpoint_*_steps.pt")) + [final_path]
+                if (save_dir / "best_model.pt").exists():
+                    cand_paths.append(save_dir / "best_model.pt")
+                # Keep the progress denominator stable and do not evaluate the same
+                # path twice if best_model.pt happens to be a listed candidate.
+                cand_paths = sorted(set(cand_paths), key=lambda p: str(p).lower())
+                tournament_total = len(cand_paths)
+                tournament_done = 0
+                tournament_started = time.perf_counter()
+                self._log(f"[Tournament] Progress: 0.0% (0/{tournament_total})")
 
-            import random
-            seeds = [random.randint(1, 999999) for _ in range(5)]
-            use_median = getattr(self.cfg, "eval_use_median", True)
-            w1, w2, w3, w4 = getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))
-            min_b = getattr(self.cfg, "eval_min_bases", 5)
-            min_d = getattr(self.cfg, "eval_min_days", 730.0)
+                import random
+                seeds = [random.randint(1, 999999) for _ in range(5)]
+                use_median = getattr(self.cfg, "eval_use_median", True)
+                w1, w2, w3, w4 = getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))
+                min_b = getattr(self.cfg, "eval_min_bases", 5)
+                min_d = getattr(self.cfg, "eval_min_days", 730.0)
 
-            for candidate_index, cp in enumerate(cand_paths, start=1):
-                if not cp.exists():
-                    tournament_done += 1
-                    percent = 100.0 * tournament_done / max(1, tournament_total)
-                    self._log(f"[Tournament] Progress: {percent:.1f}% "
-                              f"({tournament_done}/{tournament_total}), "
-                              f"missing={cp.name}")
-                    continue
-                self._log(f"[Tournament] Candidate {candidate_index}/{tournament_total}: "
-                          f"{cp.name} (progress "
-                          f"{100.0 * (candidate_index - 1) / max(1, tournament_total):.1f}%)")
-                try:
-                    cp_norm = Path(str(cp).replace(".pt", ".norm.json"))
-                    cp_norm_str = str(cp_norm) if cp_norm.exists() else norm_path
+                for candidate_index, cp in enumerate(cand_paths, start=1):
+                    if self._check_stop():
+                        # «Стоп» во время турнира: final_model уже сохранён,
+                        # победителя по неполной выборке не объявляем.
+                        self.metrics.tournament = "interrupted_user_stop"
+                        best_cand_path = None
+                        self._log(f"[Tournament] Interrupted by user after "
+                                  f"{tournament_done}/{tournament_total} candidates "
+                                  f"— best_model.pt не меняется")
+                        break
+                    if not cp.exists():
+                        tournament_done += 1
+                        percent = 100.0 * tournament_done / max(1, tournament_total)
+                        self._log(f"[Tournament] Progress: {percent:.1f}% "
+                                  f"({tournament_done}/{tournament_total}), "
+                                  f"missing={cp.name}")
+                        continue
+                    self._log(f"[Tournament] Candidate {candidate_index}/{tournament_total}: "
+                              f"{cp.name} (progress "
+                              f"{100.0 * (candidate_index - 1) / max(1, tournament_total):.1f}%)")
+                    try:
+                        cp_norm = Path(str(cp).replace(".pt", ".norm.json"))
+                        cp_norm_str = str(cp_norm) if cp_norm.exists() else norm_path
 
-                    # Оценивать чекпоинт под той стадией курикулума, под которой он учился
-                    eval_curriculum = dict(self._curriculum_kwargs())
-                    cp_meta = Path(str(cp).replace(".pt", ".meta.json"))
-                    if cp_meta.exists():
-                        try:
-                            with open(cp_meta, encoding="utf-8") as cmf:
-                                cdata = json.load(cmf)
-                                if "curriculum_stage" in cdata:
-                                    eval_curriculum["curriculum_stage"] = int(cdata["curriculum_stage"])
-                                if "enabled_mechanics" in cdata:
-                                    eval_curriculum["enabled_mechanics"] = list(cdata["enabled_mechanics"])
-                                if "tax_to_debt" in cdata:
-                                    eval_curriculum["tax_to_debt"] = bool(cdata["tax_to_debt"])
-                        except Exception:
-                            pass
+                        # Оценивать чекпоинт под той стадией курикулума, под которой он учился
+                        eval_curriculum = dict(self._curriculum_kwargs())
+                        cp_meta = Path(str(cp).replace(".pt", ".meta.json"))
+                        if cp_meta.exists():
+                            try:
+                                with open(cp_meta, encoding="utf-8") as cmf:
+                                    cdata = json.load(cmf)
+                                    if "curriculum_stage" in cdata:
+                                        eval_curriculum["curriculum_stage"] = int(cdata["curriculum_stage"])
+                                    if "enabled_mechanics" in cdata:
+                                        eval_curriculum["enabled_mechanics"] = list(cdata["enabled_mechanics"])
+                                    if "tax_to_debt" in cdata:
+                                        eval_curriculum["tax_to_debt"] = bool(cdata["tax_to_debt"])
+                            except Exception:
+                                pass
 
-                    all_days = []
-                    all_bases = []
-                    all_people = []
-                    all_returns = []
-                    all_water = []
-                    all_water_ready = []
-                    for seed in seeds:
-                        res = run_eval(
-                            model_path=str(cp),
-                            episodes=max(10, getattr(self.cfg, "eval_episodes", 20)),
-                            max_days=10000,
-                            seed=seed,
-                            device=str(self.device),
-                            normalization_path=cp_norm_str,
-                            map_size=self.em.cfg.map_size,
-                            mode=getattr(self.cfg, "obs_mode", "flat"),
-                            minimap_radius=getattr(self.cfg, "minimap_radius", 14),
-                            difficulty=getattr(self.cfg, "difficulty", "normal"),
-                            **eval_curriculum,
-                        )
-                        all_days.extend(res.get("episode_days", [res["days"]]))
-                        all_bases.extend(res.get("episode_bases", [res["bases"]]))
-                        all_people.extend(res.get("episode_people", [res["people"]]))
-                        all_returns.extend(res.get("episode_returns", [res["avg_return"]]))
-                        all_water.extend(res.get("episode_water", [res.get("water_channels", 0.0)]))
-                        all_water_ready.extend(res.get("episode_water_ready", [res.get("water_ready", 0.0)]))
+                        all_days = []
+                        all_bases = []
+                        all_people = []
+                        all_returns = []
+                        all_water = []
+                        all_water_ready = []
+                        for seed in seeds:
+                            res = run_eval(
+                                model_path=str(cp),
+                                episodes=max(10, getattr(self.cfg, "eval_episodes", 20)),
+                                max_days=10000,
+                                seed=seed,
+                                device=str(self.device),
+                                normalization_path=cp_norm_str,
+                                map_size=self.em.cfg.map_size,
+                                mode=getattr(self.cfg, "obs_mode", "flat"),
+                                minimap_radius=getattr(self.cfg, "minimap_radius", 14),
+                                difficulty=getattr(self.cfg, "difficulty", "normal"),
+                                **eval_curriculum,
+                            )
+                            all_days.extend(res.get("episode_days", [res["days"]]))
+                            all_bases.extend(res.get("episode_bases", [res["bases"]]))
+                            all_people.extend(res.get("episode_people", [res["people"]]))
+                            all_returns.extend(res.get("episode_returns", [res["avg_return"]]))
+                            all_water.extend(res.get("episode_water", [res.get("water_channels", 0.0)]))
+                            all_water_ready.extend(res.get("episode_water_ready", [res.get("water_ready", 0.0)]))
 
-                    if use_median:
-                        days_agg = float(np.median(all_days))
-                        bases_agg = float(np.median(all_bases))
-                        people_agg = float(np.median(all_people))
-                        return_agg = float(np.median(all_returns))
-                        water_agg = float(np.median(all_water)) if all_water else 0.0
-                        water_ready_agg = float(np.median(all_water_ready)) if all_water_ready else 0.0
-                    else:
-                        days_agg = float(np.mean(all_days))
-                        bases_agg = float(np.mean(all_bases))
-                        people_agg = float(np.mean(all_people))
-                        return_agg = float(np.mean(all_returns))
-                        water_agg = float(np.mean(all_water)) if all_water else 0.0
-                        water_ready_agg = float(np.mean(all_water_ready)) if all_water_ready else 0.0
+                        if use_median:
+                            days_agg = float(np.median(all_days))
+                            bases_agg = float(np.median(all_bases))
+                            people_agg = float(np.median(all_people))
+                            return_agg = float(np.median(all_returns))
+                            water_agg = float(np.median(all_water)) if all_water else 0.0
+                            water_ready_agg = float(np.median(all_water_ready)) if all_water_ready else 0.0
+                        else:
+                            days_agg = float(np.mean(all_days))
+                            bases_agg = float(np.mean(all_bases))
+                            people_agg = float(np.mean(all_people))
+                            return_agg = float(np.mean(all_returns))
+                            water_agg = float(np.mean(all_water)) if all_water else 0.0
+                            water_ready_agg = float(np.mean(all_water_ready)) if all_water_ready else 0.0
 
-                    bases_std = float(np.std(all_bases)) if all_bases else 0.0
-                    days_std = float(np.std(all_days)) if all_days else 0.0
-                    variance_penalty = 0.2 * bases_std + 0.001 * days_std
+                        bases_std = float(np.std(all_bases)) if all_bases else 0.0
+                        days_std = float(np.std(all_days)) if all_days else 0.0
+                        variance_penalty = 0.2 * bases_std + 0.001 * days_std
 
-                    # Балансировка очков турнира:
-                    # 1) Ограничиваем вклад числа баз (до 15), чтобы спам сараев в долг не давал победу
-                    effective_bases = min(bases_agg, 15.0)
-                    # 2) Реальный вес возврата (0.005 вместо 0.0001): здоровая экономика +2000 даёт +10 очков
-                    return_score = return_agg * 0.005
-                    # 3) Бонус за создание водной инфраструктуры (водоканал строящийся +20, работающий +50)
-                    water_score = 20.0 * min(water_agg, 2.0) + 50.0 * min(water_ready_agg, 2.0)
-                    sc = (days_agg * w1 + effective_bases * w2
-                          + people_agg * w3 + return_score
-                          + water_score
-                          - variance_penalty)
+                        # Балансировка очков турнира:
+                        # 1) Ограничиваем вклад числа баз (до 15), чтобы спам сараев в долг не давал победу
+                        effective_bases = min(bases_agg, 15.0)
+                        # 2) Реальный вес возврата (0.005 вместо 0.0001): здоровая экономика +2000 даёт +10 очков
+                        return_score = return_agg * 0.005
+                        # 3) Бонус за создание водной инфраструктуры (водоканал строящийся +20, работающий +50)
+                        water_score = 20.0 * min(water_agg, 2.0) + 50.0 * min(water_ready_agg, 2.0)
+                        sc = (days_agg * w1 + effective_bases * w2
+                              + people_agg * w3 + return_score
+                              + water_score
+                              - variance_penalty)
 
-                    # Модель побеждает, если:
-                    #   - выполнила стандартные требования (базы >= min_b, дни >= min_d)
-                    #   ИЛИ
-                    #   - совершила прорыв по воде (water >= 1.0, базы >= 2, дни >= 60)
-                    # И нет катастрофического банкротства (return > -5000)
-                    water_qualified = (water_agg >= 1.0 and bases_agg >= 2 and days_agg >= 60.0)
-                    thresholds_ok = (bases_agg >= min_b and days_agg >= min_d) or water_qualified
-                    if thresholds_ok and return_agg > -5000.0 and sc > best_cand_score:
-                        best_cand_score = sc
-                        best_cand_path = cp
-                except Exception as ex:
-                    self._log(f"[Tournament] Candidate {cp.name} evaluation error: {ex}")
-                finally:
-                    tournament_done += 1
-                    percent = 100.0 * tournament_done / max(1, tournament_total)
-                    elapsed_t = time.perf_counter() - tournament_started
-                    eta_s = (elapsed_t / tournament_done) * (tournament_total - tournament_done)
-                    eta_min = eta_s / 60.0
-                    self._log(f"[Tournament] Progress: {percent:.1f}% "
-                              f"({tournament_done}/{tournament_total}), "
-                              f"remaining≈{eta_min:.1f} min")
+                        # Модель побеждает, если:
+                        #   - выполнила стандартные требования (базы >= min_b, дни >= min_d)
+                        #   ИЛИ
+                        #   - совершила прорыв по воде (water >= 1.0, базы >= 2, дни >= 60)
+                        # И нет катастрофического банкротства (return > -5000)
+                        water_qualified = (water_agg >= 1.0 and bases_agg >= 2 and days_agg >= 60.0)
+                        thresholds_ok = (bases_agg >= min_b and days_agg >= min_d) or water_qualified
+                        if thresholds_ok and return_agg > -5000.0 and sc > best_cand_score:
+                            best_cand_score = sc
+                            best_cand_path = cp
+                    except Exception as ex:
+                        self._log(f"[Tournament] Candidate {cp.name} evaluation error: {ex}")
+                    finally:
+                        tournament_done += 1
+                        percent = 100.0 * tournament_done / max(1, tournament_total)
+                        elapsed_t = time.perf_counter() - tournament_started
+                        eta_s = (elapsed_t / tournament_done) * (tournament_total - tournament_done)
+                        eta_min = eta_s / 60.0
+                        self._log(f"[Tournament] Progress: {percent:.1f}% "
+                                  f"({tournament_done}/{tournament_total}), "
+                                  f"remaining≈{eta_min:.1f} min")
 
-            if best_cand_path is not None:
-                self._log(f"[Tournament] Winner: {best_cand_path.name} (score={best_cand_score:.1f})")
-                import shutil
-                shutil.copy(str(best_cand_path), str(save_dir / "best_model.pt"))
-                cp_norm = Path(str(best_cand_path).replace(".pt", ".norm.json"))
-                if cp_norm.exists():
-                    shutil.copy(str(cp_norm), str(save_dir / "best_model.norm.json"))
-                self._update_best_meta_curriculum(save_dir)
-        except Exception as te:
-            self._log(f"[Tournament] Error during tournament: {te}")
+                if best_cand_path is not None:
+                    self._log(f"[Tournament] Winner: {best_cand_path.name} (score={best_cand_score:.1f})")
+                    import shutil
+                    shutil.copy(str(best_cand_path), str(save_dir / "best_model.pt"))
+                    cp_norm = Path(str(best_cand_path).replace(".pt", ".norm.json"))
+                    if cp_norm.exists():
+                        shutil.copy(str(cp_norm), str(save_dir / "best_model.norm.json"))
+                    self._update_best_meta_curriculum(save_dir)
+            except Exception as te:
+                self.metrics.tournament = "error"
+                self._log(f"[Tournament] Error during tournament: {te}")
 
         self.metrics.total_timesteps = total_done
         self.metrics.fps = final_fps
@@ -1230,35 +1339,7 @@ class AsyncTrainer:
         self._log(f"[Done] {total_done:,} steps in {elapsed:.1f}s "
                   f"({final_fps:,.0f} FPS), best_reward={self.best_reward:.2f}, "
                   f"episodes={self.metrics.n_episodes}")
-        if self._episode_diagnostics is not None:
-            try:
-                self._episode_diagnostics.close(
-                    total_timesteps=self._diagnostic_total_timesteps,
-                    status="stopped" if self._stop else "completed",
-                )
-                self._log(f"[EpisodeDiagnostics] {Path(self.cfg.model_dir) / 'episode_diagnostics.jsonl'}")
-            except Exception as exc:
-                if not self._episode_diagnostics_warned:
-                    self._episode_diagnostics_warned = True
-                    self._log(f"[EpisodeDiagnostics] WARNING: закрытие JSONL не удалось: {exc}")
-            finally:
-                self._episode_diagnostics = None
-
-        return self.metrics
-
-    def _get_steps_in_curriculum_stage(self, current_step: int, next_threshold: int) -> int:
-        if next_threshold <= current_step:
-            return 0
-        schedule = getattr(self.cfg, "curriculum_schedule", None)
-        if not schedule or len(schedule) < 2:
-            return max(next_threshold - current_step, 10000)
-        prev_threshold = 0
-        for threshold, _ in schedule:
-            if threshold > current_step:
-                break
-            prev_threshold = threshold
-        stage_steps = next_threshold - prev_threshold
-        return min(stage_steps, 100000)
+        self.metrics.stop_reason = self._stop_reason if self._stop else ""
 
     def close(self):
         self.em.close()

@@ -2,7 +2,7 @@ import json
 import os
 import gymnasium as gym
 import numpy as np
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, List
 from stable_baselines3.common.vec_env import VecEnv
 import colony_cpp
 from colony_cpp_api import require_colony, stale_allowed, StaleExtensionError
@@ -126,6 +126,11 @@ class CppVecEnv(VecEnv):
             tax_to_debt=tax_to_debt,
         )
 
+        # P3-6: миникарта s_T нужна только minimap/hybrid-политикам;
+        # CppVecEnvMinimap повторно вызывает это после установки obs_mode.
+        self._terminal_minimap_wanted = False
+        self._configure_terminal_minimap()
+
         obs_size = self.cpp_vec.obs_size()
         n_actions = self.cpp_vec.n_actions()
 
@@ -227,7 +232,13 @@ class CppVecEnv(VecEnv):
                         info["terminal_observation"], dtype=np.float32
                     )
                 else:
-                    info["terminal_observation"] = obs[i].copy()
+                    # НЕ подставляем obs[i]: после авто-reset это первая
+                    # наблюдка НОВОГО эпизода, и EnvManager посчитал бы по ней
+                    # V(s_T) на усечении — тихо и неверно (P2-3 ревью
+                    # 2026-09-24). Без ключа бутстрап честно пропускается;
+                    # флаг и разовое предупреждение делают это видимым.
+                    info["terminal_observation_missing"] = True
+                    self._warn_missing_terminal_obs(i)
                 if "terminal_observation_norm" in info:
                     info["terminal_observation_norm"] = np.asarray(
                         info["terminal_observation_norm"], dtype=np.float32
@@ -236,10 +247,13 @@ class CppVecEnv(VecEnv):
             infos.append(info)
 
         tmm_fn = getattr(self.cpp_vec, "terminal_minimap_batch", None)
-        if tmm_fn is not None and dones.any():
+        if getattr(self, "_terminal_minimap_wanted", False) and tmm_fn is not None and dones.any():
             tmm = np.asarray(tmm_fn(), dtype=np.float32).reshape(self.num_envs, 8, 32, 32)
             for i in range(self.num_envs):
-                if dones[i]:
+                # terminal_minimap_missing (C++: размер minimap() не 8x32x32) —
+                # в буфере нули; без ключа EnvManager честно пропустит бутстрап
+                # вместо V(s_T) по пустой карте.
+                if dones[i] and not infos[i].get("terminal_minimap_missing"):
                     infos[i]["terminal_minimap"] = tmm[i].copy()
 
         # Expose the raw termination flag separately from the (terminated|truncated)
@@ -247,6 +261,20 @@ class CppVecEnv(VecEnv):
         self._last_terminateds = terminateds
         self._last_trunceds = trunceds
         return obs, rewards, dones, infos
+
+    def _configure_terminal_minimap(self) -> None:
+        """Вкл/выкл расчёт миникарты s_T в C++ по obs_mode (P3-6 ревью 2026-09-24).
+
+        flat-режим миникарту не использует: раньше C++ всё равно считал
+        minimap() на каждом done, а Python копировал её в info. Старый бинарь
+        без set_terminal_minimap_enabled — считаем, как раньше, но в flat
+        в info не кладём.
+        """
+        want = getattr(self, "obs_mode", "flat") in ("minimap", "hybrid")
+        self._terminal_minimap_wanted = want
+        setter = getattr(self.cpp_vec, "set_terminal_minimap_enabled", None)
+        if setter is not None:
+            setter(bool(want))
 
     @property
     def action_masks(self) -> np.ndarray:
@@ -286,23 +314,52 @@ class CppVecEnv(VecEnv):
     def close(self) -> None:
         pass
 
+    def _warn_missing_terminal_obs(self, env_index: int) -> None:
+        """Одно предупреждение на процесс: C++ не прислал terminal_observation."""
+        if getattr(self, "_terminal_obs_warned", False):
+            return
+        self._terminal_obs_warned = True
+        print(f"[CppVecEnv] WARNING: done без terminal_observation (env {env_index}) — "
+              f"бутстрап V(s_T) на усечении пропускается; устаревший colony_cpp "
+              f"(COLONY_ALLOW_STALE_PYD)? Пересоберите расширение.", flush=True)
+
+    def _checked_indices(self, indices) -> List[int]:
+        """Индексы по контракту SB3 VecEnv (None | int | iterable) с проверкой границ."""
+        idx = [int(i) for i in self._get_indices(indices)]
+        bad = [i for i in idx if not 0 <= i < self.num_envs]
+        if bad:
+            raise IndexError(f"env indices {bad} out of range 0..{self.num_envs - 1}")
+        return idx
+
     def get_attr(self, attr_name: str, indices=None):
-        target_envs = [self] * self.num_envs if indices is None else [self]
-        return [getattr(env, attr_name) for env in target_envs]
+        # Одна батч-среда отвечает за все N подсред: атрибут общий, но длина и
+        # порядок ответа — как у VecEnv (по одному значению на индекс). Раньше
+        # при любом indices возвращался список длины 1 (P2-2).
+        value = getattr(self, attr_name)
+        return [value for _ in self._checked_indices(indices)]
 
     def set_attr(self, attr_name: str, value, indices=None):
-        if indices is None:
-            indices = range(self.num_envs)
-        for i in indices:
-            setattr(self, attr_name, value)
+        # Атрибут общий на батч: частичная установка изменила бы ВСЕ подсреды.
+        idx = self._checked_indices(indices)
+        if len(idx) != self.num_envs:
+            raise NotImplementedError(
+                f"set_attr({attr_name!r}) для части подсред ({idx}) не поддерживается: "
+                f"CppVecEnv хранит атрибуты общими на все {self.num_envs} сред")
+        setattr(self, attr_name, value)
 
     def env_method(self, method_name: str, *method_args, indices=None, **method_kwargs):
-        if indices is None:
-            indices = range(self.num_envs)
-        return [getattr(self, method_name)(*method_args, **method_kwargs) for _ in indices]
+        # Метод батча вызывается ОДИН раз (раньше — N раз: env_method("reset")
+        # сбросил бы все среды N раз), результат раздаётся по индексам.
+        idx = self._checked_indices(indices)
+        if len(idx) != self.num_envs:
+            raise NotImplementedError(
+                f"env_method({method_name!r}) для части подсред ({idx}) не поддерживается: "
+                f"методы CppVecEnv действуют на весь батч из {self.num_envs} сред")
+        result = getattr(self, method_name)(*method_args, **method_kwargs)
+        return [result for _ in idx]
 
     def env_is_wrapped(self, wrapper_class, indices=None):
-        return [False] * self.num_envs
+        return [False for _ in self._checked_indices(indices)]
 
     @property
     def venv(self):
