@@ -1135,6 +1135,18 @@ def main():
         env.set_step_log(args.step_log)
         print(f"Step log (per-step reward breakdown) -> {args.step_log}")
 
+    # Sampling temperature — ОБЯЗАН быть вычислен ДО headless-цикла ниже.
+    # Здесь он стоял после цикла (перед `if args.visual:`), а Python считает имя
+    # локальным на всю функцию: любой прогон без `--visual` (режим по умолчанию,
+    # команда из README) падал с UnboundLocalError на первом шаге выбора
+    # действия, а `--sample`/`--temperature` были недостижимы.
+    watch_temp = args.temperature if args.temperature > 0.0 else (0.8 if args.sample else 0.0)
+    # То же правило для предупреждения о карте: печатать его после прогона, как
+    # раньше, — значит сообщать о несовпадении, когда эпизод уже отыгран.
+    stored_map_size = meta.get("map_size")
+    if stored_map_size and int(stored_map_size) != args.map_size:
+        say(f"WARNING: наблюдение запущено с картой {args.map_size}, а модель обучалась на карте {stored_map_size}! Рекомендуется запускать с --map-size {stored_map_size}.", level="warning")
+
     if not args.visual:  # headless text mode (visual mode returns below)
         for ep in range(args.episodes):
             print(f"\n{'=' * 70}")
@@ -1227,11 +1239,6 @@ def main():
                     emit_log(msg)
                 else:
                     print(f"\n>>> {msg}")
-
-    watch_temp = args.temperature if args.temperature > 0.0 else (0.8 if args.sample else 0.0)
-    stored_map_size = meta.get("map_size")
-    if stored_map_size and int(stored_map_size) != args.map_size:
-        say(f"WARNING: наблюдение запущено с картой {args.map_size}, а модель обучалась на карте {stored_map_size}! Рекомендуется запускать с --map-size {stored_map_size}.", level="warning")
 
     if args.visual:
         exe = find_gui_exe()

@@ -1,12 +1,51 @@
-"""Test GAE computation against reference implementation."""
+"""Test GAE computation against reference implementation.
+
+Оба класса буфера обязаны считать GAE одинаково: `_TensorRolloutBuffer`
+(minimap/hybrid) наследует compute_gae, но у него свой `add`. Пока он не
+пробрасывал `trunc_value`, GAE в minimap/hybrid молча терял бутстрап V(s_T)
+на усечении — регрессия 2026-09-22 жила только на flat-пути, а здесь её не
+видели, потому что тесты создавали только `RolloutBuffer`
+(`test_tensor_buffer_stores_trunc_value`, `test_buffer_kinds_agree_on_gae`).
+"""
 import sys
 from pathlib import Path
-import torch
+
 import numpy as np
+import pytest
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rl.rollout_buffer import RolloutBuffer
+from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
+
+#: Классы буфера: flat (MLP-наблюдение) и tensor (minimap/hybrid).
+BUFFER_KINDS = ("flat", "tensor")
+_FLAT_OBS = 4                       # obs_size плоского буфера в этих тестах
+_TENSOR_OBS = (2, 3, 3)             # obs_shape tensor-буфера в этих тестах
+
+
+def _make_buffer(kind: str, *, n_steps: int, n_envs: int, n_actions: int,
+                 gamma: float, lam: float, device: torch.device,
+                 flat_dim: int = 0):
+    """Буфер нужного класса с одинаковой GAE-конфигурацией."""
+    if kind == "tensor":
+        return _TensorRolloutBuffer(
+            n_steps=n_steps, n_envs=n_envs, obs_shape=_TENSOR_OBS,
+            n_actions=n_actions, gamma=gamma, gae_lambda=lam, device=device,
+            flat_dim=flat_dim,
+        )
+    assert flat_dim == 0, "flat-буфер не поддерживает flat_dim (это hybrid-ветка)"
+    return RolloutBuffer(
+        n_steps=n_steps, n_envs=n_envs, obs_size=_FLAT_OBS,
+        n_actions=n_actions, gamma=gamma, gae_lambda=lam, device=device,
+    )
+
+
+def _obs(kind: str, n_envs: int) -> torch.Tensor:
+    """Наблюдение подходящей формы (значения для GAE не важны)."""
+    if kind == "tensor":
+        return torch.zeros(n_envs, *_TENSOR_OBS)
+    return torch.zeros(n_envs, _FLAT_OBS)
 
 
 def reference_gae(
@@ -38,7 +77,8 @@ def reference_gae(
     return advantages, returns
 
 
-def test_gae_single_env():
+@pytest.mark.parametrize("kind", BUFFER_KINDS)
+def test_gae_single_env(kind):
     """Test GAE with a single env (n_envs=1) against reference."""
     T = 100
     gamma = 0.99
@@ -56,18 +96,11 @@ def test_gae_single_env():
     ref_adv, ref_ret = reference_gae(rewards, values, last_value, dones, last_done, gamma, lam)
 
     device = torch.device("cpu")
-    buf = RolloutBuffer(
-        n_steps=T,
-        n_envs=1,
-        obs_size=10,
-        n_actions=5,
-        gamma=gamma,
-        gae_lambda=lam,
-        device=device,
-    )
+    buf = _make_buffer(kind, n_steps=T, n_envs=1, n_actions=5,
+                       gamma=gamma, lam=lam, device=device)
 
     for t in range(T):
-        obs = torch.randn(1, 10)
+        obs = _obs(kind, 1)
         action = torch.tensor([t % 5])
         reward = torch.tensor([rewards[t]])
         log_prob = torch.randn(1)
@@ -90,7 +123,8 @@ def test_gae_single_env():
     print("PASS: GAE single env matches reference")
 
 
-def test_gae_multi_env():
+@pytest.mark.parametrize("kind", BUFFER_KINDS)
+def test_gae_multi_env(kind):
     """Test GAE with multiple envs."""
     T = 50
     n_envs = 4
@@ -99,15 +133,8 @@ def test_gae_multi_env():
     np.random.seed(42)
 
     device = torch.device("cpu")
-    buf = RolloutBuffer(
-        n_steps=T,
-        n_envs=n_envs,
-        obs_size=10,
-        n_actions=5,
-        gamma=gamma,
-        gae_lambda=lam,
-        device=device,
-    )
+    buf = _make_buffer(kind, n_steps=T, n_envs=n_envs, n_actions=5,
+                       gamma=gamma, lam=lam, device=device)
 
     rewards_all = np.random.randn(T, n_envs)
     values_all = np.random.randn(T, n_envs)
@@ -118,7 +145,7 @@ def test_gae_multi_env():
     last_dones = np.array([False, True, False, True])
 
     for t in range(T):
-        obs = torch.randn(n_envs, 10)
+        obs = _obs(kind, n_envs)
         action = torch.randint(0, 5, (n_envs,))
         reward = torch.tensor(rewards_all[t], dtype=torch.float32)
         log_prob = torch.randn(n_envs)
@@ -142,7 +169,8 @@ def test_gae_multi_env():
     print("PASS: GAE multi env no NaNs")
 
 
-def test_gae_normalization():
+@pytest.mark.parametrize("kind", BUFFER_KINDS)
+def test_gae_normalization(kind):
     """Test that advantages are normalized (mean~0, std~1)."""
     T = 200
     n_envs = 2
@@ -151,18 +179,11 @@ def test_gae_normalization():
     np.random.seed(42)
 
     device = torch.device("cpu")
-    buf = RolloutBuffer(
-        n_steps=T,
-        n_envs=n_envs,
-        obs_size=10,
-        n_actions=5,
-        gamma=gamma,
-        gae_lambda=lam,
-        device=device,
-    )
+    buf = _make_buffer(kind, n_steps=T, n_envs=n_envs, n_actions=5,
+                       gamma=gamma, lam=lam, device=device)
 
     for t in range(T):
-        obs = torch.randn(n_envs, 10)
+        obs = _obs(kind, n_envs)
         action = torch.randint(0, 5, (n_envs,))
         reward = torch.randn(n_envs)
         log_prob = torch.randn(n_envs)
@@ -186,7 +207,8 @@ def test_gae_normalization():
     print("PASS: GAE normalization correct")
 
 
-def test_gae_truncation_bootstraps_terminal_value_not_next_episode():
+@pytest.mark.parametrize("kind", BUFFER_KINDS)
+def test_gae_truncation_bootstraps_terminal_value_not_next_episode(kind):
     """Truncated step must bootstrap V(s_T), not V(s'_0) of the next episode.
 
     Also the λ-trace must cut on `done` so advantages of the new episode
@@ -196,10 +218,8 @@ def test_gae_truncation_bootstraps_terminal_value_not_next_episode():
     gamma = 0.99
     lam = 0.95
     device = torch.device("cpu")
-    buf = RolloutBuffer(
-        n_steps=T, n_envs=1, obs_size=4, n_actions=3,
-        gamma=gamma, gae_lambda=lam, device=device,
-    )
+    buf = _make_buffer(kind, n_steps=T, n_envs=1, n_actions=3,
+                       gamma=gamma, lam=lam, device=device)
 
     # t=0,1 continuing; t=2 truncated (done but not terminated); t=3 new episode
     rewards = [1.0, 1.0, 1.0, 0.0]
@@ -210,7 +230,7 @@ def test_gae_truncation_bootstraps_terminal_value_not_next_episode():
 
     for t in range(T):
         buf.add(
-            torch.zeros(1, 4),
+            _obs(kind, 1),
             torch.tensor([0]),
             torch.tensor([rewards[t]]),
             torch.zeros(1),
@@ -238,21 +258,20 @@ def test_gae_truncation_bootstraps_terminal_value_not_next_episode():
     assert abs(ret[1] - a1) < 1e-3, (ret, a1)
 
 
-def test_gae_true_termination_still_zeros_bootstrap():
+@pytest.mark.parametrize("kind", BUFFER_KINDS)
+def test_gae_true_termination_still_zeros_bootstrap(kind):
     T = 3
     gamma = 0.99
     device = torch.device("cpu")
-    buf = RolloutBuffer(
-        n_steps=T, n_envs=1, obs_size=4, n_actions=3,
-        gamma=gamma, gae_lambda=0.95, device=device,
-    )
+    buf = _make_buffer(kind, n_steps=T, n_envs=1, n_actions=3,
+                       gamma=gamma, lam=0.95, device=device)
     for t, (r, v, done, term) in enumerate([
         (1.0, 0.0, False, False),
         (1.0, 0.0, True, True),
         (0.0, 50.0, False, False),
     ]):
         buf.add(
-            torch.zeros(1, 4), torch.tensor([0]), torch.tensor([r]),
+            _obs(kind, 1), torch.tensor([0]), torch.tensor([r]),
             torch.zeros(1), torch.tensor([v]), torch.tensor([done]),
             terminated=torch.tensor([term]),
             trunc_value=torch.tensor([7.0]),  # must be ignored on true terminal
@@ -263,10 +282,95 @@ def test_gae_true_termination_still_zeros_bootstrap():
     assert abs(ret[1] - 1.0) < 1e-4, ret
 
 
+# ── регрессии 2026-09-24: `trunc_value` в tensor-буфере ──────────────────────
+
+def test_tensor_buffer_stores_trunc_value():
+    """`_TensorRolloutBuffer.add` обязан сохранять V(s_T), а не выбрасывать её.
+
+    Регрессия: параметр принимался, но не пробрасывался в базовый `add` →
+    `trunc_values` оставался нулевым, и minimize/hybrid-GAE на усечении
+    подставлял 0 вместо V(s_T) (тихо, без ошибки).
+    """
+    n_steps, n_envs = 3, 2
+    buf = _TensorRolloutBuffer(
+        n_steps=n_steps, n_envs=n_envs, obs_shape=_TENSOR_OBS, n_actions=3,
+        gamma=0.99, gae_lambda=0.95, device=torch.device("cpu"),
+    )
+    for t in range(n_steps):
+        # раскладка буфера: индекс = t * n_envs + env
+        trunc = torch.tensor([7.0 if (t, 0) == (1, 0) else 0.0,
+                              3.0 if (t, 1) == (2, 1) else 0.0])
+        buf.add(
+            _obs("tensor", n_envs), torch.zeros(n_envs, dtype=torch.long),
+            torch.ones(n_envs), torch.zeros(n_envs), torch.zeros(n_envs),
+            done=torch.tensor([t == 1, t == 2]),
+            terminated=torch.zeros(n_envs, dtype=torch.bool),
+            action_masks=torch.ones(n_envs, 3),
+            trunc_value=trunc,
+        )
+    assert buf.trunc_values.tolist() == [0.0, 0.0, 7.0, 0.0, 0.0, 3.0]
+
+
+def test_tensor_buffer_stores_trunc_value_with_flat_branch():
+    """Hybrid-буфер (`flat_dim > 0`): V(s_T) сохраняется вместе с flat-наблюдением."""
+    buf = _TensorRolloutBuffer(
+        n_steps=1, n_envs=1, obs_shape=_TENSOR_OBS, n_actions=3,
+        gamma=0.99, gae_lambda=0.95, device=torch.device("cpu"), flat_dim=5,
+    )
+    buf.add(
+        _obs("tensor", 1), torch.zeros(1, dtype=torch.long), torch.ones(1),
+        torch.zeros(1), torch.zeros(1), done=torch.tensor([True]),
+        terminated=torch.tensor([False]), flat=torch.zeros(1, 5),
+        action_masks=torch.ones(1, 3), trunc_value=torch.tensor([4.5]),
+    )
+    assert buf.trunc_values.tolist() == [4.5]
+    assert buf.flat_obs.shape == (1, 5)
+
+
+def test_buffer_kinds_agree_on_gae():
+    """Flat и tensor буферы на одних данных дают одну и ту же GAE.
+
+    Любая потеря поля в `add` подкласса (как было с `trunc_value`) ломает
+    паритет: один и тот же эпизод с усечением посчитается по-разному.
+    """
+    T, gamma, lam = 5, 0.99, 0.95
+    device = torch.device("cpu")
+    rewards = [1.0, -0.5, 2.0, 0.25, 0.0]
+    values = [0.1, 0.2, -0.3, 0.4, 5.0]
+    dones = [False, False, True, False, False]          # t=2 — усечение
+    terminated = [False, False, False, False, False]
+    v_sT = 3.5
+
+    returns = {}
+    for kind in BUFFER_KINDS:
+        buf = _make_buffer(kind, n_steps=T, n_envs=1, n_actions=3,
+                           gamma=gamma, lam=lam, device=device)
+        for t in range(T):
+            buf.add(
+                _obs(kind, 1), torch.tensor([0]), torch.tensor([rewards[t]]),
+                torch.zeros(1), torch.tensor([values[t]]),
+                torch.tensor([dones[t]]),
+                terminated=torch.tensor([terminated[t]]),
+                trunc_value=torch.tensor([v_sT if dones[t] else 0.0]),
+            )
+        buf.compute_gae(last_value=torch.tensor([0.0]),
+                        last_done=torch.tensor([False]))
+        returns[kind] = buf.returns[:T].squeeze().tolist()
+
+    assert returns["flat"] == pytest.approx(returns["tensor"], abs=1e-6), returns
+    # и сам V(s_T) использован, а не подменён нулём
+    g = gamma
+    assert returns["tensor"][2] == pytest.approx(rewards[2] + g * v_sT, abs=1e-5)
+
+
 if __name__ == "__main__":
-    test_gae_single_env()
-    test_gae_multi_env()
-    test_gae_normalization()
-    test_gae_truncation_bootstraps_terminal_value_not_next_episode()
-    test_gae_true_termination_still_zeros_bootstrap()
+    for _kind in BUFFER_KINDS:
+        test_gae_single_env(_kind)
+        test_gae_multi_env(_kind)
+        test_gae_normalization(_kind)
+        test_gae_truncation_bootstraps_terminal_value_not_next_episode(_kind)
+        test_gae_true_termination_still_zeros_bootstrap(_kind)
+    test_tensor_buffer_stores_trunc_value()
+    test_tensor_buffer_stores_trunc_value_with_flat_branch()
+    test_buffer_kinds_agree_on_gae()
     print("\nAll GAE tests passed!")
