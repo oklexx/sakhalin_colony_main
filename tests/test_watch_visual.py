@@ -102,7 +102,12 @@ def _fake_colony_cpp() -> types.ModuleType:
             return [1.0] * N_ACTIONS
 
         def minimap(self):
-            return [0.0] * MM_LEN
+            # Настоящее связывание (`src/bindings.cpp`) отдаёт ndarray формы
+            # (8, 32, 32), а не плоский список: headless-ветка наблюдения
+            # зовёт minimap() напрямую и делает reshape(1, *shape). Плоский
+            # стаб ломал её TypeError'ом ещё до выбора действия.
+            import numpy as _np
+            return _np.zeros((8, 32, 32), dtype=_np.float32)
 
         def set_minimap_radius(self, r):
             pass
@@ -654,3 +659,38 @@ def test_make_ipc_dir_unique_even_in_same_millisecond(wc, monkeypatch, tmp_path)
     second = wc.make_ipc_dir()
     assert first != second
     assert second.is_dir()
+
+
+# ── headless-режим (без --visual): регрессия «UnboundLocalError: watch_temp» ──
+#
+# 2026-09-24: `watch_temp` вычислялся ПОСЛЕ headless-цикла (строка ~1231), а
+# читался внутри него (1181) → UnboundLocalError на первом шаге выбора
+# действия. То есть режим ПО УМОЛЧАНИЮ (обычный консольный прогон
+# `python watch_champion.py --model-dir …`, команда из README) не работал вовсе,
+# а `--sample`/`--temperature` были недостижимы. Визуальные тесты этого не
+# видели: они всегда запускаются с `--visual`, где присваивание успевает
+# выполниться.
+
+@pytest.mark.parametrize("extra", [[], ["--sample"]], ids=["argmax", "sample"])
+def test_headless_watch_runs_episode(wc, model_dir, monkeypatch, capfd, extra):
+    """Прогон без `--visual` обязан пройти эпизод и напечатать шаги."""
+    argv = ["watch_champion.py", "--model-dir", str(model_dir), "--speed", "0",
+            "--episodes", "1", "--max-steps", "5", "--seed", "12345",
+            "--map-size", "280", "--curriculum-stage", "0", "--unlock-ids", ""] + extra
+    monkeypatch.setattr(sys, "argv", argv)
+
+    def run() -> int:
+        try:
+            wc.main()
+        except SystemExit as e:      # main() уходит в sys.exit только на ошибке
+            return int(e.code or 0)
+        return 0
+
+    rc = run()
+    out, err = capfd.readouterr()
+    text = out + err
+    assert "UnboundLocalError" not in text, text
+    assert rc == 0, text
+    assert "EPISODE 1/1" in out, text
+    assert "Step " in out, text
+    assert "Done. 1 episode(s) completed." in out, text

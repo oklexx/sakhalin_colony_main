@@ -296,3 +296,118 @@ def test_module_global_names_resolve(rel_path: str) -> None:
 
     walk(top, src_path.name)
     assert not missing, f"неопределённые глобальные имена (NameError в рантайме): {missing}"
+
+
+# ── статическая проверка «локальное имя читается до присваивания» ─────────────
+#
+# 2026-09-24 (`watch_champion.py`): в main() цикл headless-наблюдения читал
+# `watch_temp` (1181), а присваивание стояло ниже (1231) — Python считает имя
+# локальным на всю функцию, поэтому ЛЮБОЙ прогон без `--visual` падал с
+# UnboundLocalError на первом шаге выбора действия. Тест выше (`globals`)
+# такое не видит: имя-то локальное. Визуальные тесты тоже молчали — они всегда
+# запускаются с `--visual`, где присваивание успевает выполниться.
+#
+# Проверка статическая (AST, без импорта модулей): для каждой функции собираем
+# позиции чтений и записей имён в порядке исходника, игнорируя вложенные скоупы
+# и объявления `global`/`nonlocal`. Если имя где-то присваивается и при этом
+# читается РАНЬШЕ первого присваивания — это будущий UnboundLocalError.
+# Проверка намеренно консервативная: присваивание в любой ветке считается
+# присваиванием (ложных срабатываний нет).
+
+_SCAN_DIRS = ("rl", "train_ui2", "python", "ui", "scripts")
+_SCAN_ROOT_FILES = ("train.py", "training_lr.py", "watch_champion.py")
+
+_NESTED_SCOPES = (
+    "FunctionDef", "AsyncFunctionDef", "Lambda", "ClassDef",
+    "ListComp", "SetComp", "DictComp", "GeneratorExp",
+)
+
+
+def _local_name_positions(fn) -> tuple[set, list, list]:
+    """(параметры, чтения, записи) для одной функции, без вложенных скоупов."""
+    import ast
+
+    params = set()
+    args = getattr(fn, "args", None)
+    if args is not None:
+        for a in list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs):
+            params.add(a.arg)
+        if args.vararg:
+            params.add(args.vararg.arg)
+        if args.kwarg:
+            params.add(args.kwarg.arg)
+
+    loads: list[tuple[tuple[int, int], str]] = []
+    stores: list[tuple[tuple[int, int], str]] = []
+
+    def pos(node) -> tuple[int, int]:
+        return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+
+    def walk(node) -> None:
+        for child in ast.iter_child_nodes(node):
+            if type(child).__name__ in _NESTED_SCOPES:
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    stores.append((pos(child), child.name))
+                continue  # тело — чужой скоуп, читает внешние имена законно
+            if isinstance(child, ast.Name):
+                if isinstance(child.ctx, ast.Store):
+                    stores.append((pos(child), child.id))
+                elif isinstance(child.ctx, (ast.Load, ast.Del)):
+                    loads.append((pos(child), child.id))
+                continue
+            if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
+                # `x += 1` — чтение и запись в одной точке
+                loads.append((pos(child.target), child.target.id))
+                stores.append((pos(child.target), child.target.id))
+                walk(child.value)
+                continue
+            if isinstance(child, (ast.Global, ast.Nonlocal)):
+                continue
+            walk(child)
+
+    walk(fn)
+    return params, loads, stores
+
+
+def _read_before_assignment(src: str, path: str) -> list[str]:
+    import ast
+
+    tree = ast.parse(src)
+    problems: list[str] = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        params, loads, stores = _local_name_positions(fn)
+        declared_global = set()
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.Global, ast.Nonlocal)):
+                declared_global.update(node.names)
+        first_store: dict[str, tuple[int, int]] = {}
+        for p, name in stores:
+            if name not in first_store or p < first_store[name]:
+                first_store[name] = p
+        for p, name in loads:
+            if name in params or name in declared_global:
+                continue
+            store_pos = first_store.get(name)
+            if store_pos is not None and store_pos > p:
+                problems.append(
+                    f"{path}:{p[0]}:{p[1]}: в {fn.name}() имя {name!r} читается до "
+                    f"присваивания (единственное/первое присваивание — строка "
+                    f"{store_pos[0]}) → UnboundLocalError"
+                )
+    return problems
+
+
+def test_project_sources_have_no_local_read_before_assignment() -> None:
+    """Ни одно локальное имя не читается раньше своего присваивания."""
+    root = Path(__file__).resolve().parents[1]
+    files: list[Path] = [root / name for name in _SCAN_ROOT_FILES]
+    for d in _SCAN_DIRS:
+        files.extend(sorted((root / d).rglob("*.py")))
+    files = [f for f in files if f.is_file()]
+
+    problems: list[str] = []
+    for f in files:
+        problems.extend(_read_before_assignment(f.read_text(encoding="utf-8"), str(f)))
+    assert not problems, "чтение локального имени до присваивания:\n" + "\n".join(problems)

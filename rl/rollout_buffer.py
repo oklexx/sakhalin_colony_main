@@ -231,8 +231,12 @@ class _TensorRolloutBuffer(RolloutBuffer):
         `flat` is the flat observation tensor (shape [n_envs, flat_dim]) stored
         only when the buffer was created with `flat_dim > 0` (hybrid mode).
         `action_masks` is [n_envs, n_actions] — 1.0=available, 0.0=blocked.
+        `trunc_value` is V(s_T) for time-limit truncation (minimap/hybrid runs
+        reach this class too — dropping it here silently disabled the
+        2026-09-22 truncation bootstrap for every non-flat obs_mode).
         """
-        super().add(obs, action, reward, log_prob, value, done, terminated, action_masks)
+        super().add(obs, action, reward, log_prob, value, done, terminated,
+                    action_masks, trunc_value)
         if self.flat_obs is not None:
             if flat is None:
                 raise RuntimeError("flat observation required but not provided (hybrid buffer)")
