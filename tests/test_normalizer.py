@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 try:
-    import colony_cpp
+    import colony_cpp  # noqa: F401 — только проверка доступности расширения
     ENV_OK = True
 except Exception:
     ENV_OK = False

@@ -1,6 +1,5 @@
 import sys
 from pathlib import Path
-import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -136,7 +135,6 @@ def test_per_env_episode_tracking(tmp_path):
 def test_eval_and_best_model_saving(tmp_path):
     """Verify that eval runs and best model is saved when composite score improves."""
     import json
-    from pathlib import Path
 
     cfg = Config(
         n_envs=2,
@@ -200,8 +198,6 @@ def test_eval_and_best_model_saving(tmp_path):
 
 def test_min_bases_threshold(tmp_path):
     """Verify that model is NOT saved when bases < min_bases."""
-    import json
-    from pathlib import Path
 
     cfg = Config(
         n_envs=2,
@@ -242,7 +238,6 @@ def test_min_bases_threshold(tmp_path):
 
 def test_composite_score_calculation():
     """Verify composite score formula: score = days*w1 + bases*w2 + people*w3 + max(0,return)*w4."""
-    import numpy as np
 
     w1, w2, w3, w4 = 0.10, 1.0, 0.10, 0.0001
     days, bases, people, ret = 100.0, 10.0, 20.0, 5000.0
@@ -250,7 +245,7 @@ def test_composite_score_calculation():
     assert abs(expected - (10.0 + 10.0 + 2.0 + 0.5)) < 1e-9
 
     ret_neg = -100.0
-    expected_neg = days * w1 + bases * w2 + people * w3 + 0.0
+    expected_neg = days * w1 + bases * w2 + people * w3 + max(0.0, ret_neg) * w4
     assert abs(expected_neg - 22.0) < 1e-9
 
 
@@ -306,7 +301,6 @@ def test_curriculum_stage_in_meta(tmp_path):
 
 def test_multi_seed_eval(tmp_path):
     """Verify that eval runs for each seed in eval_seeds and aggregates results."""
-    import json
 
     cfg = Config(
         n_envs=2,

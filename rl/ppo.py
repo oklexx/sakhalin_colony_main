@@ -8,8 +8,9 @@ import torch._dynamo  # noqa: F401  (must be module-level: a function-local
                       # __init__ and break every earlier `torch.*` reference)
 import torch.nn as nn
 from torch import distributions as D
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
+from rl._nn_common import load_policy_state
 from rl.actor_critic import ActorCritic
 from rl.rollout_buffer import RolloutBuffer
 
@@ -386,7 +387,7 @@ class PPO:
         # Newer models have a zero-initialized value-only mask projection.
         # Missing keys are expected for legacy checkpoints; output heads and
         # observation/action dimensions remain unchanged.
-        self._raw_model.load_state_dict(ckpt["model_state"], strict=False)
+        load_policy_state(self._raw_model, ckpt["model_state"], ckpt_path=str(path))
         try:
             self.optimizer.load_state_dict(ckpt["optimizer_state"])
         except (KeyError, ValueError, RuntimeError):

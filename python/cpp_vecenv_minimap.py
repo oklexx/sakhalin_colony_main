@@ -19,6 +19,7 @@ class CppVecEnvMinimap(CppVecEnv):
     ):
         super().__init__(*args, **kwargs)
         self.obs_mode = obs_mode
+        self._configure_terminal_minimap()  # obs_mode известен только сейчас
         self.minimap_radius = minimap_radius
         self.channels = 8
         self.grid = 32

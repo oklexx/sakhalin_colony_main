@@ -353,6 +353,12 @@ public:
     // Minimap of s_T for envs that ended on the last step_wait_batch (zeros else).
     // Shape [n_envs * 8 * 32 * 32], same layout as minimap_batch().
     std::vector<float> terminal_minimap_batch() const;
+    // P3-6 ревью 2026-09-24: в flat-режиме миникарта s_T никому не нужна —
+    // Python (CppVecEnv) выключает её, чтобы не считать minimap() на каждом
+    // done и не держать буфер n_envs*8*32*32. По умолчанию включено (старые
+    // обёртки, не знающие о переключателе, работают как раньше).
+    void set_terminal_minimap_enabled(bool on);
+    bool terminal_minimap_enabled() const { return terminal_minimap_enabled_; }
     // Action masks for all envs: [n_envs * n_actions]
     std::vector<float> action_masks_batch() const;
     // Причины закрытых бит той же маски: [n_envs * n_actions], коды MaskReason.
@@ -429,6 +435,7 @@ private:
     std::vector<float> raw_obs_buf_;      // for terminal_observation (reusable)
     std::vector<float> terminal_minimap_buf_;  // [n_envs * 8 * 32 * 32]
     std::vector<char> terminal_minimap_valid_; // per-env, last step
+    bool terminal_minimap_enabled_ = true;
     // Атрибуция причин закрытых бит маски [n_envs * n_actions] (MaskReason);
     // mutable — заполняется внутри const action_masks_batch() тем же проходом.
     mutable std::vector<uint8_t> mask_reasons_batch_;

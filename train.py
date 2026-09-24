@@ -15,7 +15,6 @@ import json
 from pathlib import Path
 
 import torch
-import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -238,7 +237,8 @@ def main():
     if args.resume_model:
         ckpt = torch.load(args.resume_model, map_location=device, weights_only=False)
         state = ckpt.get("model_state", ckpt)
-        clean = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
+        from rl._nn_common import clean_policy_state, load_policy_state
+        clean = clean_policy_state(state)
         # PR 5: a v0 checkpoint on a v1 env (or vice versa) must fail here
         # with a clear message, not in load_state_dict with a shape error.
         from rl.curriculum import (
@@ -253,7 +253,10 @@ def main():
         if _flat_w is not None:
             check_policy_obs_compat(
                 _flat_w, int(em.obs_size), ckpt_path=args.resume_model)
-        em.model.load_state_dict(clean)
+        # strict=True здесь падал на любом чекпойнте старше 2026-09-22 (нет
+        # actor/critic_mask_proj); общий хелпер пропускает только эти ключи.
+        load_policy_state(em.model, clean, ckpt_path=args.resume_model,
+                          log=lambda m: print(f"[Resume] {m}"))
         if "optimizer_state" in ckpt:
             try:
                 em.ppo.optimizer.load_state_dict(ckpt["optimizer_state"])

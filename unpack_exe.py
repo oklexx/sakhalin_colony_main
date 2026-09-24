@@ -1,7 +1,6 @@
 import pefile
 import os
 import zlib
-import struct
 
 exe = r"C:\Users\oklex\OneDrive\Documentos\sakhalin_colony_main\SkhClny3.exe"
 out_dir = r"C:\Users\oklex\OneDrive\Documentos\sakhalin_colony_main\extracted"
@@ -38,7 +37,7 @@ if aspack:
             with open(os.path.join(out_dir, "aspack_decompressed.bin"), 'wb') as f:
                 f.write(decompressed)
             break
-        except:
+        except (zlib.error, OSError):  # не zlib-поток с этого смещения
             continue
 
 # Try to use ResourceHacker or 7z

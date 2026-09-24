@@ -7,6 +7,10 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Для аннотации Config.curriculum_state (ruff F821, get_type_hints). Цикла нет:
+# rl.curriculum зависит только от stdlib и rl.config не импортирует.
+from rl.curriculum import CurriculumState
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Канонический профиль наград
 #   configs/reward_v4.json — единственный источник значений по умолчанию.

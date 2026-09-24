@@ -23,11 +23,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon, QPixmap, QTextCursor
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QTabWidget,
+    QProgressBar, QScrollArea, QSpinBox, QSplitter, QTabWidget,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -36,7 +36,9 @@ if str(_PROJECT) not in sys.path:
     sys.path.insert(0, str(_PROJECT))
 
 from train_ui2 import protocol as P
-from train_ui2.models import ModelInfo, ModelRegistry, pick_model_file
+from train_ui2.curriculum_table import parse_schedule_rows
+from train_ui2.soft_stop import STOP_GRACE_S, SoftStop
+from train_ui2.models import ModelRegistry, pick_model_file
 from rl.config import RewardConfig as _RC
 
 from train_ui2 import theme as T
@@ -56,7 +58,6 @@ from train_ui2.constants import (
     BUILD_CAPTIONS,
     RESOURCE_IDS,
     RESOURCE_CAPTIONS,
-    BUILD_IMAGE_INDEX,
     KEY_ACTIONS_MONITOR,
     CONFIG_VERSION,
     MECHANIC_IDS,
@@ -94,6 +95,8 @@ class MainWindow2(QMainWindow):
         self._msg_offset = 0
         self._cmd_file: Optional[str] = None
         self._cfg_tmp: Optional[str] = None
+        self._soft_stop = SoftStop()
+        self._cur_table_warnings: List[str] = []
         self._msg_timer = QTimer(self)
         self._msg_timer.timeout.connect(self._poll_worker)
         # watch state
@@ -335,7 +338,7 @@ class MainWindow2(QMainWindow):
         # Серый «след» под полоской = доля шагов, где действие было легально
         # (маска = 1): без неё короткое окно легальности водоканала выглядит
         # как зависание/потеря данных.
-        legend = "след = % легальных шагов"
+        legend = "след = % шагов, где действие доступно (маска = 1)"
         self.bars_actions = Bars(title="Активности", legend=legend)
         self.bars_build = Bars(title="Строительство зданий", legend=legend,
                                keep=KEY_ACTIONS_MONITOR)
@@ -717,19 +720,12 @@ class MainWindow2(QMainWindow):
     def _curriculum_add_schedule(self):
         step = self.spn_cur_step.value()
         stage = self.spn_cur_stage.value()
-        # insert sorted
-        rows = self.tbl_curriculum.rowCount()
-        # check duplicate
-        for r in range(rows):
-            if int(self.tbl_curriculum.item(r,0).text()) == step:
-                self.tbl_curriculum.item(r,1).setText(str(stage))
-                self._on_curriculum_changed()
-                return
-        self.tbl_curriculum.insertRow(rows)
-        self.tbl_curriculum.setItem(rows, 0, QTableWidgetItem(str(step)))
-        self.tbl_curriculum.setItem(rows, 1, QTableWidgetItem(str(stage)))
-        # sort by step
-        self._sort_curriculum_table()
+        # Разбираем таблицу тем же парсером, что и при сборе конфига: раньше
+        # здесь был голый int(item.text()) и строка с опечаткой роняла слот.
+        parsed = self._parse_curriculum_table()
+        sched = {s: st for s, st in parsed.rows}
+        sched[step] = stage  # повтор шага = замена этапа
+        self._set_curriculum_schedule([[s, st] for s, st in sched.items()])
         self._on_curriculum_changed()
 
     def _curriculum_del_schedule(self):
@@ -738,32 +734,32 @@ class MainWindow2(QMainWindow):
             self.tbl_curriculum.removeRow(r)
         self._on_curriculum_changed()
 
-    def _sort_curriculum_table(self):
-        rows = []
+    def _curriculum_table_cells(self) -> List[List[Optional[str]]]:
+        cells: List[List[Optional[str]]] = []
         for r in range(self.tbl_curriculum.rowCount()):
-            try:
-                step = int(self.tbl_curriculum.item(r,0).text())
-                stage = int(self.tbl_curriculum.item(r,1).text())
-                rows.append((step, stage))
-            except: pass
-        rows.sort()
-        self.tbl_curriculum.setRowCount(0)
-        for step, stage in rows:
-            r = self.tbl_curriculum.rowCount()
-            self.tbl_curriculum.insertRow(r)
-            self.tbl_curriculum.setItem(r,0, QTableWidgetItem(str(step)))
-            self.tbl_curriculum.setItem(r,1, QTableWidgetItem(str(stage)))
+            row: List[Optional[str]] = []
+            for c in (0, 1):
+                item = self.tbl_curriculum.item(r, c)
+                row.append(item.text() if item is not None else None)
+            cells.append(row)
+        return cells
+
+    def _parse_curriculum_table(self):
+        """Разбор таблицы + громкое сообщение о каждой отброшенной строке (P2-1)."""
+        max_stage = max(CURRICULUM_STAGE_MAP) if CURRICULUM_STAGE_MAP else 0
+        parsed = parse_schedule_rows(self._curriculum_table_cells(), max_stage)
+        # Конфиг собирается при каждом автосохранении — сообщаем только о
+        # НОВОМ наборе проблем, иначе лог забивается одним и тем же.
+        if parsed.warnings and parsed.warnings != self._cur_table_warnings:
+            text = "Расписание курикулума: " + " | ".join(parsed.warnings)
+            self.statusBar().showMessage(text, 15000)
+            for w in parsed.warnings:
+                self.log("warn", f"Курикулум: {w}")
+        self._cur_table_warnings = list(parsed.warnings)
+        return parsed
 
     def _collect_curriculum_schedule(self) -> List[List[int]]:
-        out = []
-        for r in range(self.tbl_curriculum.rowCount()):
-            try:
-                step = int(self.tbl_curriculum.item(r,0).text())
-                stage = int(self.tbl_curriculum.item(r,1).text())
-                out.append([step, stage])
-            except: pass
-        out.sort(key=lambda x: x[0])
-        return out
+        return self._parse_curriculum_table().rows
 
     def _set_curriculum_schedule(self, sched: List[List[int]]):
         self.tbl_curriculum.setRowCount(0)
@@ -1079,6 +1075,7 @@ class MainWindow2(QMainWindow):
                 ev.ignore()
                 return
             self._stop_training()
+            self._wait_soft_stop_blocking()
         if self._watch_proc and self._watch_proc.poll() is None:
             # Дерево целиком: raylib-окно — ребёнок watch_champion.py и иначе
             # остаётся висеть после закрытия UI (см. _stop_watch_proc).
@@ -1144,6 +1141,7 @@ class MainWindow2(QMainWindow):
         except OSError as e:
             self.log("error", f"не удалось запустить worker: {e}")
             return
+        self._soft_stop.reset()
         self._msg_timer.start(250)
         self._set_running(True)
         for ch in (self.chart_fps, self.chart_ret, self.chart_loss,
@@ -1165,6 +1163,9 @@ class MainWindow2(QMainWindow):
         self.btn_start.setEnabled(not on)
         self.btn_pause.setEnabled(on)
         self.btn_stop.setEnabled(on)
+        self.btn_stop.setText("■ Стоп")
+        if not on:
+            self.btn_pause.setText("⏸ Пауза")
         self.run_status.setText("обучение…" if on else "остановлено")
         self.run_status.setStyleSheet(
             f"color:{T.OK if on else T.DIM}; font-weight:bold; background:transparent;")
@@ -1172,36 +1173,72 @@ class MainWindow2(QMainWindow):
             g.set_enabled(not on)
 
     def _stop_training(self):
-        if self._cmd_file and os.path.exists(self._cmd_file):
-            try:
-                with open(self._cmd_file, "a", encoding="utf-8") as f:
-                    f.write(P.encode_command("stop_training") + "\n")
-            except OSError:
-                pass
-        if self._train_proc and self._train_proc.poll() is None:
-            self._train_proc.terminate()
-        self.log("info", "Остановка обучения…")
+        """Мягкий «Стоп»: команда трейнеру + ожидание, terminate() — fallback.
+
+        Жёсткое убийство сразу после команды (как было до 2026-09-24) теряло
+        final_model.pt, meta.json и run_end. См. train_ui2/soft_stop.py.
+        """
+        proc = self._train_proc
+        if not (proc and proc.poll() is None):
+            return
+        if not self._soft_stop.request():
+            # Повторное нажатие во время ожидания — пользователь не хочет ждать.
+            self.log("warn", "Повторный «Стоп»: принудительное завершение воркера "
+                             "(final_model.pt/meta.json могут не сохраниться)")
+            self._force_stop()
+            return
+        if not self._send_command(P.CMD_STOP, {"final_save": True}):
+            # Команду доставить некуда — ждать бессмысленно.
+            self._force_stop()
+            return
+        self.btn_stop.setText("■ Принудительно")
+        self.btn_pause.setEnabled(False)
+        self.run_status.setText("останавливаем…")
+        self.run_status.setStyleSheet(
+            f"color:{T.WARN}; font-weight:bold; background:transparent;")
+        self.log("info", f"Остановка: жду сохранения final_model.pt и meta.json "
+                         f"(до {STOP_GRACE_S:.0f} с; повторный «Стоп» — сразу)…")
+
+    def _force_stop(self):
+        proc = self._train_proc
+        self._soft_stop.mark_forced()
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+    def _wait_soft_stop_blocking(self):
+        """Для закрытия окна: ждём мягкую остановку синхронно, затем kill."""
+        proc = self._train_proc
+        if not (proc and proc.poll() is None):
+            return
+        try:
+            proc.wait(timeout=max(0.0, STOP_GRACE_S - self._soft_stop.elapsed()))
+        except subprocess.TimeoutExpired:
+            self.log("warn", f"Воркер не остановился за {STOP_GRACE_S:.0f} с — terminate()")
+            self._force_stop()
 
     def _toggle_pause(self):
         if not (self._train_proc and self._train_proc.poll() is None):
             return
         paused = self.btn_pause.text().startswith("▶")
-        cmd = "resume_training" if paused else "pause_training"
+        cmd = P.CMD_RESUME if paused else P.CMD_PAUSE
         self._send_command(cmd)
         self.btn_pause.setText("⏸ Пауза" if paused else "▶ Продолжить")
 
     def _boost_entropy(self):
-        self._send_command("boost_entropy", {"factor": 2.0})
+        self._send_command(P.CMD_BOOST_ENTROPY, {"factor": 2.0})
         self.log("info", "Команда: ent_coef ×2")
 
-    def _send_command(self, cmd: str, payload: dict = None):
+    def _send_command(self, cmd: str, payload: dict = None) -> bool:
         if not self._cmd_file:
-            return
+            self.log("error", f"команда {cmd!r} не отправлена: нет файла команд")
+            return False
         try:
             with open(self._cmd_file, "a", encoding="utf-8") as f:
                 f.write(P.encode_command(cmd, payload or {}) + "\n")
         except OSError as e:
-            self.log("error", f"команда не отправлена: {e}")
+            self.log("error", f"команда {cmd!r} не отправлена: {e}")
+            return False
+        return True
 
     def _poll_worker(self):
         # read messages
@@ -1222,10 +1259,21 @@ class MainWindow2(QMainWindow):
                     line = line.strip()
                     if line:
                         self._handle_msg(line)
+        # soft-stop fallback: таймаут истёк — убиваем (P1-1)
+        if (self._soft_stop.should_force() and self._train_proc
+                and self._train_proc.poll() is None):
+            self.log("warn", f"Воркер не остановился за {STOP_GRACE_S:.0f} с — "
+                             f"принудительное завершение (terminate)")
+            self._force_stop()
         # liveness
         if self._train_proc and self._train_proc.poll() is not None:
             self._msg_timer.stop()
             self._set_running(False)
+            if self._soft_stop.pending:
+                how = "принудительно" if self._soft_stop.forced else "штатно"
+                self.log("info", f"Обучение остановлено {how} за "
+                                 f"{self._soft_stop.elapsed():.1f} с")
+            self._soft_stop.reset()
             self.log("info", f"Worker завершён (code={self._train_proc.returncode})")
             self._refresh_models()
             self._save_state()
@@ -1244,8 +1292,7 @@ class MainWindow2(QMainWindow):
             self.log(level, text)
             m = _EVAL_RE.search(text)
             if m:
-                step = int(m.group(1).replace(",", ""))
-                days, people, bases = float(m.group(2)), float(m.group(3)), float(m.group(4))
+                days, bases = float(m.group(2)), float(m.group(4))
                 score = float(m.group(6))
                 self.chart_eval.push({"days": days, "bases": bases})
                 self.card_days.set_value(f"{days:.0f}")
@@ -1341,9 +1388,9 @@ class MainWindow2(QMainWindow):
             cnt = row["count"]
             legal = row["legal"]
             if legal is None:
-                lines.append(f"{label}: {cnt} ({share}) · легальность не измерялась")
+                lines.append(f"{label}: {cnt} ({share}) · доступность не измерялась")
             else:
-                lines.append(f"{label}: {cnt} ({share}) · легально {float(legal):.0f}% "
+                lines.append(f"{label}: {cnt} ({share}) · доступно {float(legal):.0f}% "
                              f"· {row['verdict']}")
         self.lbl_key_actions.setText(
             head + ("\n" + "\n".join(lines) if lines else ""))

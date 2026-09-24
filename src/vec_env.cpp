@@ -165,8 +165,15 @@ StepBatchResult ColonyVecEnvCpp::step_wait_batch() {
     result.terminateds = terminateds_;
     result.trunceds = trunceds_;
     result.infos.resize(n_envs_);
-    std::fill(terminal_minimap_valid_.begin(), terminal_minimap_valid_.end(), 0);
-    std::fill(terminal_minimap_buf_.begin(), terminal_minimap_buf_.end(), 0.0f);
+    // Обнуляем только записи, валидные на прошлом шаге (контракт «невалидные —
+    // нули» сохраняется), а не весь буфер n_envs*8*32*32 на каждом шаге.
+    const size_t mm_per = (size_t)8 * 32 * 32;
+    for (size_t i = 0; i < terminal_minimap_valid_.size(); ++i) {
+        if (!terminal_minimap_valid_[i]) continue;
+        std::fill(terminal_minimap_buf_.begin() + i * mm_per,
+                  terminal_minimap_buf_.begin() + (i + 1) * mm_per, 0.0f);
+        terminal_minimap_valid_[i] = 0;
+    }
 
     for (int i = 0; i < n_envs_; ++i) {
         if (terminateds_[i] || trunceds_[i]) {
@@ -179,16 +186,21 @@ StepBatchResult ColonyVecEnvCpp::step_wait_batch() {
                 obs_buffer_.begin() + (size_t)i * obs_size_,
                 obs_buffer_.begin() + (size_t)(i + 1) * obs_size_);
 
-            const size_t mm_per = (size_t)8 * 32 * 32;
-            std::vector<float> mm = envs_[(size_t)i].minimap();
-            if (mm.size() == mm_per) {
-                std::copy(mm.begin(), mm.end(),
-                          terminal_minimap_buf_.begin() + (size_t)i * mm_per);
-                terminal_minimap_valid_[(size_t)i] = 1;
-            }
-
             // Build info JSON
             nlohmann::json info;
+            if (terminal_minimap_enabled_) {
+                std::vector<float> mm = envs_[(size_t)i].minimap();
+                if (mm.size() == mm_per) {
+                    std::copy(mm.begin(), mm.end(),
+                              terminal_minimap_buf_.begin() + (size_t)i * mm_per);
+                    terminal_minimap_valid_[(size_t)i] = 1;
+                } else {
+                    // Раньше молча оставались нули → V(s_T) по пустой карте.
+                    // Теперь Python видит флаг и не подставляет нулевую миникарту.
+                    info["terminal_minimap_missing"] = true;
+                    info["terminal_minimap_size"] = mm.size();
+                }
+            }
             info["terminal_observation"] = terminal_obs;
             info["terminal_observation_norm"] = terminal_obs_norm;
             double ep_r = std::isfinite(episode_return_[i]) ? episode_return_[i] : 0.0;
@@ -264,9 +276,22 @@ std::vector<float> ColonyVecEnvCpp::minimap_batch() const {
 
 std::vector<float> ColonyVecEnvCpp::terminal_minimap_batch() const {
     // Миникарты s_T сред, завершившихся на последнем step_wait_batch.
-    // Буфер заполняется в step_wait_batch (перед авто-ресетом) и обнуляется
-    // в начале каждого шага: записи невалидных сред остаются нулями.
+    // Буфер заполняется в step_wait_batch (перед авто-ресетом); записи
+    // невалидных сред — нули. Выключено → нули полного размера (биндинг
+    // копирует ровно n_envs*8*32*32, пустой вектор дал бы мусор в массиве).
+    if (!terminal_minimap_enabled_)
+        return std::vector<float>((size_t)n_envs_ * 8 * 32 * 32, 0.0f);
     return terminal_minimap_buf_;
+}
+
+void ColonyVecEnvCpp::set_terminal_minimap_enabled(bool on) {
+    terminal_minimap_enabled_ = on;
+    if (on) {
+        terminal_minimap_buf_.assign((size_t)n_envs_ * 8 * 32 * 32, 0.0f);
+    } else {
+        std::vector<float>().swap(terminal_minimap_buf_);  // освободить память
+    }
+    terminal_minimap_valid_.assign((size_t)n_envs_, 0);
 }
 
 std::vector<float> ColonyVecEnvCpp::action_masks_batch() const {

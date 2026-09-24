@@ -28,7 +28,6 @@ from rl.curriculum import (  # noqa: E402
     STAGE1_PRESET_NAME,
     CurriculumState,
     apply_stage1_preset,
-    build_state,
     mechanics_enabled_at_step,
     normalize_enabled_mechanics,
     parse_mechanic_ids,
@@ -113,7 +112,7 @@ def test_apply_stage1_preset_on_config():
     assert state.enabled_mechanics == ("sell", "credit")
     assert state.all_resources is False
     # веса: вода/еда/дерево = 1, остальное 0
-    w = dict(zip(RESOURCE_NAMES, state.resource_weights))
+    w = dict(zip(RESOURCE_NAMES, state.resource_weights, strict=True))
     assert w["water"] == 1.0 and w["food"] == 1.0 and w["wood"] == 1.0
     assert w["gold"] == 0.0 and w["coal"] == 0.0
     # критерии eval под задачу этапа

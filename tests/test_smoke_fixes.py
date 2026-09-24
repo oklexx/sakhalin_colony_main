@@ -14,7 +14,6 @@ Covers:
 """
 from __future__ import annotations
 
-import ast
 import json
 import sys
 import tempfile
@@ -129,7 +128,7 @@ finite = all(
     for k, v in stats.items() if k != "learning_rate"
 )
 check("update() returns finite metrics", finite, str({k: round(v, 4) for k, v in stats.items()}))
-changed = any(not torch.equal(a, b) for a, b in zip(params_before, model.params))
+changed = any(not torch.equal(a, b) for a, b in zip(params_before, model.params, strict=True))
 check("update() changes weights", changed)
 
 with tempfile.TemporaryDirectory() as td:
@@ -144,7 +143,7 @@ with tempfile.TemporaryDirectory() as td:
                n_epochs=1, batch_size=16, use_amp=False, torch_compile=False,
                device=dev)
     ppo2.load(str(pth))
-    same = all(torch.equal(a, b) for a, b in zip(model.params, model2.params))
+    same = all(torch.equal(a, b) for a, b in zip(model.params, model2.params, strict=True))
     check("save/load round-trip preserves weights", same)
 
 # ── 6. UI specs ──────────────────────────────────────────────────────────

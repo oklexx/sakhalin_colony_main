@@ -40,11 +40,8 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
     if model_state is None:
         raise ValueError("checkpoint missing 'model_state'")
 
-    clean = {}
-    for k, v in model_state.items():
-        ck = k.replace("_orig_mod.", "") if k.startswith("_orig_mod.") else k
-        clean[ck] = v
-    model_state = clean
+    from rl._nn_common import clean_policy_state, load_policy_state
+    model_state = clean_policy_state(model_state)
 
     has_cnn = any(k.startswith("cnn.") or k.startswith("conv.") for k in model_state)
 
@@ -136,11 +133,11 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
         )
 
     try:
-        model.load_state_dict(model_state, strict=False)
-    except RuntimeError:
+        load_policy_state(model, model_state, ckpt_path=str(model_path))
+    except ValueError as e:
         raise ValueError(
-            "checkpoint state_dict does not match the inferred architecture"
-        )
+            f"checkpoint state_dict does not match the inferred architecture: {e}"
+        ) from e
     model.eval()
     return model
 

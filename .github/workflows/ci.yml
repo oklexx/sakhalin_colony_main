@@ -18,6 +18,28 @@ permissions:
   pull-requests: write
 
 jobs:
+  # ── Lint: обязательный минимум ruff (P3-3 ревью 2026-09-24) ───────────────
+  # Только правила «это баг»: неопределённые имена (F821 — ловит NameError до
+  # рантайма), переопределения (F811), мёртвые локалы/импорты (F841/F401),
+  # голый except (E722), zip без strict (B905), синтаксис (E9/F63/F7).
+  # Полный свод из pyproject.toml (UP/I/E/W…) — отдельным PR с `ruff --fix`.
+  lint:
+    name: ruff (минимальный набор)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: ruff check
+        run: |
+          python -m pip install "ruff==0.16.9"
+          ruff check --output-format=github \
+            --select F821,F811,F841,F401,E722,B905,E9,F63,F7 .
+
   # ── C++-ядро: проверки, которым не нужен Python ────────────────────────────
   # Один и тот же скрипт, что гоняют локально: ./scripts/cpp_checks.sh
   cpp-probes:

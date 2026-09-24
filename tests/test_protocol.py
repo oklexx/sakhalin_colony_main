@@ -1,5 +1,4 @@
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -98,5 +97,7 @@ def test_encode_nan_sanitized():
 def test_encode_stop():
     d = json.loads(P.encode_stop())
     assert d["type"] == "command"
-    assert d["cmd"] == "stop"
+    # С 2026-09-24 канонное имя одно на UI/воркер/трейнер (P1-4 ревью);
+    # короткое "stop" принимается только как устаревший алиас.
+    assert d["cmd"] == P.CMD_STOP == "stop_training"
     assert d["payload"]["final_save"] is True

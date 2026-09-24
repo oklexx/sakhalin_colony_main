@@ -10,7 +10,7 @@
 `libGL.so.1` отсутствует → Qt-тесты и любой реальный прогон среды не выполнялись;
 все выводы по C++/среде — статические. Это отмечено в каждом пункте.
 
-Сводка: **2 P0**, **4 P1**, **3 P2**, **~8 P3/техдолг**. P0-1 и P0-2 — регрессии
+Сводка: **2 P0**, **4 P1** (+1 найден на Этапе 1: P1-5), **3 P2**, **~8 P3/техдолг**. P0-1 и P0-2 — регрессии
 последней недели (тихие: тесты их не ловят).
 
 ---
@@ -346,32 +346,80 @@ if dones[i]:
   `(8, 32, 32)`, как связывание `src/bindings.cpp` (плоский список ломал headless-ветку
   до того, как она доходила до проверяемой строки).
 
-### Этап 1 — контракты и совместимость (1-2 дня)
-- [ ] **P1-1**: «Стоп» в UI — мягкая остановка с ожиданием (таймаут + fallback на `terminate()`),
-      `run_end`/`final_model`/`meta.json` пишутся всегда; опрос команд внутри роллаута.
-- [ ] **P1-2**: убрать `Exception` из `except` в `worker.py::_watch_commands_file`,
-      логировать `queue.Full`; тест на битую строку команды.
-- [ ] **P1-3**: `load_policy_state()` в `rl/_nn_common.py`; перевести на него `train.py`,
-      `train_ui2/worker.py`, `rl/ppo.py`; тест «чекпойнт без mask-proj грузится».
-- [ ] **P1-4**: один список команд в `protocol.py`; UI/трейнер/воркер берут строки оттуда;
-      тест паритета «UI → trainer»; `else`-ветка для неизвестных команд.
-- [ ] **P2-1**: типизированные `except` в таблице курикулума + сообщение пользователю.
-- [ ] **P2-2/P2-3**: `get_attr(indices=...)` по контракту VecEnv; убрать подмену
-      `terminal_observation` (или сделать её громкой).
-- DoD: новые юнит-тесты зелёные, ручная проверка UI-кнопок («Стоп/Пауза/Энтропия»),
-  `--resume-model` на чекпойнте от 09-21 грузится, после «Стоп» в каталоге прогона есть
-  `final_model.pt` + `meta.json` + `run_end` в JSONL.
+### Этап 1 — контракты и совместимость (1-2 дня) — ✅ СДЕЛАНО 2026-09-24 (кроме ручной проверки UI)
+- [x] **P1-1**: «Стоп» в UI — мягкая остановка (`train_ui2/soft_stop.py`, таймаут 60 с,
+      fallback `terminate()`, повторное нажатие — сразу); команда → `stop_event`,
+      опрашиваемый на каждом шаге среды; при остановке пользователем пропускаются
+      eval и турнир (`meta.json: tournament="skipped_user_stop"`); `run_end` пишется
+      при любом выходе (`completed/stopped/early_stopped/error/killed`, SIGTERM →
+      SystemExit в воркере). Попутно: стоп во время паузы зависал (цикл паузы не
+      звал `stop_check`).
+- [x] **P1-2**: `dispatch_command`/`process_command_lines` вместо `except (…, Exception)`;
+      битая строка, незнакомая команда, `queue.Full` — предупреждение в лог UI;
+      недописанная строка файла команд ждёт `\n`.
+- [x] **P1-3**: `load_policy_state()` в `rl/_nn_common.py`; переведены `train.py`,
+      `train_ui2/worker.py`, `rl/ppo.py`, `train_ui2/evaluator.py`; допускается
+      отсутствие только `*_mask_proj`, иначе `ValueError` с путём.
+- [x] **P1-4**: `protocol.CMD_*`/`KNOWN_COMMANDS`/`normalize_command`; UI, воркер и
+      трейнер берут строки оттуда; AST-тест паритета «UI → trainer»; `else`-ветка.
+- [x] **P1-5 (новое, найдено при работе над P1-1)**: `train()` передавал в каждый
+      `_collect_rollout` obs первого `reset()` → первый шаг каждого роллаута
+      выбирал действие по наблюдению со старта обучения. Фикс:
+      `obs = rollout["final_obs"]`; тест непрерывности obs.
+- [x] **P2-1**: разбор строки вынесен в `train_ui2/curriculum_table.py::parse_schedule_rows`
+      (без Qt); отброшенные строки/повторы — с номером строки в статус-бар и лог;
+      голых `except` в `main_window.py` нет (тест); `_curriculum_add_schedule` тоже
+      через парсер (падал на битой строке).
+- [x] **P2-2**: `get_attr`/`env_is_wrapped` по `indices` (`_get_indices` SB3 +
+      проверка границ); попутно `env_method` вызывал метод батча N раз — теперь
+      один; частичные `set_attr`/`env_method` — `NotImplementedError`.
+- [x] **P2-3**: подмена убрана: ключа нет, `terminal_observation_missing: true` +
+      одно предупреждение; бутстрап пропускается. CI-тест
+      `test_cpp_vecenv_preserves_terminal_observation` обновлён.
+- DoD: новые юнит-тесты зелёные (`tests/test_stop_and_commands.py`,
+  `tests/test_policy_load.py`; всего 24F/371P/67S/2E; P2 — `tests/test_review_p2.py` — F только без `colony_cpp`).
+  **Осталось вручную на машине с Qt:** кнопки «Стоп/Пауза/Энтропия» (включая
+  «Стоп» на паузе и повторный «Стоп»), `--resume-model` на реальном чекпойнте от
+  09-21; после «Стоп» в каталоге прогона есть `final_model.pt` + `meta.json` +
+  `run_end` в JSONL (сквозной тест `run_train` это покрывает на фейковой среде).
 
-### Этап 2 — наблюдаемость и гигиена (1 день, можно параллельно)
-- [ ] **P3-1, P3-2, P3-5, P3-7**: мелкие правки (аннотация, `{r}`, NaN-safe, подпись метрики).
-- [ ] **P3-4**: `ai_read_action` — потреблять файл и при невалидном значении (+debug-лог).
-- [ ] **P3-6**: не выделять/не считать терминальные миникарты вне minimap-режимов,
-      предупреждать о несовпадении размера.
-- [ ] **P3-3**: включить в CI `ruff check` (сначала `--select F821,F811,F841,E722,B905,F401`
-      как обязательный минимум, затем полный свод + `--fix` отдельным PR) и `mypy`
-      (конфиг уже есть); убрать дубль `spec_for`, мёртвые локалы в `async_trainer`.
-- [ ] Добавить `STATE.md`-пункт про «loop detector: код есть, метрика не подключена»
-      или доделать детектор (сейчас `loop_detection_enabled=False` по умолчанию).
+### Этап 2 — наблюдаемость и гигиена ✅ (2026-09-25)
+- [x] **P3-1**: `rl/config.py` — импорт `CurriculumState` на верхнем уровне (цикла нет:
+      `rl.curriculum` — только stdlib); `TYPE_CHECKING` не годился — ломал
+      рантаймовый `typing.get_type_hints`.
+- [x] **P3-2**: `{r}` → `{reward}` в `tests/test_reward_clip.py`.
+- [x] **P3-5**: `_json_safe` — NaN/±Inf → `null` (включая numpy-скаляры и вложенные).
+- [x] **P3-7**: подписи UI/вердикты — «доступно», «окно доступности узкое»,
+      «доступно, но не выбирает»; поля протокола `action_legality` не переименованы
+      (совместимость); `docs/MONITOR_ACTIONS_2026_09.md` обновлён.
+- [x] **P3-4**: разбор `actions.txt` вынесен в `include/colony/watch_ipc.h`
+      (`NONE`/`OK`/`INVALID`, без raylib). Невалидное число (вне
+      `0..n_actions-1`) потребляется, пишется в `ai_debug_gui.log`, окно отвечает
+      `state.json` с `"error"` без шага; недописанный файл по-прежнему не трогается.
+      `watch_champion.py` логирует `error`. Проба `tests/cpp/watch_ipc_check.cpp`
+      в `cpp_checks.sh`; `gui.cpp` проверен `g++ -fsyntax-only` с заголовками raylib.
+- [x] **P3-6**: `ColonyVecEnvCpp::set_terminal_minimap_enabled` (биндинг + фича
+      `terminal_minimap_toggle`, не обязательная). `CppVecEnv` выключает её в flat
+      (буфер освобождается, `minimap()` на done не считается), `CppVecEnvMinimap` —
+      включает. Несовпадение размера → `info["terminal_minimap_missing"]`, и Python
+      не кладёт нулевую карту (бутстрап честно пропускается). Попутно: буфер больше
+      не обнуляется целиком (n_envs×32 КБ) на каждом шаге, а
+      `terminal_minimap_batch` в биндинге не отдаёт неинициализированную память.
+      C++: `episode_metrics_check` (вкл/выкл/очистка), Python: `tests/test_review_p3.py`.
+- [x] **P3-3**: job `lint` в CI — `ruff check --select F821,F811,F841,F401,E722,B905,E9,F63,F7`
+      (ruff 0.16.9), дерево чистое: дубль `spec_for` удалён, 40 неиспользуемых
+      импортов, мёртвые локалы, `except:` в `unpack_exe.py`, `zip(strict=…)`.
+      Первым же запуском F821 поймал бы `w`, который пришлось вернуть в
+      `ui/main_window.py` (кредитный диалог). **mypy в CI не включён**: 175 ошибок в
+      18 файлах (`rl`, `train_ui2`) — отдельная задача, как и полный свод ruff + `--fix`.
+- [x] **P3-8**: удалены `_get_steps_in_curriculum_stage`, `rollout_time`, локальный
+      `loop_detected`; `--command-queue-size` уже подключён в Этапе 1.
+- [x] **Loop detector**: метрика на самом деле подключена до UI, но включённый
+      детектор **падал** на первом роллауте (`deque[-n:]` → `TypeError`). Исправлено
+      (`AsyncTrainer._update_loop_detector`), пункт в `STATE.md`.
+- DoD: 24F/383P/67S/2E (те же 24 падения, что и до Этапа 2, — нет `colony_cpp`);
+  `./scripts/cpp_checks.sh` зелёный. `bindings.cpp` локально не собирался (нет
+  `Python.h`) — проверит job `python-tests`.
 
 ### Этап 3 — верификация после сборки `colony_cpp` (в CI или на машине с GPU)
 - [ ] `./scripts/cpp_checks.sh` (полный, с `REWARD_STEPS=4000`) — базовая линия.

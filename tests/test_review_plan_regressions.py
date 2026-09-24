@@ -10,7 +10,8 @@
   4. sunduk_from_list требует ровно 9 элементов.
   5. ep_return равен сумме реально возвращённых reward.
   6. ColonyVecEnvCpp: fail-fast на n_envs=0 и неправильных размерах batch.
-  7. Python-обёртка CppVecEnv не затирает terminal_observation из C++-info.
+  7. Python-обёртка CppVecEnv не затирает terminal_observation из C++-info
+     и не выдумывает его, если C++ не прислал (P2-3, 2026-09-24).
 """
 import json
 import sys
@@ -319,11 +320,14 @@ def test_cpp_vecenv_preserves_terminal_observation(monkeypatch):
         assert to[0] == 7.0, "terminal_observation из C++ затёрт текущей obs"
         assert infos[0]["TimeLimit.truncated"] is False
 
-        # (b) C++ не прислал (legacy) — fallback: копия текущей obs
+        # (b) C++ не прислал (legacy) — ключа НЕТ, есть флаг. До 2026-09-24
+        # здесь подставлялась obs[i] — наблюдка уже НОВОГО эпизода после
+        # авто-reset, и V(s_T) на усечении считался по ней (P2-3 ревью).
         env.cpp_vec._wait = fake_wait_b
         obs, rewards, dones, infos = env.step(np.array([0]))
         assert dones[0]
-        assert np.allclose(infos[0]["terminal_observation"], obs[0])
+        assert "terminal_observation" not in infos[0]
+        assert infos[0]["terminal_observation_missing"] is True
         assert infos[0]["TimeLimit.truncated"] is True
     finally:
         env.close()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # Import canonical defaults from rl.config — single source of truth
 _PROJECT = Path(__file__).resolve().parent.parent
@@ -378,13 +377,3 @@ REWARD_SPECS: list[ParamSpec] = [
               "Вместе с «Коэф. долга» ломает кредитный луп: "
               "брать кредит просто для кассы становится убыточно.", step=0.5, max_width=60),
 ]
-
-
-def spec_for(key: str) -> ParamSpec:
-    for s in PARAM_SPECS:
-        if s.key == key:
-            return s
-    for s in REWARD_SPECS:
-        if s.key == key:
-            return s
-    raise KeyError(f"unknown parameter: {key}")

@@ -127,6 +127,42 @@ int main() {
     check(got_episode,
           "terminal VecEnv info serializes seed, chains, builds and reached resources");
 
+    // P3-6 ревью 2026-09-24: миникарта s_T — только когда включена (minimap/
+    // hybrid); выключено (flat) — не считается, batch отдаёт нули полного размера.
+    const size_t mm_per = (size_t)8 * 32 * 32;
+    for (int enabled = 1; enabled >= 0; --enabled) {
+        ColonyVecEnvCpp v(base_data, events, 1, 7, 64, Curriculum(),
+                          RewardConfig(), 1, "normal", true);
+        v.set_terminal_minimap_enabled(enabled != 0);
+        v.reset_batch({7});
+        bool done = false, has_missing_key = true;
+        std::vector<float> tmm;
+        for (int t = 0; t < MAX_STEPS + 1 && !done; ++t) {
+            v.step_async_batch({A_DAY});
+            StepBatchResult batch = v.step_wait_batch();
+            if (batch.terminateds[0] || batch.trunceds[0]) {
+                done = true;
+                has_missing_key = json::parse(batch.infos[0]).contains("terminal_minimap_missing");
+                tmm = v.terminal_minimap_batch();
+            }
+        }
+        const bool any_nonzero = std::any_of(tmm.begin(), tmm.end(),
+                                             [](float x) { return x != 0.0f; });
+        if (enabled) {
+            check(done && tmm.size() == mm_per && any_nonzero && !has_missing_key,
+                  "terminal minimap enabled: s_T minimap stashed, no missing flag");
+            // следующий шаг без done — запись снова нули (контракт batch)
+            v.step_async_batch({A_DAY});
+            v.step_wait_batch();
+            const std::vector<float> after = v.terminal_minimap_batch();
+            check(std::all_of(after.begin(), after.end(), [](float x) { return x == 0.0f; }),
+                  "terminal minimap is cleared on the next non-terminal step");
+        } else {
+            check(done && tmm.size() == mm_per && !any_nonzero && !has_missing_key,
+                  "terminal minimap disabled (flat): not computed, zeros of full size");
+        }
+    }
+
     std::printf("EPISODE METRICS CHECKS: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }

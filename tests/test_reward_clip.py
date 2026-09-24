@@ -114,7 +114,7 @@ def test_clip_both_directions():
             action = env.action_space.sample()
             _, reward, terminated, truncated, _ = env.step(action)
             assert -2.0 - 1e-6 <= reward <= 2.0 + 1e-6, \
-                f"Reward {r} outside clip range [-2, 2]"
+                f"Reward {reward} outside clip range [-2, 2]"
             if terminated or truncated:
                 env.reset(seed=42)
     finally:

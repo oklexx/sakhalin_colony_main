@@ -73,7 +73,7 @@ def reference_gae(
         delta = rewards[t] + gamma * next_value * (1 - next_done) - values[t]
         last_gae = delta + gamma * lam * (1 - next_done) * last_gae
         advantages[t] = last_gae
-    returns = [a + v for a, v in zip(advantages, values)]
+    returns = [a + v for a, v in zip(advantages, values, strict=True)]
     return advantages, returns
 
 

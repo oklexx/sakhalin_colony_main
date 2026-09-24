@@ -349,7 +349,9 @@ hybrid = 299 + 8192 = 8491 float. ⚠ Исходные exp-конфиги с `n_
 ### 8.2 Файлы прогона (`~/colony_runs/models/<name>/`)
 ```
 checkpoint_<steps>.pt          # модель + optimizer (+ .norm.json и .meta.json рядом)
-final_model.pt / .norm.json    # пишется ТОЛЬКО в конце обучения
+final_model.pt / .norm.json    # в конце обучения И при «Стоп» в UI (мягкая остановка)
+meta.json                      # итог прогона: status completed|stopped|early_stopped, tournament
+episode_diagnostics.jsonl      # эпизоды + run_end (status: completed/stopped/early_stopped/error/killed)
 best_model.pt / .norm.json / .meta.json   # чемпион по composite score
 _eval/_eval_temp.pt            # временный (удаляется)
 normalization.json             # пишется при старте и каждом чекпойнте
@@ -357,7 +359,7 @@ normalization.json             # пишется при старте и кажд�
 
 **Что считается моделью.** Каталог попадает в список UI (`train_ui2/models.py::scan()`),
 если в нём есть хотя бы один файл весов: `final_model.pt`, `best_model.pt` или
-`checkpoint_*_steps.pt`. Прогон, остановленный вручную или упавший, не имеет
+`checkpoint_*_steps.pt`. Прогон, убитый жёстко или упавший, не имеет
 `final_model.pt` — это всё ещё модель, её можно наблюдать и дообучать
 (`pick_model_file()`: final → best → последний чекпойнт). До 2026-09-20 такие
 каталоги не отображались, и «👁 Наблюдать» отвечал «Нет моделей».
@@ -385,7 +387,15 @@ normalization.json             # пишется при старте и кажд�
 Награды / Курикулум / Модели / Наблюдение**. Обучение идёт в отдельном процессе
 `train_ui2/worker.py`, протокол — JSONL (protocol.py: progress/log/saved/done/error;
 команды boost_entropy / pause_training / resume_training / stop_training /
-reset_curriculum). Все параметры — ParamSpec из дефолтов rl/config.py (единый
+reset_curriculum — единый словарь `protocol.CMD_*`, незнакомая команда пишет
+предупреждение в лог). **«■ Стоп» — мягкий:** UI шлёт `stop_training` и ждёт до
+60 с (`train_ui2/soft_stop.py`); трейнер видит команду на ближайшем шаге среды,
+сохраняет `final_model.pt`/`.norm.json`, воркер — `meta.json`
+(`status="stopped"`), в JSONL пишется `run_end`. Финальный турнир при остановке
+пользователем пропускается (`tournament="skipped_user_stop"`, `best_model.pt` —
+по последнему eval). Не вышел за таймаут или повторное нажатие («■
+Принудительно») — `terminate()`; на Linux воркер и тогда закрывает JSONL
+со `status="killed"`. Все параметры — ParamSpec из дефолтов rl/config.py (единый
 источник); награды редактируются на вкладке «Награды» (группы + абляции disable_*).
 
 ### 9.1 Вкладка «Наблюдение»

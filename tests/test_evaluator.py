@@ -32,7 +32,6 @@ def _make_actor_critic_checkpoint(tmp_path: Path) -> Path:
 
 
 def _make_legacy_checkpoint(tmp_path: Path) -> Path:
-    import torch.nn as nn
 
     m = nn.Sequential(nn.Linear(4, 2))
     ckpt_path = tmp_path / "legacy.pt"
@@ -145,7 +144,6 @@ def test_run_eval_returns_stats(tmp_path, monkeypatch):
 def test_run_eval_with_normalization(tmp_path, monkeypatch):
     """Test that run_eval loads normalization when provided."""
     import train_ui2.evaluator as ev
-    import numpy as np
 
     ckpt = _make_actor_critic_checkpoint(tmp_path)
 

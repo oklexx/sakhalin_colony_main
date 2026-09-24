@@ -6,7 +6,6 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rl.config import Config, RewardConfig
 from rl.actor_critic import ActorCritic
 from rl.rollout_buffer import RolloutBuffer
 from rl.ppo import PPO

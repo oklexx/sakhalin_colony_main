@@ -805,6 +805,11 @@ def run_visual_watch(
                 state = _handshake(proc)
                 continue
 
+            if state.get("error"):
+                # Окно отклонило действие (вне 0..n_actions-1) и ответило
+                # текущим состоянием без шага (gui.cpp, colony/watch_ipc.h).
+                _log(f"WARNING: окно отклонило действие {action} ({action_name}): "
+                     f"{state['error']}", level="warning")
             reward = float(state.get("reward", 0.0) or 0.0)
             total_reward += reward
             # Тот же JSONL-протокол, что в текстовом режиме: без него карточки

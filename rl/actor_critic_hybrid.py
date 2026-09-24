@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Any
 
 from rl._nn_common import ActorCriticBase, orthogonal_init
 
