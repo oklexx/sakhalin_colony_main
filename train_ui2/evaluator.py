@@ -75,18 +75,27 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
 
     hidden = ckpt.get("hidden_sizes") or None
     if hidden is None:
+        # Только 2-D веса (Linear): у гибрида в joint.* лежат ещё 1-D веса
+        # LayerNorm, и без фильтра их размерности дублировали слои
+        # ([h1, h2, h2, ...] вместо [h1, h2, ...] → неверная архитектура).
+        def _is_linear(key: str) -> bool:
+            dim = getattr(model_state[key], "dim", None)
+            return callable(dim) and dim() == 2
         hidden_keys = sorted(
-            (k for k in model_state if k.startswith("trunk.") and k.endswith(".weight")),
+            (k for k in model_state
+             if k.startswith("trunk.") and k.endswith(".weight") and _is_linear(k)),
             key=lambda k: int(k.split(".")[1]),
         )
         if not hidden_keys:
             # hybrid: hidden layers live in flat_trunk + joint
             flat_keys = sorted(
-                (k for k in model_state if k.startswith("flat_trunk.") and k.endswith(".weight")),
+                (k for k in model_state
+                 if k.startswith("flat_trunk.") and k.endswith(".weight") and _is_linear(k)),
                 key=lambda k: int(k.split(".")[1]),
             )
             joint_keys = sorted(
-                (k for k in model_state if k.startswith("joint.") and k.endswith(".weight")),
+                (k for k in model_state
+                 if k.startswith("joint.") and k.endswith(".weight") and _is_linear(k)),
                 key=lambda k: int(k.split(".")[1]),
             )
             hidden_keys = flat_keys + joint_keys
@@ -163,6 +172,29 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
     return model
 
 
+def _resolve_difficulty(meta: dict, difficulty: str | None) -> str:
+    """Сложность для eval: явное значение побеждает, иначе — из меты.
+
+    Раньше здесь стояла проверка `if "difficulty" in loaded and
+    "difficulty" not in meta` ПОСЛЕ слияния меты — условие было всегда ложно,
+    и eval без явного difficulty (режим --eval-model в worker'е) молча играл
+    на "normal" вместо сохранённой сложности (ревью 2026-09-25).
+    """
+    if difficulty is not None:
+        return difficulty
+    return str(meta.get("difficulty") or "normal")
+
+
+def _resolve_tax_to_debt(meta: dict, tax_to_debt: bool | None) -> bool:
+    """Флаг tax→debt: явный побеждает, иначе — из меты (дефолт True)."""
+    if tax_to_debt is not None:
+        return tax_to_debt
+    meta_cfg = meta.get("config")
+    if not isinstance(meta_cfg, dict):
+        meta_cfg = {}
+    return bool(meta.get("tax_to_debt", meta_cfg.get("tax_to_debt", True)))
+
+
 def run_eval(
     model_path: str | Path,
     episodes: int = 5,
@@ -174,7 +206,7 @@ def run_eval(
     mode: str = "auto",
     minimap_radius: int = 14,
     log_path: str | Path | None = None,
-    difficulty: str = "normal",
+    difficulty: str | None = None,
     curriculum_stage: int | None = None,
     unlock_ids: str | None = None,
     use_curriculum_tab: bool | None = None,
@@ -189,6 +221,8 @@ def run_eval(
     mode: "auto" (detect from checkpoint), "flat" (MLP: 299-dim v2, 289-dim
     v1, 248-dim v0), "minimap" (CNN). `obs_version` selects the eval env's obs layout
     (explicit-only, never restored from meta); a stored mismatch raises.
+    `difficulty`: explicit value wins; None (default) restores the difficulty
+    stored next to the model, falling back to "normal".
     log_path: if set, writes a per-step observation log to this file.
 
     Curriculum: explicit `curriculum_stage` / `unlock_ids` / `use_curriculum_tab`
@@ -248,13 +282,11 @@ def run_eval(
             loaded_cfg = loaded.get("config")
             if reward_cfg is None and isinstance(loaded_cfg, dict):
                 reward_cfg = loaded_cfg.get("reward")
-            if "difficulty" in loaded and "difficulty" not in meta:
-                difficulty = loaded["difficulty"]
         except Exception:
             pass
 
-    if tax_to_debt is None:
-        tax_to_debt = bool(meta.get("tax_to_debt", meta.get("config", {}).get("tax_to_debt", True)))
+    difficulty = _resolve_difficulty(meta, difficulty)
+    tax_to_debt = _resolve_tax_to_debt(meta, tax_to_debt)
 
     # Explicit args win; otherwise restore the scenario stored next to the model.
     # PR 1: the env takes ONE computed state (resolve_state); the resolved dict

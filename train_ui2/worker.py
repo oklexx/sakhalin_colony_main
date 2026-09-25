@@ -1,8 +1,3 @@
-from __future__ import annotations
-
-import builtins
-import queue as _queue
-
 #!/usr/bin/env python3
 """Worker process for train_ui: runs training or eval in a separate process.
 
@@ -12,10 +7,13 @@ Usage:
   python train_ui/worker.py --config <config.json> --name <run_name> --output <msg.jsonl>
   python train_ui/worker.py --eval-model <model.pt> --output <msg.jsonl>
 """
+from __future__ import annotations
 
 import argparse
+import builtins
 import json
 import os
+import queue as _queue
 import sys
 import threading
 import time
@@ -421,7 +419,9 @@ def _run_train_inner(cfg_dict: dict[str, Any], run_name: str, mf: MsgFile, stop_
             log("info", f"[Worker] fine-tune LR from config: {cfg.learning_rate}")
 
         norm_candidates = [
-            rm_path.with_name(rm_path.name.replace(".pt", ".norm.json")),
+            # with_suffix, а не replace(".pt", ...): replace бьёт по ВСЕМ
+            # вхождениям и уродует имена вроде "ckpt.pt2".
+            rm_path.with_suffix(".norm.json"),
             rm_path.parent / "normalization.json",
             rm_path.parent / "best_model.norm.json",
         ]

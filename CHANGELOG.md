@@ -3,6 +3,53 @@
 Формат: `## [дата]` + список изменений. Завершённые задачи из [STATE.md](STATE.md)
 переносятся сюда. Источники: `docs/*_2026_09.md`, аудиты, README §11.
 
+## [2026-09-25] — Код-ревью: багфиксы P0/P1 (LR, resume, eval, протокол)
+
+- **P0 `rl/ppo.py`: LR-шедулер стартовал с 1.1×** — `0.1 + 0.5·(1+cos)` вместо
+  `0.1 + 0.9·0.5·(1+cos)`. `LambdaLR` применяет множитель уже в `__init__`,
+  поэтому все прогоны шли на 10% выше заданного LR (3.3e-4 вместо 3e-4), а
+  resume через `apply_configured_learning_rate` оставлял `_last_lr` вне
+  формулы. Теперь спад ровно 1.0 → 0.1.
+- **P0 `train_ui2/main_window.py`: удалены stale-«миграции»** `gamma→0.99999`
+  и `ent_coef→0.01` в `_load_state`. Дефолт gamma давно 0.999
+  (`rl/config.py` предупреждает о дисперсии критика при 0.99999), а миграция
+  без проверки версии переписывала его при КАЖДОЙ загрузке — UI обучал не с
+  тем дисконтом, что CLI.
+- **P0 resume minimap-моделей:** `ckpt_flat_width` возвращал 65536 для
+  CNN-only чекпойнтов (у `ActorCriticCNN` тоже есть `trunk.0.weight`, но это
+  вход после свёртки) → теперь `None`; `EnvManager.obs_size` в чистом
+  minimap-режиме был 8 (`observation_space.shape[0]` от `(8, 32, 32)`) →
+  теперь flat-размер из `venv.obs_size()` во всех режимах.
+- **P0 `EnvManager._assert_curriculum_parity`: assert → RuntimeError.**
+  Под `python -O` assert'ы исчезают, и «курикулум не применился» снова стал
+  бы тихим — ровно тот класс, который убивает контракт PR 1. Сообщения
+  сохранены; `tests/test_curriculum_parity.py` ждёт `RuntimeError`.
+- **P0 `_make_ppo`: ceil вместо floor** для числа батчей на эпоху
+  (`get_batches` отдаёт и неполный последний батч) — косинус LR достигал
+  пола раньше конца обучения.
+- **P0 `watch_champion.py`: детект CNN через isinstance** (`_policy_kinds`):
+  было `hasattr(policy, "cnn")`, но у `ActorCriticCNN` свёртка называется
+  `conv` — чистая minimap-модель шла по flat-ветке и падала в Conv2d с 2-D
+  входом. Плюс `--device cuda:N` (`startswith("cuda")` вместо `== "cuda"`).
+- **P1 `train_ui2/evaluator.py`:** `run_eval(difficulty=None)` теперь
+  восстанавливает сложность из меты (старая проверка стояла после слияния
+  и была всегда ложна → тихий откат на "normal"); `tax_to_debt` больше не
+  падает при `"config": null` в мете (`_resolve_tax_to_debt`); infer
+  `hidden_sizes` учитывает только 2-D веса (1-D веса LayerNorm в `joint.*`
+  дублировали слои гибрида).
+- **P1 `train_ui2/protocol.py`:** `decode` проверяет обязательные поля до
+  ветки COMMAND (было `KeyError` вместо задокументированного `ValueError`),
+  не-dict `payload`/карты больше не дают `AttributeError`; `to_dict`
+  санитизирует `top_actions` (`encode` идёт с `allow_nan=False` — inf/nan
+  роняли сериализацию прогресса целиком).
+- **P1 `train_ui2/worker.py`:** shebang+docstring возвращены наверх файла
+  (код до docstring = SyntaxWarning); поиск `.norm.json` через
+  `with_suffix` вместо `replace(".pt", …)` (ломал имена вроде `ckpt.pt2`).
+- Тесты: `tests/test_lr_schedule.py` (5), `tests/test_review_2026_09_25.py`
+  (27, 1 GUI — только в CI с PyQt6). Проверено отсутствие регрессий: набор
+  падений/ошибок идентичен бейзлайну без `colony_cpp` (24F/2E — все
+  «нет расширения»), `ruff check` и `mypy` чистые.
+
 ## [2026-09-25] — CI: полный ruff + mypy
 
 Закрыт хвост P3-3 из [docs/CODE_REVIEW_2026_09_24.md](docs/CODE_REVIEW_2026_09_24.md).

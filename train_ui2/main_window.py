@@ -944,16 +944,14 @@ class MainWindow2(QMainWindow):
                 if "use_curriculum_tab" not in d:
                     # legacy state file: ручной набор уже был → применяем его
                     merged["use_curriculum_tab"] = bool(str(merged["unlock_ids"]).strip())
-                # P0: старые прогоны шли с gamma 0.99/0.995/0.997/0.999 — при
-                # горизонте эпизода 10 000 шагов это «близоруко» (см. diagnostic).
-                if merged.get("gamma") in (0.99, 0.995, 0.997, 0.999):
-                    merged["gamma"] = 0.99999
-                if merged.get("ent_coef") == 0.05:
-                    merged["ent_coef"] = 0.01
-                # v3 migration: if file predates v3, ensure food/water 0.8
-                if d.get("config_version", 0) < 2:
-                    # will be overwritten by Config defaults (0.8) if missing; no need
-                    pass
+                # NB: здесь были безусловные «миграции» gamma→0.99999 и
+                # ent_coef→0.01. Они удалены (ревью 2026-09-25): дефолт gamma
+                # давно вернулся к 0.999 (rl/config.py прямо предупреждает о
+                # катастрофической дисперсии критика при 0.99999), а миграция
+                # переписывала его при КАЖДОЙ загрузке — UI обучал не с тем
+                # дисконтом, что CLI. Вторая молча сносила осознанный выбор
+                # пользователя (0.05). Миграции без проверки версии файла сюда
+                # добавлять нельзя: они неотличимы от выбора пользователя.
                 return merged
             return {}
         except (OSError, json.JSONDecodeError):

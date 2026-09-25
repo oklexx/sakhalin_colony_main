@@ -121,7 +121,11 @@ class PPO:
                     progress = float(step - lr_warmup_steps) / max(
                         1, total_training_steps - lr_warmup_steps)
                     progress = min(progress, 1.0)
-                    return 0.1 + 0.5 * (1.0 + math.cos(math.pi * progress))
+                    # Косинусный спад 1.0 → 0.1 от базового LR. Здесь было
+                    # `0.1 + 0.5 * (1 + cos)`: множитель стартовал с 1.1, т.е.
+                    # обучение шло на 10% выше заданного LR (3.3e-4 вместо
+                    # 3e-4) — LambdaLR применяет lr_lambda(0) уже в __init__.
+                    return 0.1 + 0.9 * 0.5 * (1.0 + math.cos(math.pi * progress))
                 return 1.0
             self.scheduler = LambdaLR(self.optimizer, lr_lambda)
         else:
