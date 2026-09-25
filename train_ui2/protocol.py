@@ -55,6 +55,11 @@ def _safe_int(x: int, default: int = 0) -> int:
     return int(f)
 
 
+def _msg_dict(value: Any) -> dict[str, Any]:
+    """Словарь из поля сообщения; не-dict (мусор) — пустой, а не AttributeError."""
+    return value if isinstance(value, dict) else {}
+
+
 @dataclass
 class ProgressMsg:
     done: int
@@ -112,7 +117,7 @@ class ProgressMsg:
             "entropy": _safe_float(self.entropy),
             "kl": _safe_float(self.kl),
             "ent_coef": _safe_float(self.ent_coef),
-            "top_actions": self.top_actions,
+            "top_actions": {k: _safe_float(v) for k, v in self.top_actions.items()},
             "action_counts": {k: _safe_int(v) for k, v in self.action_counts.items()},
             "action_legality": {k: _safe_float(v) for k, v in self.action_legality.items()},
             # JSON-safe: None выкидываем, прочее → строка (значения — ключи MASK_REASON_KEYS)
@@ -317,16 +322,21 @@ def decode(line: str) -> Msg:
     except ValueError as e:
         raise ValueError(f"unknown message type: {t!r}") from e
 
-    # Handle command messages
-    if mt is MsgType.COMMAND:
-        return CommandMsg(
-            cmd=d["cmd"],
-            payload=d.get("payload", {}),
-        )
-
     missing = [k for k in _REQUIRED[mt] if k not in d]
     if missing:
         raise ValueError(f"missing fields for {mt.value}: {missing}")
+
+    # Handle command messages (после проверки полей: раньше отсутствие 'cmd'
+    # давало KeyError вместо задокументированного ValueError).
+    if mt is MsgType.COMMAND:
+        payload = d.get("payload", {})
+        if not isinstance(payload, dict):
+            raise ValueError("'payload' must be an object")
+        return CommandMsg(
+            cmd=d["cmd"],
+            payload=payload,
+        )
+
     if mt is MsgType.READY:
         return ReadyMsg()
     if mt is MsgType.LOG:
@@ -343,7 +353,7 @@ def decode(line: str) -> Msg:
             entropy=d.get("entropy", 0.0),
             kl=d.get("kl", 0.0),
             ent_coef=d.get("ent_coef", 0.005),
-            top_actions={k: _safe_float(v) for k, v in d.get("top_actions", {}).items()},
+            top_actions={k: _safe_float(v) for k, v in _msg_dict(d.get("top_actions")).items()},
             loop_detected=d.get("loop_detected", False),
             loop_action_name=d.get("loop_action_name"),
             envs_with_loops=d.get("envs_with_loops", 0),
@@ -352,11 +362,10 @@ def decode(line: str) -> Msg:
             curriculum_stage=d.get("curriculum_stage", 0),
             curriculum_progress_percent=d.get("curriculum_progress_percent", 0.0),
             curriculum_progress_valid=bool(d.get("curriculum_progress_valid", True)),
-            action_counts={k: _safe_int(v) for k, v in d.get("action_counts", {}).items()},
-            action_legality={k: _safe_float(v) for k, v in d.get("action_legality", {}).items()},
+            action_counts={k: _safe_int(v) for k, v in _msg_dict(d.get("action_counts")).items()},
+            action_legality={k: _safe_float(v) for k, v in _msg_dict(d.get("action_legality")).items()},
             action_mask_reasons=(
-                {str(k): str(v) for k, v in reasons.items()}
-                if isinstance(reasons := d.get("action_mask_reasons"), dict) else {}
+                {str(k): str(v) for k, v in _msg_dict(d.get("action_mask_reasons")).items()}
             ),
             action_total_steps=_safe_int(d.get("action_total_steps", 0)),
             curriculum_available_actions=d.get("curriculum_available_actions", ""),

@@ -792,8 +792,21 @@ def ckpt_flat_width(state_dict: Any) -> int | None:
     None for CNN-only policies (no flat input at all). Used by the resume
     paths to compare the checkpoint's real tensor width against the env.
     """
+    if not hasattr(state_dict, "get"):
+        return None
+    try:
+        keys = list(state_dict.keys())
+    except (AttributeError, TypeError):
+        return None
+    has_conv = any(isinstance(k, str) and k.startswith(("cnn.", "conv.")) for k in keys)
+    has_flat = any(isinstance(k, str) and k.startswith(("flat_trunk.", "flat_proj")) for k in keys)
+    if has_conv and not has_flat:
+        # CNN-only (ActorCriticCNN): её `trunk.0.weight` — это НЕ flat-вход,
+        # а 64·G·G после свёртки. Раньше ширина 65536 сравнивалась с obs среды
+        # и resume в minimap-режиме падал всегда (ревью 2026-09-25).
+        return None
     for key in ("trunk.0.weight", "flat_trunk.0.weight", "flat_proj.weight"):
-        w = state_dict.get(key) if hasattr(state_dict, "get") else None
+        w = state_dict.get(key)
         if w is not None:
             try:
                 return int(w.shape[1])

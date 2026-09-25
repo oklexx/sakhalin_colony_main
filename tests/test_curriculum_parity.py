@@ -140,7 +140,7 @@ def test_env_manager_parity_assert_fires_on_mismatch():
         # construction above already passed the parity assert (matching state);
         # a fabricated mismatch must raise loudly.
         bad = CurriculumState(False, ("Goldmine",), True, (1.0,) * 9, 0)
-        with pytest.raises(AssertionError, match="курикулум не применён"):
+        with pytest.raises(RuntimeError, match="курикулум не применён"):
             em._assert_curriculum_parity(bad)
     finally:
         em.close()
@@ -222,7 +222,7 @@ def test_env_manager_resource_parity():
     try:
         bad = CurriculumState(True, tuple(ALL_IDS), False,
                               (0.0,) * 8 + (1.0,), 0)  # energy-only ≠ water,wood
-        with pytest.raises(AssertionError, match="курикулум не применён"):
+        with pytest.raises(RuntimeError, match="курикулум не применён"):
             em._assert_curriculum_parity(bad)
     finally:
         em.close()

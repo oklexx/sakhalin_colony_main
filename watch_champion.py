@@ -845,6 +845,20 @@ def run_visual_watch(
     return 0
 
 
+def _policy_kinds(policy: Any) -> tuple[bool, bool]:
+    """(is_hybrid, is_cnn) — ветка инференса для загруженной политики.
+
+    Через isinstance, а не hasattr(..., "cnn"): у ActorCriticCNN свёртка
+    называется `conv` (`cnn` — только у гибрида), и hasattr-детект
+    классифицировал чистую minimap-модель как flat — первый же шаг падал в
+    Conv2d с 2-D входом (ревью 2026-09-25).
+    """
+    from rl.actor_critic_cnn import ActorCriticCNN
+    from rl.actor_critic_hybrid import ActorCriticHybrid
+    is_hybrid = isinstance(policy, ActorCriticHybrid)
+    return is_hybrid, isinstance(policy, ActorCriticCNN)
+
+
 def main():
     _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Watch champion model play")
@@ -993,12 +1007,11 @@ def main():
         print(f"  Files: {[f.name for f in model_dir.iterdir() if f.is_file()]}")
         sys.exit(1)
 
-    dev = torch.device(args.device if torch.cuda.is_available() and args.device == "cuda" else "cpu")
+    dev = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
     print(f"Loading policy from {model_path} on {dev}")
     policy = _load_policy(model_path, dev)
 
-    is_cnn = hasattr(policy, "cnn")
-    is_hybrid = hasattr(policy, "flat_proj") and hasattr(policy, "cnn")
+    is_hybrid, is_cnn = _policy_kinds(policy)
     if is_hybrid:
         print("Model: hybrid (flat + minimap CNN)")
     elif is_cnn:

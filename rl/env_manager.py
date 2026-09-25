@@ -139,7 +139,11 @@ def _make_ppo(cfg: Config, model: ActorCriticBase, buffer: RolloutBuffer) -> PPO
 
     steps_per_rollout = cfg.n_steps * cfg.n_envs
     n_rollouts = max(1, int(math.ceil(cfg.total_timesteps / max(1, steps_per_rollout))))
-    batches_per_epoch = max(1, steps_per_rollout // max(1, cfg.batch_size))
+    # Округление ВВЕРХ: get_batches() отдаёт и неполный последний батч, а пол
+    # недооценивал число шагов оптимизатора — косинус LR достигал пола раньше
+    # конца обучения (например, 32768/10000: 3 вместо 4).
+    batch = max(1, cfg.batch_size)
+    batches_per_epoch = max(1, (steps_per_rollout + batch - 1) // batch)
     total_optimizer_steps = n_rollouts * cfg.n_epochs * batches_per_epoch
 
     return PPO(
@@ -199,11 +203,28 @@ class EnvManager:
 
         # expose commonly accessed attributes for backward compat
         self.n_envs: int = self.vec_env.num_envs
-        self.obs_size: int = getattr(self.vec_env, "obs_size", lambda: 0)() if callable(getattr(self.vec_env, "obs_size", None)) else getattr(self.vec_env, "obs_size", 0)
+        # Flat-размер наблюдения во ВСЕХ режимах — из C++ (venv.obs_size()).
+        # Раньше брался observation_space.shape[0], а в чистом minimap-режиме
+        # спейс — (8, 32, 32) и obs_size получался 8: resume-проверка
+        # check_policy_obs_compat сравнивала с ним ширину чекпойнта.
+        self.obs_size: int = 0
+        try:
+            get_flat_size = getattr(self.vec_env.venv, "obs_size", None)
+            if callable(get_flat_size):
+                self.obs_size = int(get_flat_size())
+        except Exception:
+            self.obs_size = 0
+        if not self.obs_size:
+            maybe = getattr(self.vec_env, "obs_size", None)
+            try:
+                self.obs_size = int(maybe() if callable(maybe) else maybe or 0)
+            except Exception:
+                self.obs_size = 0
         # fallback if obs_size not directly available — infer from observation_space
         if not self.obs_size:
             try:
-                self.obs_size = int(self.vec_env.observation_space.shape[0])
+                space = self.vec_env.observation_space
+                self.obs_size = int(np.prod(space.shape)) if len(space.shape) > 1 else int(space.shape[0])
             except Exception:
                 self.obs_size = 0
 
@@ -466,7 +487,12 @@ class EnvManager:
     # ── curriculum ──
 
     def _assert_curriculum_parity(self, st: CurriculumState) -> None:
-        """EnvManager-side parity check: env.curriculum() == computed state."""
+        """EnvManager-side parity check: env.curriculum() == computed state.
+
+        Явный RuntimeError, а не assert: под `python -O` assert'ы исчезают, и
+        «курикулум не применился» снова стал бы тихим (это ровно тот класс,
+        который убивает контракт PR 1).
+        """
         try:
             got = self.vec_env.venv.curriculum()
         except AttributeError:
@@ -474,38 +500,44 @@ class EnvManager:
         # Buildings and resources are independent axes (open buildings +
         # weighted resources is valid) — both are always checked, no early out.
         if st.all_builds:
-            assert got.get("all_builds", False), (
-                f"курикулум не применён: expected unrestricted, env={got}")
+            if not got.get("all_builds", False):
+                raise RuntimeError(
+                    f"курикулум не применён: expected unrestricted, env={got}")
         else:
             want = set(st.allowed_builds)
             have = set(got.get("allowed_builds", []))
-            assert want == have, (
-                f"курикулум не применён: env={sorted(have)[:5]}…({len(have)}) "
-                f"expected={sorted(want)[:5]}…({len(want)})")
+            if want != have:
+                raise RuntimeError(
+                    f"курикулум не применён: env={sorted(have)[:5]}…({len(have)}) "
+                    f"expected={sorted(want)[:5]}…({len(want)})")
         # PR 5: obs layout version — an old binary has no "obs_version" key
         # and reads as v0, so a stale .so fails here with a clear message.
         have_v = got.get("obs_version", 0)
-        assert int(have_v) == int(st.obs_version), (
-            f"курикулум не применён: obs_version env={have_v} "
-            f"expected={st.obs_version} (stale colony_cpp? rebuild the extension)")
+        if int(have_v) != int(st.obs_version):
+            raise RuntimeError(
+                f"курикулум не применён: obs_version env={have_v} "
+                f"expected={st.obs_version} (stale colony_cpp? rebuild the extension)")
         # PR 4: resource weights ride the same transport — same parity rule.
         # Exact compare: doubles end-to-end (C++ stores double since PR 4).
         if st.all_resources:
-            assert got.get("all_resources", False), (
-                f"курикулум не применён: expected all_resources, env={got}")
+            if not got.get("all_resources", False):
+                raise RuntimeError(
+                    f"курикулум не применён: expected all_resources, env={got}")
         else:
             want_w = [float(w) for w in st.resource_weights]
             have_w = [float(w) for w in got.get("resource_weights", [])]
-            assert want_w == have_w, (
-                f"курикулум не применён: resource_weights env={have_w} "
-                f"expected={want_w}")
+            if want_w != have_w:
+                raise RuntimeError(
+                    f"курикулум не применён: resource_weights env={have_w} "
+                    f"expected={want_w}")
         # Mechanic gating is an allow-list over fixed manager logits. A stale
         # extension that drops this field would silently reopen early actions.
         want_mechanics = list(st.enabled_mechanics)
         have_mechanics = list(got.get("enabled_mechanics", []))
-        assert have_mechanics == want_mechanics, (
-            f"курикулум не применён: enabled_mechanics env={have_mechanics} "
-            f"expected={want_mechanics} (rebuild colony_cpp)")
+        if have_mechanics != want_mechanics:
+            raise RuntimeError(
+                f"курикулум не применён: enabled_mechanics env={have_mechanics} "
+                f"expected={want_mechanics} (rebuild colony_cpp)")
 
     @property
     def action_names(self) -> list[str]:
