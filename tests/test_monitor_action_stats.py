@@ -23,7 +23,6 @@ import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List
 
 import pytest
 
@@ -196,7 +195,7 @@ def test_track_step_actions_feeds_both_consumers():
             self.actions = _Arr(actions)
             self.pos = 1  # последний записанный шаг = строки [0:n_envs]
 
-    logs: List[str] = []
+    logs: list[str] = []
     cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, use_amp=False)
     em = SimpleNamespace(device="cpu", action_names=names, n_envs=2,
                          buffer=_Buffer(np.array([1, 1])))
@@ -212,7 +211,7 @@ def test_track_step_actions_feeds_both_consumers():
     em.buffer = None
     trainer._track_step_actions(2, names)
     trainer._track_step_actions(2, names)
-    assert len([l for l in logs if "actions шага" in l]) == 1
+    assert len([line for line in logs if "actions шага" in line]) == 1
     assert trainer._calculate_action_distribution() == [0, 2, 0]
 
 
@@ -285,14 +284,14 @@ def test_trainer_marks_progress_invalid_instead_of_zero():
     from rl.async_trainer import AsyncTrainer
     from rl.config import Config
 
-    logs: List[str] = []
+    logs: list[str] = []
     cfg = Config(n_envs=2, n_steps=3, total_timesteps=6, use_amp=False)
     trainer = AsyncTrainer(cfg=cfg, env_manager=SimpleNamespace(device="cpu"),
                            logger=SimpleNamespace(info=logs.append))
     pct, valid = trainer._curriculum_progress_view(step=123)
     assert valid is False and pct == 0.0
     trainer._curriculum_progress_view(step=456)
-    warns = [l for l in logs if "get_curriculum_progress" in l]
+    warns = [line for line in logs if "get_curriculum_progress" in line]
     assert len(warns) == 1, f"предупреждение должно быть однократным: {logs}"
 
     real = SimpleNamespace(device="cpu",
@@ -500,7 +499,7 @@ def test_config_has_monitor_knobs():
 # water_mask_check (first-fail: курикулум → деньги → нет клетки), но уже
 # по каждому действию, а не только по водоканалу.
 
-def _cpp_mask_reason_names() -> List[str]:
+def _cpp_mask_reason_names() -> list[str]:
     """MASK_REASON_NAMES из include/colony/constants.h (регресс против рассинхрона)."""
     src = (ROOT / "include" / "colony" / "constants.h").read_text(encoding="utf-8")
     m = re.search(

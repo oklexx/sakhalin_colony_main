@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Optional, Any
 
 from rl._nn_common import ActorCriticBase, orthogonal_init
 
@@ -28,11 +29,11 @@ class ActorCriticHybrid(ActorCriticBase):
         self,
         obs_size: int,
         minimap_channels: int = 8,
-        minimap_radius: Optional[int] = None,
-        n_channels: Optional[int] = None,
-        grid_size: Optional[int] = None,
+        minimap_radius: int | None = None,
+        n_channels: int | None = None,
+        grid_size: int | None = None,
         n_actions: int = 49,  # 2 + 32 builds + 11 managers + 4 road dirs
-        hidden_sizes: Optional[List[int]] = None,
+        hidden_sizes: list[int] | None = None,
         device: torch.device = torch.device("cpu"),
     ):
         super().__init__()
@@ -85,7 +86,7 @@ class ActorCriticHybrid(ActorCriticBase):
 
         # remaining hidden layers after concatenation; LayerNorm equalises
         # the branch scales on top of the width balance
-        layers: List[nn.Module] = []
+        layers: list[nn.Module] = []
         prev = combined
         for h in hidden_sizes[1:]:
             layers.append(nn.Linear(prev, h))
@@ -118,11 +119,11 @@ class ActorCriticHybrid(ActorCriticBase):
 
     def _looks_like_masks(self, t: Any) -> bool:
         """True when `t` is a [B, n_actions] tensor — i.e. masks, not a minimap."""
-        return torch.is_tensor(t) and t.dim() == 2 and t.shape[-1] == self.n_actions
+        return bool(torch.is_tensor(t) and t.dim() == 2 and t.shape[-1] == self.n_actions)
 
     def _split_obs(
-        self, flat: Any, minimap: Any, action_masks: Optional[torch.Tensor],
-    ) -> Tuple[Any, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        self, flat: Any, minimap: Any, action_masks: torch.Tensor | None,
+    ) -> tuple[Any, torch.Tensor | None, torch.Tensor | None]:
         """Normalise every accepted observation form to (flat, minimap, masks).
 
         `flat` may be:
@@ -184,9 +185,9 @@ class ActorCriticHybrid(ActorCriticBase):
         return flat, minimap, action_masks
 
     def forward(
-        self, flat: Any, minimap: Optional[torch.Tensor] = None,
-        action_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, flat: Any, minimap: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         flat_in, mini, action_masks = self._split_obs(flat, minimap, action_masks)
         if flat_in is not None and mini is not None:
             h_flat = self.flat_trunk(flat_in)
@@ -216,22 +217,22 @@ class ActorCriticHybrid(ActorCriticBase):
     def get_action_and_value(
         self,
         flat: Any,
-        minimap: Optional[torch.Tensor] = None,
-        action: Optional[torch.Tensor] = None,
-        action_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        minimap: torch.Tensor | None = None,
+        action: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits, values = self.forward(flat, minimap, action_masks)
         action, log_probs, _ = self._categorical_log_prob(logits, action)
         return action, log_probs, values.squeeze(-1)
 
     def get_value(
-        self, flat: Any, minimap: Optional[torch.Tensor] = None,
-        action_masks: Optional[torch.Tensor] = None
+        self, flat: Any, minimap: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None
     ) -> torch.Tensor:
         _, values = self.forward(flat, minimap, action_masks)
         return values.squeeze(-1)
 
-    def act(self, flat: Any, minimap: Optional[torch.Tensor] = None, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def act(self, flat: Any, minimap: torch.Tensor | None = None, deterministic: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample or greedy action (mirrors actor_critic.py helper)."""
         logits, values = self.forward(flat, minimap, action_masks=None)
         if deterministic:

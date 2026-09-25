@@ -19,13 +19,12 @@ from rl.curriculum import (  # noqa: E402
     RESOURCE_NAMES,
     STAGE_MAP,
     CurriculumState,
-    parse_resources,
     allowed_ids,
     build_state,
+    parse_resources,
     parse_unlock_ids,
     resolve_state,
 )
-
 
 # ── build_state matrix ───────────────────────────────────────────────────
 

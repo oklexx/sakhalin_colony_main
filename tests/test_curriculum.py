@@ -1,11 +1,12 @@
 import sys
 from pathlib import Path
+
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rl.config import Config
 from rl.async_trainer import AsyncTrainer
+from rl.config import Config
 
 
 class FakeEnvManager:
@@ -21,8 +22,8 @@ class FakeEnvManager:
 
         torch.manual_seed(0)
         from rl.actor_critic import ActorCritic
-        from rl.rollout_buffer import RolloutBuffer
         from rl.ppo import PPO
+        from rl.rollout_buffer import RolloutBuffer
 
         self.model = ActorCritic(obs_size, n_actions, [16], self.device)
         self.buffer = RolloutBuffer(
@@ -38,7 +39,7 @@ class FakeEnvManager:
             device=self.device,
         )
 
-        self.env = type("FakeEnv", (), {})()
+        self.vec_env = type("FakeEnv", (), {})()
 
         class FakeVenv:
             def __init__(self):
@@ -48,10 +49,10 @@ class FakeEnvManager:
             def set_curriculum_stage(self, stage):
                 self.stages.append(stage)
 
-        self.env.venv = FakeVenv()
+        self.vec_env.venv = FakeVenv()
 
     def set_curriculum_stage(self, stage):
-        self.env.venv.set_curriculum_stage(stage)
+        self.vec_env.venv.set_curriculum_stage(stage)
         self.cfg.curriculum_stage = stage
 
     def get_allowed_buildings_for_stage(self, stage):
@@ -111,7 +112,7 @@ def test_curriculum_stage_switching(tmp_path):
 
     trainer.train(total_timesteps=12)
 
-    stages = em.env.venv.stages
+    stages = em.vec_env.venv.stages
     assert 1 in stages, f"Stage 1 should have been set, got {stages}"
     assert 2 in stages, f"Stage 2 should have been set, got {stages}"
     assert stages.index(1) < stages.index(2), "Stage 1 should come before Stage 2"
@@ -134,7 +135,7 @@ def test_curriculum_no_schedule(tmp_path):
 
     trainer.train(total_timesteps=6)
 
-    assert em.env.venv.stages == [], f"No stages should be set, got {em.env.venv.stages}"
+    assert em.vec_env.venv.stages == [], f"No stages should be set, got {em.vec_env.venv.stages}"
 
 
 def test_curriculum_schedule_in_config():

@@ -14,12 +14,13 @@
 """
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from collections.abc import Iterable, Sequence
+from typing import TypedDict
 
 # Ключи действий-построек, как их отдаёт среда (`python/cpp_vecenv.py`:
 # "BUILD_" + id.upper()). Строгое сравнение с ALL_BUILD_IDS раньше было
 # регистрозависимым, и «голые» id (WATERCHANNEL) уезжали в панель «Активности».
-_BUILD_MARKERS: Tuple[str, ...] = ("BUILD:", "A_BUILD", "BUILD_")
+_BUILD_MARKERS: tuple[str, ...] = ("BUILD:", "A_BUILD", "BUILD_")
 
 # Пороги вердикта (в процентах шагов роллаута). Это эвристика подписи, а не
 # параметр обучения: менять их в Config нельзя, там живут только режимы сбора.
@@ -30,7 +31,7 @@ LEGAL_NARROW_PCT: float = 25.0  # ниже — окно доступности �
 # Русские ярлыки причин закрытия маски. Ключи — из rl/action_monitor.
 # MASK_REASON_KEYS (= MASK_REASON_NAMES в include/colony/constants.h, сверка
 # test_mask_reason_keys_in_sync_with_cpp): деньги / нет участка / курикулум.
-REASON_RU: Dict[str, str] = {
+REASON_RU: dict[str, str] = {
     "curriculum": "курикулум",
     "money": "деньги",
     "no_lot": "нет участка",
@@ -39,7 +40,7 @@ REASON_RU: Dict[str, str] = {
 }
 
 
-def is_build_action(name: str, build_ids: Optional[Iterable[str]] = None) -> bool:
+def is_build_action(name: str, build_ids: Iterable[str] | None = None) -> bool:
     """True, если действие — постройка (по имени действия или по id здания)."""
     u = str(name).upper()
     if any(marker in u for marker in _BUILD_MARKERS):
@@ -49,13 +50,13 @@ def is_build_action(name: str, build_ids: Optional[Iterable[str]] = None) -> boo
     return False
 
 
-def split_by_panel(top_actions: Dict[str, float],
-                   build_ids: Optional[Iterable[str]] = None,
-                   ) -> Tuple[Dict[str, float], Dict[str, float]]:
+def split_by_panel(top_actions: dict[str, float],
+                   build_ids: Iterable[str] | None = None,
+                   ) -> tuple[dict[str, float], dict[str, float]]:
     """Разделить `top_actions` на («Активности», «Строительство зданий»)."""
     ids_upper = {str(b).upper() for b in (build_ids or [])}
-    actions: Dict[str, float] = {}
-    builds: Dict[str, float] = {}
+    actions: dict[str, float] = {}
+    builds: dict[str, float] = {}
     for key, value in (top_actions or {}).items():
         try:
             pct = float(value)
@@ -70,8 +71,8 @@ def split_by_panel(top_actions: Dict[str, float],
     return actions, builds
 
 
-def action_verdict(pct: float, legal_pct: Optional[float],
-                   reason: Optional[str] = None) -> str:
+def action_verdict(pct: float, legal_pct: float | None,
+                   reason: str | None = None) -> str:
     """Одна фраза диагностики: действие закрыто маской или его не выбирают.
 
     `legal_pct` — доля шагов, на которых действие было ДОСТУПНО (маска = 1),
@@ -101,9 +102,9 @@ def action_verdict(pct: float, legal_pct: Optional[float],
     return "доступно, но не выбирает"
 
 
-def rows_with_sticky(items: Dict[str, float], legality: Dict[str, float],
+def rows_with_sticky(items: dict[str, float], legality: dict[str, float],
                      keep: Sequence[str] = (), max_rows: int = 0,
-                     ) -> List[Tuple[str, float, Optional[float], bool]]:
+                     ) -> list[tuple[str, float, float | None, bool]]:
     """Строки панели: (имя, доля%, легальность% | None, липкая?).
 
     `keep` — закрепленные действия (ключевые здания этапа). Они попадают в
@@ -116,13 +117,13 @@ def rows_with_sticky(items: Dict[str, float], legality: Dict[str, float],
     """
     items = items or {}
     legality = legality or {}
-    pinned: List[str] = []
+    pinned: list[str] = []
     for name in keep or ():
         if name not in pinned:
             pinned.append(name)
     pinned_set = set(pinned)
 
-    rows: List[Tuple[str, float, Optional[float], bool]] = []
+    rows: list[tuple[str, float, float | None, bool]] = []
     for name in pinned:
         pct = float(items.get(name, 0.0) or 0.0)
         rows.append((name, pct, legality.get(name), pct == 0.0))
@@ -154,11 +155,22 @@ def fmt_pct(v: float) -> str:
     return f"{v:.3f}%"
 
 
-def watch_report(counts: Dict[str, int], legality: Dict[str, float],
+class WatchRow(TypedDict):
+    """Строка `watch_report`: одно закреплённое действие."""
+
+    name: str
+    count: int
+    pct: float
+    legal: float | None
+    reason: str | None
+    verdict: str
+
+
+def watch_report(counts: dict[str, int], legality: dict[str, float],
                  names: Sequence[str], total_actions: int = 0,
-                 shares: Optional[Dict[str, float]] = None,
-                 reasons: Optional[Dict[str, str]] = None,
-                 ) -> List[Dict[str, object]]:
+                 shares: dict[str, float] | None = None,
+                 reasons: dict[str, str] | None = None,
+                 ) -> list[WatchRow]:
     """Отчёт по закреплённым действиям: {name, count, pct, legal, reason, verdict}.
 
     `shares` (готовые доли из `top_actions`) имеют приоритет над пересчётом из
@@ -171,10 +183,10 @@ def watch_report(counts: Dict[str, int], legality: Dict[str, float],
     уходит в поле `reason` строки и в вердикт (см. action_verdict).
     """
     total = max(int(total_actions or 0), 0)
-    out: List[Dict[str, object]] = []
+    out: list[WatchRow] = []
     for name in names or ():
         cnt = int((counts or {}).get(name, 0) or 0)
-        pct: Optional[float] = None
+        pct: float | None = None
         if shares and name in shares:
             try:
                 pct = float(shares[name])

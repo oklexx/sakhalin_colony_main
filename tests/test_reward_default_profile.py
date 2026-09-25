@@ -110,8 +110,8 @@ def test_ui_reward_specs_cover_profile():
     он защищал. Boolean-ключи живут в REWARD_FLAGS (чекбоксы), а не в REWARD_SPECS.
     """
     try:
-        from train_ui2.parameter_widget import REWARD_SPECS
         from train_ui2.constants import REWARD_FLAGS
+        from train_ui2.parameter_widget import REWARD_SPECS
     except Exception as e:  # нет torch в тестовой среде
         pytest.skip(f"UI недоступен: {e}")
     ui_keys = {s.key for s in REWARD_SPECS} | {k for k, _label, _tip in REWARD_FLAGS}

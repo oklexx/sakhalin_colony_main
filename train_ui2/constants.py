@@ -5,6 +5,8 @@ via train_ui2.main_window for backward compatibility (tests import from there).
 """
 from __future__ import annotations
 
+from typing import TypedDict
+
 # ── parameter groups (training tab) ──────────────────────────────────────────
 PARAM_GROUPS = {
     "Среда": ["n_envs", "map_size", "seed", "total_timesteps"],
@@ -67,7 +69,8 @@ REWARD_FLAGS = [
 
 # ── curriculum (single source: rl/curriculum.py) ─────────────────────────────
 try:
-    from rl.curriculum import STAGE_MAP as CURRICULUM_STAGE_MAP, ALL_IDS as ALL_BUILD_IDS
+    from rl.curriculum import ALL_IDS as ALL_BUILD_IDS
+    from rl.curriculum import STAGE_MAP as CURRICULUM_STAGE_MAP
 except Exception:  # fallback for environments without torch / rl importable
     CURRICULUM_STAGE_MAP = {
         1: ["House", "SmallHouse", "Farm", "Garden", "Mushroom", "WaterChannel",
@@ -166,7 +169,23 @@ except Exception:
     _S1_RESOURCES = ["water", "food", "wood"]
     _S1_MECHANICS = ("sell", "credit")
 
-PRESETS = {
+
+
+class Preset(TypedDict):
+    """Готовый режим обучения (кнопка на вкладке «Курикулум»)."""
+
+    title: str
+    summary: str
+    learning_rate: float
+    eval_min_days: float
+    eval_min_bases: int
+    detail: str
+    buildings: list[str]   # пусто = все
+    resources: list[str]   # пусто = все
+    mechanics: list[str]
+
+
+PRESETS: dict[str, Preset] = {
     "stage1": {
         "title": "Этап 1 · База и ресурсы",
         "summary": "Минимум для выживания: дорога к воде → водоканал → еда → продажа излишков.",

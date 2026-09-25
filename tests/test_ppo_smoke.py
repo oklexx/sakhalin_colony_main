@@ -1,14 +1,15 @@
 """Smoke test: small PPO training run on CPU, verify loss decreases."""
 import sys
 from pathlib import Path
-import torch
+
 import numpy as np
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from rl.actor_critic import ActorCritic
-from rl.rollout_buffer import RolloutBuffer
 from rl.ppo import PPO
+from rl.rollout_buffer import RolloutBuffer
 
 
 def make_dummy_env(obs_size=10, n_actions=5, n_envs=4, seed=42):

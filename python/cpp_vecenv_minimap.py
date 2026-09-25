@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 import gymnasium as gym
 import numpy as np
-from python.cpp_vecenv import CppVecEnv
+
+from cpp_vecenv import CppVecEnv
 
 
 class CppVecEnvMinimap(CppVecEnv):
@@ -12,11 +15,11 @@ class CppVecEnvMinimap(CppVecEnv):
 
     def __init__(
         self,
-        *args,
+        *args: Any,
         minimap_radius: int = 14,
         obs_mode: str = "minimap",
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.obs_mode = obs_mode
         self._configure_terminal_minimap()  # obs_mode известен только сейчас
@@ -31,7 +34,8 @@ class CppVecEnvMinimap(CppVecEnv):
                 dtype=np.float32,
             )
 
-    def _get_obs(self):
+    # hybrid отдаёт пару (flat, minimap) — сознательно шире, чем np.ndarray у базы.
+    def _get_obs(self) -> np.ndarray | tuple[np.ndarray, np.ndarray]:  # type: ignore[override]
         flat_obs = super()._get_obs()
         minimap_obs = np.ascontiguousarray(self.cpp_vec.minimap_batch(), dtype=np.float32)
         if self.obs_mode == "minimap":
@@ -40,7 +44,9 @@ class CppVecEnvMinimap(CppVecEnv):
             return (flat_obs, minimap_obs)
         return flat_obs
 
-    def step_wait(self):
+    def step_wait(  # type: ignore[override]
+        self,
+    ) -> tuple[np.ndarray | tuple[np.ndarray, np.ndarray], np.ndarray, np.ndarray, list[dict[str, Any]]]:
         # ПОРЯДОК ВАЖЕН: миникарта читается ПОСЛЕ super().step_wait().
         # `step_wait_batch()` при done ВОЗВРАЩАЕТ пост-reset наблюдение (контракт
         # SB3: obs — это s'_0 нового эпизода, терминальный obs уезжает в

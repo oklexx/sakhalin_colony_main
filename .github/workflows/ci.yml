@@ -18,13 +18,11 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ── Lint: обязательный минимум ruff (P3-3 ревью 2026-09-24) ───────────────
-  # Только правила «это баг»: неопределённые имена (F821 — ловит NameError до
-  # рантайма), переопределения (F811), мёртвые локалы/импорты (F841/F401),
-  # голый except (E722), zip без strict (B905), синтаксис (E9/F63/F7).
-  # Полный свод из pyproject.toml (UP/I/E/W…) — отдельным PR с `ruff --fix`.
+  # ── Lint: полный свод ruff из pyproject.toml (E/W/F/I/B/UP) ───────────────
+  # Правила и исключения — только в pyproject.toml, здесь без --select:
+  # локальный `make lint` и CI обязаны давать один и тот же результат.
   lint:
-    name: ruff (минимальный набор)
+    name: ruff
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -37,8 +35,27 @@ jobs:
       - name: ruff check
         run: |
           python -m pip install "ruff==0.16.9"
-          ruff check --output-format=github \
-            --select F821,F811,F841,F401,E722,B905,E9,F63,F7 .
+          ruff check --output-format=github .
+
+  # ── Типы: mypy по rl/, train_ui2/, python/ и CLI-скриптам ─────────────────
+  # Набор файлов и строгость — в [tool.mypy] pyproject.toml. torch/PySide6/
+  # gymnasium/SB3 там заглушены (follow_imports = "skip"), поэтому job ставит
+  # только numpy — а результат тот же, что и локально с полным окружением.
+  mypy:
+    name: mypy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: mypy
+        run: |
+          python -m pip install "mypy==2.3.1" "numpy==2.4.6"
+          mypy
 
   # ── C++-ядро: проверки, которым не нужен Python ────────────────────────────
   # Один и тот же скрипт, что гоняют локально: ./scripts/cpp_checks.sh

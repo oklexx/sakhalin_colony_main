@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-import time
 import queue
+import time
 from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import torch
-from pathlib import Path
-from typing import Optional, Dict, Any, Callable, List, Tuple
-from dataclasses import dataclass, field
 
 from rl.config import Config
 from rl.env_manager import EnvManager
@@ -44,22 +46,22 @@ class TrainMetrics:
     max_return: float = 0.0
     min_return: float = 0.0
     n_episodes_for_stats: int = 0
-    top_actions: Dict[str, float] = field(default_factory=dict)
+    top_actions: dict[str, float] = field(default_factory=dict)
     # Ненулевые счётчики действий за роллаут: по ним UI восстанавливает числа
     # для закрепленных строк, даже если действие не попало в `top_actions`.
-    action_counts: Dict[str, int] = field(default_factory=dict)
+    action_counts: dict[str, int] = field(default_factory=dict)
     # Доля шагов роллаута, на которых действие было легальным (маска == 1),
     # 0..100. Без неё «строка пропала» неоднозначна: политика разлюбила или
     # действие закрыто маской (для водоканала — не было свободного LT_WATER).
-    action_legality: Dict[str, float] = field(default_factory=dict)
+    action_legality: dict[str, float] = field(default_factory=dict)
     # Доминирующая причина закрытия маски за роллаут ("money"/"no_lot"/
     # "curriculum"/"other") по действию; пусто = не измерялось или маска не
     # закрывалась (rl/action_monitor.MaskReasonMonitor, §4 панели).
-    action_mask_reasons: Dict[str, str] = field(default_factory=dict)
+    action_mask_reasons: dict[str, str] = field(default_factory=dict)
     # Знаменатель долей = шагов в собранном роллауте (n_steps*n_envs).
     action_total_steps: int = 0
     loop_detected: bool = False
-    loop_action_name: Optional[str] = None
+    loop_action_name: str | None = None
     envs_with_loops: int = 0
     curriculum_stage: int = 0
     # Доля 0..1 (не проценты!): UI умножает на 100. Название оставлено ради
@@ -69,8 +71,8 @@ class TrainMetrics:
     # расписания этапов нет). Отличает честное «н/д» от вечно нулевых 0%.
     curriculum_progress_valid: bool = True
     curriculum_available_actions: str = ""
-    curriculum_next_at_step: Optional[int] = None
-    curriculum_upcoming_stages: List = field(default_factory=list)
+    curriculum_next_at_step: int | None = None
+    curriculum_upcoming_stages: list = field(default_factory=list)
     # Итог прогона (P1-1 ревью 2026-09-24): воркер пишет их в meta.json, чтобы
     # остановку пользователем можно было отличить от завершения по шагам.
     # stop_reason: "" (дошли до total) | "user" | "early_stop".
@@ -87,9 +89,9 @@ class AsyncTrainer:
         self,
         cfg: Config,
         env_manager: EnvManager,
-        logger: Optional[Any] = None,
-        progress_callback: Optional[Callable[[TrainMetrics], None]] = None,
-        stop_check: Optional[Callable[[], bool]] = None,
+        logger: Any | None = None,
+        progress_callback: Callable[[TrainMetrics], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
     ):
         self.cfg = cfg
         self.em = env_manager
@@ -102,20 +104,20 @@ class AsyncTrainer:
         # Почему выставлен _stop: "user" (команда/stop_check) | "early_stop".
         self._stop_reason: str = ""
         # Очередь команд текущего train(): опрашивается и внутри роллаута.
-        self._command_queue: Optional[queue.Queue] = None
+        self._command_queue: queue.Queue | None = None
         self._paused = False
-        self._queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=cfg.queue_size)
+        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=cfg.queue_size)
 
         self.metrics = TrainMetrics()
         self.best_reward = float("-inf")
-        self.best_eval_days: Optional[float] = None
-        self.best_score: Optional[float] = None
+        self.best_eval_days: float | None = None
+        self.best_score: float | None = None
         self._es_patience = 0
-        self._es_best_score: Optional[float] = None
+        self._es_best_score: float | None = None
         self._ep_returns: list[float] = []
         self._ep_returns_maxlen = 10000
         self._ep_lengths: list[int] = []
-        self._episode_diagnostics: Optional[EpisodeDiagnosticsWriter] = None
+        self._episode_diagnostics: EpisodeDiagnosticsWriter | None = None
         self._diagnostic_total_timesteps = 0
         self._episode_diagnostics_warned = False
         self._curriculum_stage = getattr(cfg, "curriculum_stage", 0)
@@ -128,7 +130,7 @@ class AsyncTrainer:
         )
 
         # Action names from C++ env
-        self._action_names: List[str] = getattr(env_manager, 'action_names', [])
+        self._action_names: list[str] = getattr(env_manager, 'action_names', [])
         if not self._action_names:
             # Fallback if env doesn't provide action_names. Index-aligned
             # with the standard layout (DAY, WEEK, 32 builds, 11 managers,
@@ -165,7 +167,7 @@ class AsyncTrainer:
             self._stop_reason = reason
         self._stop = True
 
-    def _log(self, msg: str):
+    def _log(self, msg: str) -> None:
         if self.logger:
             self.logger.info(msg)
         else:
@@ -179,7 +181,7 @@ class AsyncTrainer:
             return True
         return False
 
-    def _record_episode_diagnostic(self, info: Dict[str, Any], env_index: int) -> None:
+    def _record_episode_diagnostic(self, info: dict[str, Any], env_index: int) -> None:
         writer = self._episode_diagnostics
         if writer is None:
             return
@@ -195,7 +197,7 @@ class AsyncTrainer:
                 self._episode_diagnostics_warned = True
                 self._log(f"[EpisodeDiagnostics] WARNING: не удалось записать JSONL: {exc}")
 
-    def _collect_rollout(self, obs: torch.Tensor) -> Dict[str, Any]:
+    def _collect_rollout(self, obs: torch.Tensor) -> dict[str, Any]:
         """Collect n_steps of transitions."""
         n_envs = self.em.n_envs
         action_names = self._action_names
@@ -226,12 +228,12 @@ class AsyncTrainer:
                 if ep is not None:
                     self._record_episode_diagnostic(info, env_index)
                     r = ep.get("r")
-                    l = ep.get("l")
+                    ep_len = ep.get("l")
                     if r is not None:
                         self._ep_returns.append(r)
                         if len(self._ep_returns) > self._ep_returns_maxlen:
                             self._ep_returns.pop(0)
-                        self._ep_lengths.append(l or 0)
+                        self._ep_lengths.append(ep_len or 0)
                         if r > self.best_reward:
                             self.best_reward = r
                 ep_ret = info.get("ep_return")
@@ -294,7 +296,7 @@ class AsyncTrainer:
         return "flat"
 
     @staticmethod
-    def _split_hybrid_obs(obs: Any) -> Tuple[Any, Any]:
+    def _split_hybrid_obs(obs: Any) -> tuple[Any, Any]:
         """Unpack a hybrid observation into (flat, minimap).
 
         EnvManager._policy_obs() yields a tuple, but a dict form also exists
@@ -310,7 +312,7 @@ class AsyncTrainer:
             return obs[0], obs[1]
         return obs, None
 
-    def _bootstrap_value(self, obs: Any, last_masks: Optional[torch.Tensor]) -> torch.Tensor:
+    def _bootstrap_value(self, obs: Any, last_masks: torch.Tensor | None) -> torch.Tensor:
         """V(s_last) for GAE — obs-mode aware, masks passed by keyword.
 
         Positional masks are exactly how the hybrid crash happened (the second
@@ -348,7 +350,7 @@ class AsyncTrainer:
             return
         self._rollout_action_counts += np.bincount(arr[valid], minlength=n)[:n]
 
-    def _calculate_action_distribution(self, window: int = 0) -> List[int]:
+    def _calculate_action_distribution(self, window: int = 0) -> list[int]:
         """Счётчики действий для монитора.
 
         ``window <= 0`` (норма) — всё, что накоплено за текущий роллаут: доля
@@ -375,8 +377,8 @@ class AsyncTrainer:
         n = min(len(self._rollout_action_counts), len(self._action_names))
         return [int(c) for c in self._rollout_action_counts[:n]]
 
-    def _top_actions_dict(self, action_counts: List[int], total_actions: int,
-                          limit: Optional[int] = None) -> Dict[str, float]:
+    def _top_actions_dict(self, action_counts: list[int], total_actions: int,
+                          limit: int | None = None) -> dict[str, float]:
         """Доли действий для монитора; нулевые сюда не попадают (их рисует UI).
 
         `limit` по умолчанию = `Config.monitor_action_top` (0 = не обрезать).
@@ -400,7 +402,7 @@ class AsyncTrainer:
             if i < len(names) and action_counts[i] > 0
         }
 
-    def _track_step_actions(self, n_envs: int, action_names: List[str]) -> None:
+    def _track_step_actions(self, n_envs: int, action_names: list[str]) -> None:
         """Записать действия последнего шага: счётчик роллаута + историю циклов.
 
         Одно чтение буфера на двух потребителей: раньше оба жили в одном
@@ -433,7 +435,7 @@ class AsyncTrainer:
         self._monitor_warned = True
         self._log(f"[Monitor] {message}")
 
-    def _pop_action_legality(self) -> Dict[str, float]:
+    def _pop_action_legality(self) -> dict[str, float]:
         """Доля легальных шагов по каждому действию за собранный роллаут."""
         pop = getattr(self.em, "pop_action_legality", None)
         if pop is None:
@@ -449,7 +451,7 @@ class AsyncTrainer:
             self._monitor_warn_once(f"pop_action_legality упал: {type(e).__name__}: {e}")
             return {}
 
-    def _pop_action_mask_reasons(self) -> Dict[str, str]:
+    def _pop_action_mask_reasons(self) -> dict[str, str]:
         """Доминирующая причина закрытой маски (деньги / нет участка / курикулум)."""
         pop = getattr(self.em, "pop_action_mask_reasons", None)
         if pop is None:
@@ -466,7 +468,7 @@ class AsyncTrainer:
                 f"pop_action_mask_reasons упал: {type(e).__name__}: {e}")
             return {}
 
-    def _curriculum_progress_view(self, step: int) -> Tuple[float, bool]:
+    def _curriculum_progress_view(self, step: int) -> tuple[float, bool]:
         """(доля 0..1, измерена ли) — прогресс текущего этапа курикулума.
 
         Вторым значением возвращаем честный признак «нет данных»: до 2026-09-23
@@ -496,7 +498,7 @@ class AsyncTrainer:
                 f"get_curriculum_progress вернул progress={raw!r} (не число)")
             return 0.0, False
 
-    def _process_commands(self, command_queue: Optional[queue.Queue]) -> None:
+    def _process_commands(self, command_queue: queue.Queue | None) -> None:
         """Выполнить команды UI из очереди (строки — `train_ui2.protocol.CMD_*`)."""
         if command_queue is None:
             return
@@ -535,7 +537,7 @@ class AsyncTrainer:
                 self._log(f"[Command] WARNING: unknown command {raw!r} — ignored "
                           f"(known: {sorted(P.KNOWN_COMMANDS)})")
 
-    def _update_ppo(self, rollout: Dict[str, Any]) -> Dict[str, float]:
+    def _update_ppo(self, rollout: dict[str, Any]) -> dict[str, float]:
         """Run PPO update on GPU."""
         last_value = torch.tensor(rollout["last_value"], dtype=torch.float32, device=self.device)
         # rollout["last_done"] is already a torch tensor — torch.tensor() on a
@@ -553,7 +555,7 @@ class AsyncTrainer:
 
         return stats
 
-    def _update_loop_detector(self, window: int, total_done: int) -> Tuple[int, Optional[str]]:
+    def _update_loop_detector(self, window: int, total_done: int) -> tuple[int, str | None]:
         """Прогнать детектор циклов по хвосту истории действий после роллаута.
 
         Возвращает (число сред с циклом, имя зацикленного действия или None).
@@ -574,7 +576,7 @@ class AsyncTrainer:
         loop_action_name = self._get_current_loop_action({}) if envs_with_loops > 0 else None
         return envs_with_loops, loop_action_name
 
-    def _get_current_loop_action(self, stats: Dict[str, Any]) -> Optional[str]:
+    def _get_current_loop_action(self, stats: dict[str, Any]) -> str | None:
         """Get the action name currently in loop if any."""
         if self.loop_detector is None:
             return None
@@ -583,7 +585,7 @@ class AsyncTrainer:
         # Find env with highest consecutive count
         best_env = None
         best_count = 0
-        for env_idx, state in self.loop_detector._state.items():
+        for _env_idx, state in self.loop_detector._state.items():
             if state.consecutive_count > best_count:
                 best_count = state.consecutive_count
                 best_env = state
@@ -591,7 +593,7 @@ class AsyncTrainer:
             return best_env.last_action
         return None
 
-    def _curriculum_meta(self) -> Dict[str, Any]:
+    def _curriculum_meta(self) -> dict[str, Any]:
         """Curriculum fields stored in meta.json next to a checkpoint.
 
         Persisting them is what lets eval/watch restore the exact scenario the
@@ -611,7 +613,7 @@ class AsyncTrainer:
             "enabled_mechanics": list(self.cfg.enabled_mechanics_at(self._curriculum_progress_step)),
         }
 
-    def _curriculum_kwargs(self) -> Dict[str, Any]:
+    def _curriculum_kwargs(self) -> dict[str, Any]:
         """Curriculum kwargs for `run_eval` (keep eval == training scenario)."""
         return {
             "curriculum_stage": int(self._curriculum_stage),
@@ -643,7 +645,7 @@ class AsyncTrainer:
         except (OSError, ValueError) as ex:
             self._log(f"[Meta] curriculum update failed: {ex}")
 
-    def _eval(self, total_done: int) -> Dict[str, float]:
+    def _eval(self, total_done: int) -> dict[str, float]:
         """Run evaluation episodes with the current policy.
 
         Returns dict with days, people, bases, avg_return, score.
@@ -781,7 +783,7 @@ class AsyncTrainer:
 
             # Save CURRENT normalization stats (not the stale file from training start)
             norm_path = save_dir / "best_model.norm.json"
-            (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(norm_path))
+            self.em.vec_env.venv.save_normalization(str(norm_path))
 
             meta = {
                 "best_score": score,
@@ -821,8 +823,8 @@ class AsyncTrainer:
             "saved": thresholds_met and (self.best_score == score),
         }
 
-    def train(self, total_timesteps: Optional[int] = None,
-              command_queue: Optional[queue.Queue] = None) -> TrainMetrics:
+    def train(self, total_timesteps: int | None = None,
+              command_queue: queue.Queue | None = None) -> TrainMetrics:
         total = total_timesteps or self.cfg.total_timesteps
         n_envs = self.em.n_envs
 
@@ -899,12 +901,12 @@ class AsyncTrainer:
                 self._log(f"[EpisodeDiagnostics] WARNING: закрытие JSONL не удалось: {exc}")
 
     def _train_body(self, total: int, save_dir: Path,
-                    command_queue: Optional[queue.Queue]) -> None:
+                    command_queue: queue.Queue | None) -> None:
         """Цикл обучения + финальное сохранение и турнир (без закрытия JSONL)."""
         n_envs = self.em.n_envs
         steps_per_rollout = self.cfg.n_steps * n_envs
         obs = self.em.reset()
-        (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(save_dir / "normalization.json"))
+        self.em.vec_env.venv.save_normalization(str(save_dir / "normalization.json"))
         t_start = time.perf_counter()
         total_done = 0
         rollout_idx = 0
@@ -1082,8 +1084,8 @@ class AsyncTrainer:
                 ckpt_path = save_dir / f"checkpoint_{total_done}_steps.pt"
                 self.em.ppo.save(str(ckpt_path))
                 norm_path = str(ckpt_path).replace(".pt", ".norm.json")
-                (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(norm_path)
-                (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(str(save_dir / "normalization.json"))
+                self.em.vec_env.venv.save_normalization(norm_path)
+                self.em.vec_env.venv.save_normalization(str(save_dir / "normalization.json"))
                 # Записать метаданные чекпоинта (стадия курикулума, шаги, obs_version)
                 meta_file = Path(str(ckpt_path).replace(".pt", ".meta.json"))
                 try:
@@ -1162,7 +1164,7 @@ class AsyncTrainer:
         final_path = save_dir / "final_model.pt"
         self.em.ppo.save(str(final_path))
         norm_path = str(final_path).replace(".pt", ".norm.json")
-        (getattr(self.em, "vec_env", None) or self.em.env).venv.save_normalization(norm_path)
+        self.em.vec_env.venv.save_normalization(norm_path)
         self._log(f"[Save] Final model: {final_path}")
 
         # End-of-Training Tournament: evaluate all candidates and ensure best_model.pt is the true champion
@@ -1341,5 +1343,5 @@ class AsyncTrainer:
                   f"episodes={self.metrics.n_episodes}")
         self.metrics.stop_reason = self._stop_reason if self._stop else ""
 
-    def close(self):
+    def close(self) -> None:
         self.em.close()

@@ -1,14 +1,15 @@
 import sys
 from pathlib import Path
+
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from rl.config import Config
 from rl.actor_critic import ActorCritic
-from rl.rollout_buffer import RolloutBuffer
-from rl.ppo import PPO
 from rl.async_trainer import AsyncTrainer
+from rl.config import Config
+from rl.ppo import PPO
+from rl.rollout_buffer import RolloutBuffer
 
 
 class FakeEnvManager:
@@ -42,8 +43,8 @@ class FakeEnvManager:
 
         # Minimal stand-in for CppVecEnv.venv (ColonyVecEnvCpp) used by
         # AsyncTrainer.train() to persist normalization stats.
-        self.env = type("FakeEnv", (), {})()
-        self.env.venv = type("FakeVenv", (), {
+        self.vec_env = type("FakeEnv", (), {})()
+        self.vec_env.venv = type("FakeVenv", (), {
             "save_normalization": staticmethod(lambda path: None),
         })()
 
@@ -253,6 +254,7 @@ def test_curriculum_stage_in_meta(tmp_path):
     """best_model.meta.json must contain curriculum_stage_at_best."""
     import json
     from unittest.mock import MagicMock, patch
+
     from rl.async_trainer import AsyncTrainer
     from rl.config import Config
 

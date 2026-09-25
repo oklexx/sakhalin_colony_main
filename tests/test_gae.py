@@ -182,7 +182,7 @@ def test_gae_normalization(kind):
     buf = _make_buffer(kind, n_steps=T, n_envs=n_envs, n_actions=5,
                        gamma=gamma, lam=lam, device=device)
 
-    for t in range(T):
+    for _t in range(T):
         obs = _obs(kind, n_envs)
         action = torch.randint(0, 5, (n_envs,))
         reward = torch.randn(n_envs)
@@ -265,7 +265,7 @@ def test_gae_true_termination_still_zeros_bootstrap(kind):
     device = torch.device("cpu")
     buf = _make_buffer(kind, n_steps=T, n_envs=1, n_actions=3,
                        gamma=gamma, lam=0.95, device=device)
-    for t, (r, v, done, term) in enumerate([
+    for _t, (r, v, done, term) in enumerate([
         (1.0, 0.0, False, False),
         (1.0, 0.0, True, True),
         (0.0, 50.0, False, False),

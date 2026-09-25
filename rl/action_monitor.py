@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -54,7 +54,7 @@ class ActionLegalityMonitor:
         self._legal[:] = 0.0
         self._steps = 0
 
-    def add_step(self, masks: Optional[np.ndarray]) -> None:
+    def add_step(self, masks: np.ndarray | None) -> None:
         """Сложить в счётчик маску [n_envs, n_actions], которую реально видел актор.
 
         Любое отклонение по форме (нет масок, старый .pyd с другим числом
@@ -72,13 +72,13 @@ class ActionLegalityMonitor:
         self._legal[:cols] += np.asarray(arr[:, :cols], dtype=np.float64).sum(axis=0)
         self._steps += int(arr.shape[0])
 
-    def pop_percent(self, names: Sequence[str]) -> Dict[str, float]:
+    def pop_percent(self, names: Sequence[str]) -> dict[str, float]:
         """Проценты легальности по имени действия (0..100) и сброс окна.
 
         Пустой ответ — признак «окно пустое» (первый шаг или маски не_read_),
         а не «действие недоступно»: UI обязан различать эти состояния.
         """
-        out: Dict[str, float] = {}
+        out: dict[str, float] = {}
         if self._steps <= 0:
             return out
         steps = float(self._steps)
@@ -117,7 +117,7 @@ class MaskReasonMonitor:
         self._hist[:] = 0
         self._steps = 0
 
-    def add_step(self, reasons: Optional[np.ndarray]) -> None:
+    def add_step(self, reasons: np.ndarray | None) -> None:
         """Сложить коды MaskReason [n_envs, n_actions] из CppVecEnv.mask_reasons.
 
         Как и у ActionLegalityMonitor: форма мимо / None / коды вне корзин
@@ -138,14 +138,14 @@ class MaskReasonMonitor:
             self._hist[:cols, r] += np.count_nonzero(codes == r, axis=0)
         self._steps += int(arr.shape[0])
 
-    def pop_dominant(self, names: Sequence[str]) -> Dict[str, str]:
+    def pop_dominant(self, names: Sequence[str]) -> dict[str, str]:
         """{имя_действия: доминирующая причина закрытия} и сброс окна.
 
         Доминирующая = максимум счётчика среди закрытых корзин (1..K-1);
         тай-брейк — порядок MASK_REASON_KEYS[1:] (argmax детерминирован).
         Пустой dict = окно пустое или ни одно действие не закрывалось.
         """
-        out: Dict[str, str] = {}
+        out: dict[str, str] = {}
         if self._steps <= 0:
             return out
         for i, nm in enumerate(list(names)[: self._n]):

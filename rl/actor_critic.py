@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-from typing import List, Tuple, Optional
 
 from rl._nn_common import ActorCriticBase, orthogonal_init
 
@@ -18,7 +17,7 @@ class ActorCritic(ActorCriticBase):
         self,
         obs_size: int,
         n_actions: int,
-        hidden_sizes: List[int],
+        hidden_sizes: list[int],
         device: torch.device,
     ):
         super().__init__()
@@ -26,7 +25,7 @@ class ActorCritic(ActorCriticBase):
         self.n_actions = n_actions
         self.device = device
 
-        layers: List[nn.Module] = []
+        layers: list[nn.Module] = []
         prev = obs_size
         for h in hidden_sizes:
             layers.append(nn.Linear(prev, h))
@@ -54,8 +53,8 @@ class ActorCritic(ActorCriticBase):
             orthogonal_init(m, gain=1.0)
 
     def forward(
-        self, obs: torch.Tensor, action_masks: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        self, obs: torch.Tensor, action_masks: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.trunk(obs)
         values = self.critic_head(h)
         logits = self.actor_head(h)
@@ -68,15 +67,15 @@ class ActorCritic(ActorCriticBase):
     def get_action_and_value(
         self,
         obs: torch.Tensor,
-        action: Optional[torch.Tensor] = None,
-        action_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        action: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits, values = self.forward(obs, action_masks)
         action, log_probs, _ = self._categorical_log_prob(logits, action)
         return action, log_probs, values.squeeze(-1)
 
     def get_value(
-        self, obs: torch.Tensor, action_masks: Optional[torch.Tensor] = None
+        self, obs: torch.Tensor, action_masks: torch.Tensor | None = None
     ) -> torch.Tensor:
         _, values = self.forward(obs, action_masks)
         return values.squeeze(-1)

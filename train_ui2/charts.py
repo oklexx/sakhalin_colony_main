@@ -5,8 +5,9 @@ last values. Designed for ~120px tall panels stacked in the Monitoring tab.
 """
 from __future__ import annotations
 
+import math
 from collections import deque
-from typing import Dict, List, Optional, Sequence
+from collections.abc import Mapping, Sequence
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
@@ -64,7 +65,7 @@ _ACTION_RU = {
 }
 
 # Заполняется лениво из configs/bases.json (captions на русском).
-_BUILD_CAPTION: Dict[str, str] = {}
+_BUILD_CAPTION: dict[str, str] = {}
 
 
 def _load_build_captions() -> None:
@@ -116,29 +117,30 @@ class Chart(QWidget):
         super().__init__(parent)
         self.title = title
         self.maxlen = maxlen
-        self.series: Dict[str, deque] = {}
+        self.series: dict[str, deque] = {}
         self.y_zero_line = y_zero_line
         self.setMinimumHeight(height)
         self.setMaximumHeight(height + 40)
         self.setSizePolicy(
             self.sizePolicy().horizontalPolicy(), self.sizePolicy().verticalPolicy())
 
-    def add_series(self, name: str, color: Optional[QColor] = None):
+    def add_series(self, name: str, color: QColor | None = None):
         if name not in self.series:
             self.series[name] = deque(maxlen=self.maxlen)
         return color or color_for(name)
 
-    def push(self, values: Dict[str, float]):
+    def push(self, values: Mapping[str, float | None]) -> None:
         """Append one sample for each named series (missing keys -> gap)."""
         if not values:
             return
         for name, dq in self.series.items():
-            v = values.get(name)
+            raw = values.get(name)
+            v: float | None
             try:
-                v = float(v)
-                if v != v or v in (float("inf"), float("-inf")):
-                    v = None
+                v = float(raw) if raw is not None else None
             except (TypeError, ValueError):
+                v = None
+            if v is not None and not math.isfinite(v):
                 v = None
             dq.append(v)
         self.update()
@@ -273,21 +275,21 @@ class Bars(QWidget):
         super().__init__(parent)
         self.title = title
         self.legend = legend
-        self.keep: List[str] = list(keep or ())
+        self.keep: list[str] = list(keep or ())
         # (имя, доля%, легальность% | None, липкая строка?)
-        self.items: List[tuple] = []
+        self.items: list[tuple] = []
         # label → русская причина закрытия маски («деньги», «нет участка», …);
         # параллельно items, чтобы не ломать контракт 4-кортежей строк.
-        self._reasons: Dict[str, str] = {}
+        self._reasons: dict[str, str] = {}
         self.setMinimumHeight(height)
         self.setMaximumHeight(height + 40)
 
     def _top_offset(self) -> int:
         return 18 if self.title else 2
 
-    def set_items(self, items: Dict[str, float],
-                  legality: Optional[Dict[str, float]] = None,
-                  reasons: Optional[Dict[str, str]] = None) -> None:
+    def set_items(self, items: dict[str, float],
+                  legality: dict[str, float] | None = None,
+                  reasons: dict[str, str] | None = None) -> None:
         """Принять доли (и, если есть, легальность с причинами) и перерисовать.
 
         Сколько строк влезает — решает виджет, а не тренер: отсечка top-15 в
@@ -304,8 +306,8 @@ class Bars(QWidget):
         max_rows = max(1, avail_h // _ROW_MIN_H)
         rows = rows_with_sticky(items or {}, legality or {},
                                 keep=self.keep, max_rows=max_rows)
-        merged: Dict[str, tuple] = {}
-        merged_reasons: Dict[str, str] = {}
+        merged: dict[str, tuple] = {}
+        merged_reasons: dict[str, str] = {}
         for name, pct, legal, sticky in rows:
             label = action_ru(name)
             prev = merged.get(label)

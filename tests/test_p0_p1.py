@@ -73,7 +73,7 @@ def test_legacy_tax_policy_still_freezes_as_control():
     for _ in range(4):
         env.step(farm)
     g = env.game()
-    for i in range(400):
+    for _i in range(400):
         env.step(0)
         if env.tax_grace_expired():
             break

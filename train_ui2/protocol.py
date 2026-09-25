@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class MsgType(str, Enum):
@@ -20,7 +20,7 @@ class MsgType(str, Enum):
 class ReadyMsg:
     type: MsgType = field(default=MsgType.READY, init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"type": "ready"}
 
 
@@ -34,7 +34,7 @@ class LogMsg:
         if self.level not in ("info", "warn", "error"):
             raise ValueError(f"invalid log level: {self.level!r}")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"type": "log", "level": self.level, "message": self.message}
 
 
@@ -67,20 +67,20 @@ class ProgressMsg:
     entropy: float = 0.0
     kl: float = 0.0
     ent_coef: float = 0.0  # display-only, always provided by caller
-    top_actions: Dict[str, float] = field(default_factory=dict)
+    top_actions: dict[str, float] = field(default_factory=dict)
     # Мониторинг действий (2026-09-23): сырые счётчики за роллаут и доля
     # шагов, в которых действие было легальным (маска = 1). Без них «строка
     # пропала» не читается: политика разлюбила или действие закрыто маской.
-    action_counts: Dict[str, int] = field(default_factory=dict)
-    action_legality: Dict[str, float] = field(default_factory=dict)
+    action_counts: dict[str, int] = field(default_factory=dict)
+    action_legality: dict[str, float] = field(default_factory=dict)
     # Доминирующая причина закрытия маски (MASK_REASON_KEYS): {action: reason}.
     # Пусто = не измерялось; UI не гадает и показывает прежний вердикт.
-    action_mask_reasons: Dict[str, str] = field(default_factory=dict)
+    action_mask_reasons: dict[str, str] = field(default_factory=dict)
     loop_detected: bool = False
-    loop_action_name: Optional[str] = None
+    loop_action_name: str | None = None
     envs_with_loops: int = 0
     curriculum_stage_active: int = 0
-    curriculum_next_at_step: Optional[int] = None
+    curriculum_next_at_step: int | None = None
     # Curriculum extended fields
     curriculum_stage: int = 0
     curriculum_progress_percent: float = 0.0
@@ -90,7 +90,7 @@ class ProgressMsg:
     # Знаменатель долей действий = шагов в собранном роллауте (n_steps*n_envs).
     action_total_steps: int = 0
     curriculum_available_actions: str = ""
-    curriculum_upcoming_stages: List[Dict[str, int]] = field(default_factory=list)
+    curriculum_upcoming_stages: list[dict[str, int]] = field(default_factory=list)
     # Return statistics
     avg_return: float = 0.0
     median_return: float = 0.0
@@ -99,7 +99,7 @@ class ProgressMsg:
     n_episodes_for_stats: int = 0
     type: MsgType = field(default=MsgType.PROGRESS, init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "type": "progress",
             "done": int(self.done),
@@ -148,7 +148,7 @@ class SavedMsg:
     path: str
     type: MsgType = field(default=MsgType.SAVED, init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"type": "saved", "path": self.path}
 
 
@@ -160,7 +160,7 @@ class DoneMsg:
     episodes: int
     type: MsgType = field(default=MsgType.DONE, init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "type": "done",
             "total": int(self.total),
@@ -175,7 +175,7 @@ class ErrorMsg:
     message: str
     type: MsgType = field(default=MsgType.ERROR, init=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"type": "error", "message": self.message}
 
 
@@ -207,14 +207,14 @@ class CommandType(str, Enum):
 KNOWN_COMMANDS: frozenset = frozenset(c.value for c in CommandType)
 
 #: Устаревшие короткие имена (stdin-протокол, `encode_stop` до 2026-09-24).
-LEGACY_COMMAND_ALIASES: Dict[str, str] = {
+LEGACY_COMMAND_ALIASES: dict[str, str] = {
     "stop": CMD_STOP,
     "pause": CMD_PAUSE,
     "resume": CMD_RESUME,
 }
 
 
-def normalize_command(cmd: Any) -> Optional[str]:
+def normalize_command(cmd: Any) -> str | None:
     """Каноническое имя команды или None, если команда неизвестна.
 
     None — сигнал вызывающему громко предупредить (опечатка, чужой формат),
@@ -229,14 +229,14 @@ def normalize_command(cmd: Any) -> Optional[str]:
 @dataclass
 class CommandMsg:
     cmd: str
-    payload: Optional[Dict[str, Any]] = None
+    payload: dict[str, Any] | None = None
     type: MsgType = field(default=MsgType.COMMAND, init=False)
 
     def __post_init__(self):
         if self.payload is None:
             self.payload = {}
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "type": "command",
             "cmd": str(self.cmd),
@@ -244,43 +244,43 @@ class CommandMsg:
         }
 
 
-def encode_command(cmd: str, payload: Optional[Dict[str, Any]] = None) -> str:
+def encode_command(cmd: str, payload: dict[str, Any] | None = None) -> str:
     """Encode a command to JSON."""
     msg = CommandMsg(cmd=cmd, payload=payload or {})
     return json.dumps(msg.to_dict(), ensure_ascii=False, allow_nan=False)
 
 
-def decode_command(line: str) -> Dict[str, Any]:
+def decode_command(line: str) -> dict[str, Any]:
     """Parse a command from JSON line.
-    
+
     Returns dict with 'cmd' and 'payload' keys.
     """
     try:
         d = json.loads(line)
     except json.JSONDecodeError as e:
         raise ValueError(f"invalid JSON: {e}") from e
-    
+
     if not isinstance(d, dict):
         raise ValueError("command must be a JSON object")
-    
+
     t = d.get("type")
     if t != "command":
         raise ValueError(f"expected command type, got: {t}")
-    
+
     cmd = d.get("cmd")
     if cmd is None:
         raise ValueError("missing 'cmd' field")
-    
+
     payload = d.get("payload", {})
     if not isinstance(payload, dict):
         raise ValueError("'payload' must be an object")
-    
+
     return {"cmd": cmd, "payload": payload}
 
 
 Msg = ReadyMsg | LogMsg | ProgressMsg | SavedMsg | DoneMsg | ErrorMsg | CommandMsg
 
-_REQUIRED: Dict[MsgType, tuple] = {
+_REQUIRED: dict[MsgType, tuple] = {
     MsgType.READY: (),
     MsgType.LOG: ("level", "message"),
     MsgType.PROGRESS: ("done", "total"),
@@ -316,14 +316,14 @@ def decode(line: str) -> Msg:
         mt = MsgType(t)
     except ValueError as e:
         raise ValueError(f"unknown message type: {t!r}") from e
-    
+
     # Handle command messages
     if mt is MsgType.COMMAND:
         return CommandMsg(
             cmd=d["cmd"],
             payload=d.get("payload", {}),
         )
-    
+
     missing = [k for k in _REQUIRED[mt] if k not in d]
     if missing:
         raise ValueError(f"missing fields for {mt.value}: {missing}")
@@ -355,8 +355,8 @@ def decode(line: str) -> Msg:
             action_counts={k: _safe_int(v) for k, v in d.get("action_counts", {}).items()},
             action_legality={k: _safe_float(v) for k, v in d.get("action_legality", {}).items()},
             action_mask_reasons=(
-                {str(k): str(v) for k, v in d.get("action_mask_reasons").items()}
-                if isinstance(d.get("action_mask_reasons"), dict) else {}
+                {str(k): str(v) for k, v in reasons.items()}
+                if isinstance(reasons := d.get("action_mask_reasons"), dict) else {}
             ),
             action_total_steps=_safe_int(d.get("action_total_steps", 0)),
             curriculum_available_actions=d.get("curriculum_available_actions", ""),

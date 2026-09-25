@@ -89,9 +89,10 @@ check("RewardConfig.from_dict supports nested 'reward'", cfg2.novelty == 42.0)
 
 # ── 4/5. PPO smoke on CPU ────────────────────────────────────────────────
 import torch
+
 from rl.actor_critic import ActorCritic
-from rl.rollout_buffer import RolloutBuffer
 from rl.ppo import PPO
+from rl.rollout_buffer import RolloutBuffer
 
 torch.manual_seed(0)
 dev = torch.device("cpu")

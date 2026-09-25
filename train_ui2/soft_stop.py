@@ -19,7 +19,7 @@
 from __future__ import annotations
 
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 #: Сколько ждать мягкой остановки. Хватает на дособранный шаг среды,
 #: PPO-апдейт текущего роллаута и сохранение модели; турнир при остановке
@@ -34,7 +34,7 @@ class SoftStop:
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.grace_s = float(grace_s)
         self._clock = clock
-        self._requested_at: Optional[float] = None
+        self._requested_at: float | None = None
         self.forced = False
 
     @property

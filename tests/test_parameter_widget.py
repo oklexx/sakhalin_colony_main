@@ -5,8 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from train_ui2.parameter_widget import (FLOAT_MIN, INT_MIN, ParamSpec,
-                                       PARAM_SPECS, scale_value, spec_for)
+from train_ui2.parameter_widget import FLOAT_MIN, INT_MIN, PARAM_SPECS, ParamSpec, scale_value, spec_for
 
 
 def test_scale_int_double():

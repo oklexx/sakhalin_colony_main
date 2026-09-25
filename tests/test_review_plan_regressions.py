@@ -214,9 +214,9 @@ def test_market_sell_positive_works(base_data, events_data):
 @pytest.mark.skipif(not ENV_OK, reason="colony_cpp not available")
 def test_sunduk_list_must_have_9_items(base_data, events_data):
     g = make_game(base_data, events_data)
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="exactly 9 items"):
         g.market_sell([1, 2])
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="exactly 9 items"):
         g.market_buy([0] * (SUNDUK_SIZE + 1))
 
 

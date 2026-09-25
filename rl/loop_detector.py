@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, Optional, List, Any
+from typing import Any
 
 
 @dataclass
@@ -22,7 +22,7 @@ class LoopDetector:
     when an action repeats beyond a configurable threshold.
     """
 
-    def __init__(self, threshold_config: Optional[Dict[str, Any]] = None):
+    def __init__(self, threshold_config: dict[str, Any] | None = None):
         self._consecutive_threshold = 3
         if threshold_config:
             self._consecutive_threshold = threshold_config.get(
@@ -32,19 +32,19 @@ class LoopDetector:
             threshold_config.get("history_size", 1000) if threshold_config else 1000
         )
 
-        self._state: Dict[int, EnvState] = {}
-        self._history: List[Dict[str, Any]] = []
+        self._state: dict[int, EnvState] = {}
+        self._history: list[dict[str, Any]] = []
 
         self._total_loops_detected = 0
         self._total_actions_sampled = 0
-        self._loop_start_times: Dict[int, float] = {}
+        self._loop_start_times: dict[int, float] = {}
 
     def _get_or_create_env_state(self, env_idx: int) -> EnvState:
         if env_idx not in self._state:
             self._state[env_idx] = EnvState(env_idx=env_idx)
         return self._state[env_idx]
 
-    def update_batch(self, action_data: List[Dict[str, Any]]) -> Dict[int, Optional[str]]:
+    def update_batch(self, action_data: list[dict[str, Any]]) -> dict[int, str | None]:
         """Process multiple environments at once.
 
         Args:
@@ -53,7 +53,7 @@ class LoopDetector:
         Returns:
             Dict mapping env_idx -> action_name if loop detected, else None.
         """
-        alerts: Dict[int, Optional[str]] = {}
+        alerts: dict[int, str | None] = {}
 
         for data in action_data:
             env_idx = data["env_idx"]
@@ -90,7 +90,7 @@ class LoopDetector:
 
         return alerts
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         if not self._state:
             return {
                 "total_envs": 0,
@@ -131,7 +131,7 @@ class LoopDetector:
             "total_loops_detected": self._total_loops_detected,
         }
 
-    def clear(self):
+    def clear(self) -> None:
         self._state.clear()
         self._history.clear()
         self._loop_start_times.clear()
@@ -143,7 +143,7 @@ class LoopDetector:
         return self._consecutive_threshold
 
     @consecutive_threshold.setter
-    def consecutive_threshold(self, value: int):
+    def consecutive_threshold(self, value: int) -> None:
         self._consecutive_threshold = max(1, value)
         if hasattr(self, '_state') and self._state:
             for state in self._state.values():

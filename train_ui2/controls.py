@@ -6,16 +6,16 @@ label+spin in a single 22px row with no per-row ×2/÷2 buttons (those were the
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QGridLayout, QWidget
 
 from train_ui2 import theme as T
-from train_ui2.parameter_widget import PARAM_SPECS, REWARD_SPECS, ParamSpec
 from train_ui2.constants import HUMAN_REWARD_HELP
+from train_ui2.parameter_widget import PARAM_SPECS, REWARD_SPECS, ParamSpec
 
-SPECS: Dict[str, ParamSpec] = {s.key: s for s in PARAM_SPECS + REWARD_SPECS}
+SPECS: dict[str, ParamSpec] = {s.key: s for s in PARAM_SPECS + REWARD_SPECS}
 
 
 class ParamRow(QWidget):
@@ -74,9 +74,9 @@ def _scaled(value: float, factor: float, is_int: bool, min_value: float) -> floa
 class ParamGroup(QWidget):
     """Themed group of ParamRows in a 2-column grid + ×2/÷2 for the group."""
 
-    def __init__(self, title: str, keys: List[str], tooltip: str = "", parent=None):
+    def __init__(self, title: str, keys: list[str], tooltip: str = "", parent=None):
         super().__init__(parent)
-        self.rows: Dict[str, ParamRow] = {}
+        self.rows: dict[str, ParamRow] = {}
         box = T.group(title)
         grid = box.layout()
         half = (len(keys) + 1) // 2
@@ -100,10 +100,10 @@ class ParamGroup(QWidget):
     def _changed(self, key, val):
         self.value_changed.emit(key, val)
 
-    def values(self) -> Dict[str, Any]:
+    def values(self) -> dict[str, Any]:
         return {k: r.value() for k, r in self.rows.items()}
 
-    def set_values(self, data: Dict[str, Any]):
+    def set_values(self, data: dict[str, Any]):
         for k, r in self.rows.items():
             v = data.get(k)
             if isinstance(v, (list, tuple)):
@@ -141,7 +141,7 @@ class StatCard(QWidget):
         self.setStyleSheet(
             f"background:{T.PANEL}; border:1px solid {T.LINE}; border-radius:4px;")
 
-    def set_value(self, text: str, color: Optional[str] = None):
+    def set_value(self, text: str, color: str | None = None):
         self.val.setText(text)
         if color:
             self.val.setStyleSheet(

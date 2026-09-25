@@ -20,6 +20,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from rl.config import Config  # noqa: E402
 from rl.curriculum import (  # noqa: E402
     ALL_IDS,
     MECHANIC_NAMES,
@@ -31,20 +32,18 @@ from rl.curriculum import (  # noqa: E402
     mechanics_enabled_at_step,
     normalize_enabled_mechanics,
     parse_mechanic_ids,
-    parse_unlock_ids,
     parse_resources,
+    parse_unlock_ids,
 )
-from rl.config import Config  # noqa: E402
 from train_ui2.constants import (  # noqa: E402
+    HUMAN_REWARD_HELP,
     MECHANIC_CAPTIONS,
     MECHANIC_IDS,
-    PRESETS,
     PRESET_ORDER,
-    HUMAN_REWARD_HELP,
-    REWARD_GROUPS,
+    PRESETS,
     REWARD_FLAGS,
+    REWARD_GROUPS,
 )
-
 
 # ── 1. Синхронность таблиц механик (Python UI / Python RL / C++) ─────────────
 
@@ -202,7 +201,7 @@ def test_mechanic_captions_complete():
 
 
 def test_reward_flags_have_plain_labels():
-    for key, label, tip in REWARD_FLAGS:
+    for _key, label, tip in REWARD_FLAGS:
         assert "выкл." not in label.lower(), f"программистская подпись: {label}"
         assert label.strip() and tip.strip()
 

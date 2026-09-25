@@ -18,8 +18,9 @@ import importlib
 import json
 import sys
 import types
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, List
+from typing import Any
 
 import numpy as np
 import pytest
@@ -120,7 +121,7 @@ def test_set_attr_partial_is_explicit_error(cpp_vecenv_module):
 
 def test_env_method_calls_batch_method_once(cpp_vecenv_module):
     env = _bare_env(cpp_vecenv_module, n=4)
-    calls: List[int] = []
+    calls: list[int] = []
     env.bump = lambda k: calls.append(k) or len(calls)
     assert env.env_method("bump", 5) == [1, 1, 1, 1]
     assert calls == [5]
@@ -129,7 +130,7 @@ def test_env_method_calls_batch_method_once(cpp_vecenv_module):
 
 
 class _FakeCpp:
-    def __init__(self, infos: List[str], obs_size: int = 4) -> None:
+    def __init__(self, infos: list[str], obs_size: int = 4) -> None:
         self._infos = infos
         self._obs_size = obs_size
 

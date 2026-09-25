@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -103,6 +104,7 @@ def test_normalizer_load_cpp_nested_shape(tmp_path):
     Python Normalizer.load must accept this shape (stats under "obs_rms").
     """
     import json
+
     from cpp_env import Normalizer
 
     mean = [0.1, 0.2, 0.3]

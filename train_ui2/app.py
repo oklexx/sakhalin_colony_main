@@ -25,7 +25,7 @@ def main() -> int:
     app.setStyleSheet(T.QSS)
     win = MainWindow2()
     win.show()
-    return app.exec()
+    return int(app.exec())
 
 
 if __name__ == "__main__":

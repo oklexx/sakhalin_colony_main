@@ -1,6 +1,8 @@
-import pefile
 import os
+import subprocess
 import zlib
+
+import pefile
 
 exe = r"C:\Users\oklex\OneDrive\Documentos\sakhalin_colony_main\SkhClny3.exe"
 out_dir = r"C:\Users\oklex\OneDrive\Documentos\sakhalin_colony_main\extracted"
@@ -16,18 +18,18 @@ for s in pe.sections:
         break
 
 if aspack:
-    print(f"=== ASPACK SECTION ===")
+    print("=== ASPACK SECTION ===")
     print(f"  VA: {aspack.VirtualAddress:#x}")
     print(f"  RawSize: {aspack.SizeOfRawData:#x}")
     print(f"  VirtSize: {aspack.Misc_VirtualSize:#x}")
-    
+
     aspack_data = aspack.get_data()
     print(f"  Data loaded: {len(aspack_data)} bytes")
-    
+
     # ASPack decompression (LZMA-based)
     # Try to find the decompressor
     print(f"  First 16 bytes: {aspack_data[:16].hex()}")
-    
+
     # Try zlib
     for offset in range(0, min(len(aspack_data), 1000)):
         try:
@@ -42,7 +44,7 @@ if aspack:
 
 # Try to use ResourceHacker or 7z
 print("\n=== TRYING 7Z EXTRACTION ===")
-import subprocess
+
 exe_dir = os.path.dirname(exe)
 res_dir = os.path.join(exe_dir, "extracted")
 os.makedirs(res_dir, exist_ok=True)
@@ -59,7 +61,7 @@ if result.stderr:
     print(f"  stderr: {result.stderr[:500]}")
 
 # List what 7z extracted
-for root, dirs, files in os.walk(res_dir):
+for root, _dirs, files in os.walk(res_dir):
     for f in files:
         fp = os.path.join(root, f)
         size = os.path.getsize(fp)

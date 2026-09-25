@@ -16,7 +16,7 @@ import json
 import queue
 import threading
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 import pytest
 import torch
@@ -38,13 +38,13 @@ def _cfg(tmp_path: Path, **kw: Any) -> Config:
     return Config(**base)
 
 
-def _records(path: Path) -> List[dict]:
+def _records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
 class _Logs:
     def __init__(self) -> None:
-        self.lines: List[str] = []
+        self.lines: list[str] = []
 
     def __call__(self, msg: str) -> None:
         self.lines.append(msg)
@@ -246,7 +246,7 @@ def test_stop_check_is_honoured_while_paused(tmp_path):
     trainer = AsyncTrainer(cfg=_cfg(tmp_path), env_manager=FakeEnvManager(),
                            stop_check=stop.is_set)
     threading.Timer(0.3, stop.set).start()
-    done: List[Any] = []
+    done: list[Any] = []
     t = threading.Thread(target=lambda: done.append(trainer.train(command_queue=q)), daemon=True)
     t.start()
     t.join(10.0)
@@ -360,8 +360,8 @@ def test_next_rollout_starts_from_current_obs_not_initial_reset(tmp_path):
     class _Track(FakeEnvManager):
         def __init__(self, **kw: Any) -> None:
             super().__init__(**kw)
-            self.passed: List[torch.Tensor] = []
-            self.returned: List[torch.Tensor] = []
+            self.passed: list[torch.Tensor] = []
+            self.returned: list[torch.Tensor] = []
 
         def collect_step(self, obs):
             self.passed.append(obs)
@@ -382,7 +382,7 @@ def test_stop_during_tournament_interrupts_it(tmp_path, monkeypatch):
     import train_ui2.evaluator as ev
 
     stop = threading.Event()
-    calls: List[str] = []
+    calls: list[str] = []
 
     def _eval(model_path: str, **kw: Any) -> dict:
         calls.append(model_path)

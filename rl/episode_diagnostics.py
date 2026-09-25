@@ -6,16 +6,15 @@ for offline analysis even if the GUI/worker exits unexpectedly.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
-from datetime import datetime, timezone
 import json
 import math
 import os
-from pathlib import Path
 import threading
 import uuid
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
-
 
 SCHEMA_VERSION = 1
 

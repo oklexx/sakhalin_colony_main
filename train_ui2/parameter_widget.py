@@ -8,7 +8,8 @@ from pathlib import Path
 _PROJECT = Path(__file__).resolve().parent.parent
 if str(_PROJECT) not in sys.path:
     sys.path.insert(0, str(_PROJECT))
-from rl.config import Config as _Cfg, RewardConfig as _RC
+from rl.config import Config as _Cfg
+from rl.config import RewardConfig as _RC
 
 INT_MIN = 1
 FLOAT_MIN = 1e-9

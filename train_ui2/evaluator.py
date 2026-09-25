@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, TypedDict
 
 import numpy as np
 
@@ -11,6 +11,26 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 if str(PROJECT_ROOT / "python") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "python"))
+
+
+class EvalResult(TypedDict):
+    """Итог `run_eval`: средние по эпизодам + поэпизодные ряды (для медиан)."""
+
+    days: float
+    days_std: float
+    people: float
+    bases: float
+    episodes: float
+    avg_return: float
+    water_channels: float
+    water_ready: float
+    water_stock: float
+    episode_days: list[int]
+    episode_bases: list[int]
+    episode_people: list[int]
+    episode_returns: list[float]
+    episode_water: list[int]
+    episode_water_ready: list[int]
 
 
 def _probe_env_dims(map_size: int = 280):
@@ -30,6 +50,7 @@ def _load_policy(model_path: Path, device, mode: str = "auto", minimap_radius: i
     mode: "auto" (detect MLP vs CNN from the state_dict), "flat", or "minimap".
     """
     import torch
+
     from rl.actor_critic import ActorCritic
     from rl.actor_critic_cnn import ActorCriticCNN
 
@@ -160,9 +181,9 @@ def run_eval(
     curriculum_resources: str | None = None,
     allow_stale_pyd: bool | None = None,
     obs_version: int = 2,
-    enabled_mechanics=None,
+    enabled_mechanics: str | list[str] | None = None,
     tax_to_debt: bool | None = None,
-) -> Dict[str, float]:
+) -> EvalResult:
     """Run the trained policy in the colony env and return mean stats.
 
     mode: "auto" (detect from checkpoint), "flat" (MLP: 299-dim v2, 289-dim
@@ -178,6 +199,7 @@ def run_eval(
     Returns dict: days, people, bases, episodes, avg_return (all non-negative).
     """
     import torch
+
     from cpp_env import CppColonyEnv
     from minimap import MinimapSingleEnvWrapper
     from rl.curriculum import resolve_curriculum, resolve_state
@@ -204,7 +226,7 @@ def run_eval(
     # mechanic allow-list.
     reward_cfg = None
     model_dir = model_path.parent
-    meta: Dict[str, Any] = {}
+    meta: dict[str, Any] = {}
     meta_paths = [
         model_path.with_suffix(".meta.json"),
         model_dir / "best_model.meta.json",
@@ -228,7 +250,7 @@ def run_eval(
                 reward_cfg = loaded_cfg.get("reward")
             if "difficulty" in loaded and "difficulty" not in meta:
                 difficulty = loaded["difficulty"]
-        except (Exception,):
+        except Exception:
             pass
 
     if tax_to_debt is None:
@@ -255,8 +277,8 @@ def run_eval(
         obs_version=obs_version,
         enabled_mechanics=enabled_mechanics,
     )
-    cur_stage = int(resolved["curriculum_stage"])  # type: ignore[arg-type]
-    manual_csv = str(resolved["unlock_ids"])
+    cur_stage = resolved["curriculum_stage"]
+    manual_csv = resolved["unlock_ids"]
     eval_allowed = list(st.allowed_builds)
 
     env = CppColonyEnv(
@@ -348,11 +370,13 @@ def run_eval(
                         mask = env.action_mask()
                         mask_t = torch.from_numpy(np.asarray(mask, dtype=np.float32)).to(dev).reshape(1, -1)
                     if is_hybrid:
+                        assert mm_wrap is not None
                         flat_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(dev).reshape(1, -1)
                         mm = mm_wrap.minimap_obs()
                         mm_t = torch.from_numpy(np.ascontiguousarray(mm, dtype=np.float32)).to(dev).reshape(1, *mm.shape)
                         logits, _values = policy(flat_t, mm_t, action_masks=mask_t)
                     elif use_minimap:
+                        assert mm_wrap is not None
                         mm = mm_wrap.minimap_obs()
                         obs_t = torch.from_numpy(np.ascontiguousarray(mm, dtype=np.float32)).to(dev).reshape(1, *mm.shape)
                         logits, _values = policy(obs_t, action_masks=mask_t)

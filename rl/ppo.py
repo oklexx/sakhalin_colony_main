@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import math
 import os
+from typing import Any
+
 import torch
 import torch._dynamo  # noqa: F401  (must be module-level: a function-local
-                      # `import torch._dynamo` would make `torch` local to
-                      # __init__ and break every earlier `torch.*` reference)
+
+# `import torch._dynamo` would make `torch` local to
+# __init__ and break every earlier `torch.*` reference)
 import torch.nn as nn
 from torch import distributions as D
-from typing import Optional, Dict
 
-from rl._nn_common import load_policy_state
-from rl.actor_critic import ActorCritic
+from rl._nn_common import ActorCriticBase, load_policy_state
 from rl.rollout_buffer import RolloutBuffer
 
 
@@ -20,7 +21,7 @@ class PPO:
 
     def __init__(
         self,
-        model: ActorCritic,
+        model: ActorCriticBase,  # MLP / CNN / hybrid
         buffer: RolloutBuffer,
         lr: float = 3e-4,
         gamma: float = 0.99,
@@ -34,7 +35,7 @@ class PPO:
         use_amp: bool = True,
         amp_dtype: str = "bfloat16",
         torch_compile: bool = False,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
         lr_warmup_steps: int = 0,
         lr_decay: bool = True,
         total_training_steps: int = 0,
@@ -113,7 +114,7 @@ class PPO:
 
         if lr_warmup_steps > 0 or lr_decay:
             from torch.optim.lr_scheduler import LambdaLR
-            def lr_lambda(step):
+            def lr_lambda(step: int) -> float:
                 if step < lr_warmup_steps:
                     return float(step) / max(1, lr_warmup_steps)
                 if lr_decay and total_training_steps > 0:
@@ -126,7 +127,7 @@ class PPO:
         else:
             self.scheduler = None
 
-    def _forward(self, *args):
+    def _forward(self, *args: torch.Tensor | None) -> Any:
         """Forward through the (possibly compiled) model with eager fallback.
 
         torch.compile on Windows has no triton backend: the wrapper is created
@@ -145,8 +146,11 @@ class PPO:
             raise
 
     def collect_step(
-        self, flat, minimap=None, action_masks=None
-    ) -> Dict[str, torch.Tensor]:
+        self,
+        flat: torch.Tensor,
+        minimap: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         """Get action, log_prob, value for current obs (no grad).
 
         In hybrid mode call as collect_step(flat, minimap); otherwise pass a
@@ -186,7 +190,7 @@ class PPO:
 
     def update(
         self, last_value: torch.Tensor, last_done: torch.Tensor
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Run PPO update after buffer is full.
 
         last_value: [n_envs] value of terminal state
@@ -286,9 +290,9 @@ class PPO:
         advantages: torch.Tensor,
         returns: torch.Tensor,
         old_values: torch.Tensor,
-        flat: Optional[torch.Tensor] = None,
-        action_masks: Optional[torch.Tensor] = None,
-    ):
+        flat: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         if self.is_hybrid:
             logits, values = self._forward(flat, obs, action_masks)
         else:
@@ -320,7 +324,7 @@ class PPO:
 
         return policy_loss, value_loss, entropy, approx_kl
 
-    def save(self, path: str):
+    def save(self, path: str) -> None:
         # Always save from the un-compiled module: the OptimizedModule's
         # state_dict prefixes keys with "_orig_mod.", which older checkpoints
         # and the evaluator's architecture inference do not expect.
@@ -382,7 +386,7 @@ class PPO:
             except FileNotFoundError:
                 pass
 
-    def load(self, path: str):
+    def load(self, path: str) -> None:
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
         # Newer models have a zero-initialized value-only mask projection.
         # Missing keys are expected for legacy checkpoints; output heads and

@@ -1,8 +1,8 @@
 import json
 import os
 import sys
-import threading
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -69,7 +69,7 @@ def test_msgfile_writes_jsonl():
         mf.write(W.P.ProgressMsg(done=1, total=10, fps=5.0))
         mf.close()
         with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [line.strip() for line in f if line.strip()]
         assert len(lines) == 3
         d0 = json.loads(lines[0])
         assert d0["type"] == "ready"
@@ -103,7 +103,7 @@ def test_msgfile_thread_safety():
             t.join()
         mf.close()
         with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
+            lines = [line.strip() for line in f if line.strip()]
         assert len(lines) == n_threads * n_msgs
         for line in lines:
             json.loads(line)

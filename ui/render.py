@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Tuple
 
 import pygame
 
@@ -28,7 +27,7 @@ LEGEND_BG = (224, 224, 144)    # желтоватая полоса легенд�
 CURSOR_COLOR = (255, 80, 80)   # курсор
 
 # ---- типы местности: фон ячейки -----------------------------------------
-TERRAIN_BG: Dict[int, Tuple] = {
+TERRAIN_BG: dict[int, tuple] = {
     C.LT_NONE: (186, 211, 178),         # чистое поле — обычная земля
     C.LT_NORMAL: (186, 211, 178),   # ровная земля — светло-зелёная
     C.LT_WATER: (131, 208, 227),    # океан — голубой
@@ -43,7 +42,7 @@ GOOD_BG = (170, 230, 170)
 DESTROYED_BG = (200, 120, 100)
 
 # ---- русские названия ----------------------------------------------------
-LOT_NAMES: Dict[int, str] = {
+LOT_NAMES: dict[int, str] = {
     C.LT_NONE: "ничего",
     C.LT_NORMAL: "ровная земля",
     C.LT_WATER: "вода",
@@ -82,7 +81,7 @@ TOOL_GOLD, TOOL_FOOD, TOOL_COAL, TOOL_IRON, TOOL_OIL, TOOL_STONE, \
     TOOL_SALE, TOOL_BUY, TOOL_DESTROY, TOOL_NEW_WEEK, TOOL_FIND_SLOW, \
     TOOL_RESTORE, TOOL_MONEY, TOOL_PEOPLE = range(19)
 
-_asset_cache: Dict[str, pygame.Surface] = {}
+_asset_cache: dict[str, pygame.Surface] = {}
 
 
 def _asset(name: str) -> pygame.Surface:
@@ -168,7 +167,7 @@ def base_resource_caption(base) -> str:
 
 
 # ---- соответствие постройки -> иконка imlBases (ImageIndex из BASES.INI 3.47) --
-BASE_ICON: Dict[str, Tuple[int, str]] = {
+BASE_ICON: dict[str, tuple[int, str]] = {
     "City": (10, "Город"),
     "Farm": (0, "Ферма"),
     "Garden": (1, "Сад"),

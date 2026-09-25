@@ -178,7 +178,8 @@ def test_hybrid_bootstrap_uses_action_masks():
     torch.nn.init.constant_(trainer.em.model.critic_mask_proj.weight, 1.0)
     with torch.no_grad():
         v_on = trainer._bootstrap_value((flat, mm), masks)
-        half = masks.clone(); half[:, 0] = 0.0
+        half = masks.clone()
+        half[:, 0] = 0.0
         v_half = trainer._bootstrap_value((flat, mm), half)
     assert not torch.allclose(v_on, v_half)
 
