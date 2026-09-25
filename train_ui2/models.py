@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def default_models_dir() -> Path:
@@ -17,13 +17,13 @@ def default_models_dir() -> Path:
 class ModelInfo:
     name: str
     path: Path
-    created: Optional[datetime] = None
+    created: datetime | None = None
     steps: int = 0
     best_reward: float = float("-inf")
     episodes: int = 0
     train_time_sec: float = 0.0
-    eval: Dict[str, Any] = field(default_factory=dict)
-    meta: Dict[str, Any] = field(default_factory=dict)
+    eval: dict[str, Any] = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def model_file(self) -> Path:
@@ -41,7 +41,7 @@ MODEL_WEIGHT_NAMES = ("final_model.pt", "best_model.pt")
 _CHECKPOINT_STEPS_RE = re.compile(r"checkpoint_(\d+)_")
 
 
-def checkpoint_sort_key(path: Path) -> "tuple[int, str]":
+def checkpoint_sort_key(path: Path) -> tuple[int, str]:
     """Ключ порядка чекпойнтов: ЧИСЛО шагов, затем имя.
 
     Лексикографически `checkpoint_999999_steps.pt` > `checkpoint_1000000_steps.pt`,
@@ -54,7 +54,7 @@ def checkpoint_sort_key(path: Path) -> "tuple[int, str]":
 
 
 def latest_checkpoint(entry: Path, pattern: str = "checkpoint_*_steps.pt",
-                      loose: bool = True) -> Optional[Path]:
+                      loose: bool = True) -> Path | None:
     """Свежайший чекпойнт по числу шагов (или None).
 
     `pattern` сужает поиск (веса — `*_steps.pt`, нормализация —
@@ -75,7 +75,7 @@ def has_model_weights(entry: Path) -> bool:
     return latest_checkpoint(entry, "checkpoint_*.pt") is not None
 
 
-def pick_model_file(entry: Path) -> Optional[Path]:
+def pick_model_file(entry: Path) -> Path | None:
     """Лучший доступный файл весов: final → best → свежий чекпойнт."""
     for name in MODEL_WEIGHT_NAMES:
         p = entry / name
@@ -84,14 +84,14 @@ def pick_model_file(entry: Path) -> Optional[Path]:
     return latest_checkpoint(entry, "checkpoint_*.pt")
 
 
-def _parse_dt(s: str) -> Optional[datetime]:
+def _parse_dt(s: str) -> datetime | None:
     try:
         return datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return None
 
 
-def _load_meta(path: Path) -> Dict[str, Any]:
+def _load_meta(path: Path) -> dict[str, Any]:
     p = path / "meta.json"
     if not p.exists():
         return {}
@@ -103,7 +103,7 @@ def _load_meta(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _build_info(name: str, path: Path, meta: Dict[str, Any]) -> ModelInfo:
+def _build_info(name: str, path: Path, meta: dict[str, Any]) -> ModelInfo:
     created = _parse_dt(meta.get("created", ""))
     if created is None:
         try:
@@ -126,13 +126,13 @@ def _build_info(name: str, path: Path, meta: Dict[str, Any]) -> ModelInfo:
 class ModelRegistry:
     """Scans a models directory for trained model folders."""
 
-    def __init__(self, root: Optional[Path] = None):
+    def __init__(self, root: Path | None = None):
         self.root = Path(root) if root else default_models_dir()
 
-    def scan(self) -> List[ModelInfo]:
+    def scan(self) -> list[ModelInfo]:
         if not self.root.exists():
             return []
-        out: List[ModelInfo] = []
+        out: list[ModelInfo] = []
         for entry in sorted(self.root.iterdir()):
             if not entry.is_dir():
                 continue
@@ -142,7 +142,7 @@ class ModelRegistry:
         out.sort(key=lambda m: (m.created is None, m.created or datetime.min), reverse=True)
         return out
 
-    def get(self, name: str) -> Optional[ModelInfo]:
+    def get(self, name: str) -> ModelInfo | None:
         p = self.root / name
         if not p.is_dir():
             return None
@@ -163,7 +163,7 @@ class ModelRegistry:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         return p
 
-    def save_eval(self, name: str, eval_result: Dict[str, Any]) -> Path:
+    def save_eval(self, name: str, eval_result: dict[str, Any]) -> Path:
         info = self.get(name)
         if info is None:
             raise FileNotFoundError(f"model not found: {name}")
@@ -176,7 +176,7 @@ class ModelRegistry:
             raise FileNotFoundError(f"model not found: {name}")
         shutil.rmtree(p)
 
-    def delete_many(self, names: List[str]) -> List[str]:
+    def delete_many(self, names: list[str]) -> list[str]:
         removed = []
         for n in names:
             self.delete(n)

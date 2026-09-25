@@ -11,14 +11,16 @@ Usage:
 """
 from __future__ import annotations
 
-import numpy as np
+from typing import Any
+
 import gymnasium as gym
+import numpy as np
 
 
 class MinimapVecEnvWrapper:
     """Adds a minimap() method to a CppVecEnv-like vec env."""
 
-    def __init__(self, venv):
+    def __init__(self, venv: Any) -> None:
         self.venv = venv
         self.channels = 8
         self.grid = 32
@@ -36,7 +38,7 @@ class MinimapVecEnvWrapper:
         mm = self.venv.venv.minimap_batch()
         return np.ascontiguousarray(mm, dtype=np.float32)
 
-    def refresh(self):
+    def refresh(self) -> None:
         self.channels = 8
         self.grid = 32
         self.minimap_space = gym.spaces.Box(
@@ -48,7 +50,7 @@ class MinimapVecEnvWrapper:
 class MinimapSingleEnvWrapper:
     """Adds a minimap() method to a CppColonyEnv-like single env."""
 
-    def __init__(self, env):
+    def __init__(self, env: Any) -> None:
         self.env = env
         self.channels = 8
         self.grid = 32
@@ -66,7 +68,7 @@ class MinimapSingleEnvWrapper:
         mm = self.env.cpp_env.minimap()
         return np.ascontiguousarray(mm, dtype=np.float32)
 
-    def refresh(self):
+    def refresh(self) -> None:
         self.channels = 8
         self.grid = 32
         self.minimap_space = gym.spaces.Box(

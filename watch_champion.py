@@ -16,7 +16,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -216,10 +218,11 @@ def read_state(state_file: Path) -> dict | None:
     if not state_file.exists():
         return None
     try:
-        with open(state_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+        with open(state_file, encoding="utf-8") as f:
+            data = json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 # ── visual watch: IPC hygiene and diagnostics ────────────────────────────────
@@ -284,7 +287,7 @@ def gui_exe_stale_sources(exe_path) -> "list[str]":
         exe_mtime = exe.stat().st_mtime
     except OSError:
         return []
-    newer: "list[str]" = []
+    newer: list[str] = []
     for pattern in ("src/*.cpp", "include/colony/*.h", "include/*.h",
                     "configs/*.json", "build_gui.bat"):
         for f in PROJECT_ROOT.glob(pattern):
@@ -665,10 +668,10 @@ def run_visual_watch(
             np.array(minimap_data, dtype=np.float32).reshape(1, n_ch, grid, grid)
         ).to(device)
 
-    def _choose_action(state: dict) -> "tuple[int, str]":
+    def _choose_action(state: dict) -> "tuple[int, str, str]":
         obs = state.get("obs") or []
         if not obs:
-            return 0, "DAY"          # окно ещё не прислало наблюдение
+            return 0, "DAY", ""      # окно ещё не прислало наблюдение
         obs_np = np.array(obs, dtype=np.float32)
         if normalizer is not None:
             obs_np = normalizer.normalize(obs_np)
@@ -679,7 +682,7 @@ def run_visual_watch(
                  f"прислало миникарту (нужно 8×{grid}×{grid} в state.json). "
                  f"Пересоберите GUI (build_gui.bat): старый exe не пишет поле "
                  f"minimap и наблюдать такую модель нельзя.", level="error")
-            return 0, "DAY"
+            return 0, "DAY", ""
         with torch.no_grad():
             obs_t = torch.from_numpy(obs_np).to(device).reshape(1, -1)
             if is_hybrid:
@@ -720,7 +723,7 @@ def run_visual_watch(
     proc = None
     try:
         proc = _launch()
-        state = _handshake(proc)
+        state: dict = _handshake(proc)
         _log(f"Visual watch running. Speed: {speed if speed > 0 else 1.0} steps/s. "
              f"Закройте окно, чтобы остановить.")
 
@@ -735,10 +738,12 @@ def run_visual_watch(
                 # C++ сам сбрасывает карту через 5 с (gui.cpp) и пишет свежий
                 # state — раньше драйвер спал вслепую 6 с и чистил IPC-файлы.
                 stamp = state_stamp(state_file)
-                state = wait_for_state(
+                fresh = wait_for_state(
                     state_file, since=stamp, timeout=GUI_RESET_TIMEOUT, proc=proc,
                     on_wait=lambda s: _log(f"жду авто-рестарт карты в окне… {s:.0f} с"))
-                if state is None:
+                if fresh is not None:
+                    state = fresh
+                else:
                     if proc.poll() is None:
                         raise GuiStartupError(describe_gui_failure(
                             proc, exe_path, gui_log, ipc_dir,
@@ -785,10 +790,10 @@ def run_visual_watch(
             if not write_action(actions_file, action):
                 _log("WARNING: окно не забирает actions.txt 2 с — оно зависло "
                      "или не в режиме --headless-ai", level="warning")
-            state = wait_for_state(
+            fresh = wait_for_state(
                 state_file, since=stamp, timeout=GUI_STEP_TIMEOUT, proc=proc,
                 on_wait=lambda s: _log(f"жду ответ от GUI-окна… {s:.0f} с"))
-            if state is None:
+            if fresh is None:
                 if proc.poll() is None:
                     raise GuiStartupError(describe_gui_failure(
                         proc, exe_path, gui_log, ipc_dir,
@@ -804,6 +809,7 @@ def run_visual_watch(
                 proc = _launch()
                 state = _handshake(proc)
                 continue
+            state = fresh
 
             if state.get("error"):
                 # Окно отклонило действие (вне 0..n_actions-1) и ответило
@@ -908,12 +914,19 @@ def main():
         _dup = not _same_file(sys.__stdout__, Path(args.log_file))
         sys.stdout = TeeWriter(sys.__stdout__, log_f, duplicate=_dup)
         import json as _json
-        def emit_step(**kw):
+
+        def _emit_step(**kw: Any) -> None:
             print(_json.dumps({"type": "step", **kw}, ensure_ascii=False))
-        def emit_log(msg, level="info"):
+
+        def _emit_log(msg: str, level: str = "info") -> None:
             print(_json.dumps({"type": "log", "level": level, "message": msg}, ensure_ascii=False))
-        def emit_done(msg):
+
+        def _emit_done(msg: str) -> None:
             print(_json.dumps({"type": "done", "message": msg}, ensure_ascii=False))
+
+        emit_step: Callable[..., None] | None = _emit_step
+        emit_log: Callable[..., None] | None = _emit_log
+        emit_done: Callable[[str], None] | None = _emit_done
     else:
         emit_step = None
         emit_log = None
@@ -987,9 +1000,9 @@ def main():
     is_cnn = hasattr(policy, "cnn")
     is_hybrid = hasattr(policy, "flat_proj") and hasattr(policy, "cnn")
     if is_hybrid:
-        print(f"Model: hybrid (flat + minimap CNN)")
+        print("Model: hybrid (flat + minimap CNN)")
     elif is_cnn:
-        print(f"Model: CNN minimap")
+        print("Model: CNN minimap")
 
     print(f"Creating env (map_size={args.map_size})")
     # Read reward config from model's meta.json to match training parameters
@@ -1018,7 +1031,7 @@ def main():
                 tax_to_debt = bool(cfg_meta["tax_to_debt"])
             if reward_cfg:
                 print(f"Loaded reward config from {meta_path.name}")
-        except (Exception,):
+        except Exception:
             pass
 
     # Curriculum: the watched env MUST have the same allowed-buildings set as

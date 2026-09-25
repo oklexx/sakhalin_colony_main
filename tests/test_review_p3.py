@@ -19,8 +19,9 @@ import math
 import sys
 import types
 import typing
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, List, Optional
+from typing import Any
 
 import numpy as np
 import pytest
@@ -108,11 +109,11 @@ def cpp_vecenv_module(monkeypatch) -> Iterator[Any]:
 class _FakeCpp:
     """step_wait_batch: все среды done; terminal_minimap_batch считает вызовы."""
 
-    def __init__(self, infos: List[str], obs_size: int = 4) -> None:
+    def __init__(self, infos: list[str], obs_size: int = 4) -> None:
         self._infos = infos
         self._obs_size = obs_size
         self.tmm_calls = 0
-        self.enabled: List[bool] = []
+        self.enabled: list[bool] = []
 
     def step_wait_batch(self) -> Any:
         n = len(self._infos)
@@ -132,7 +133,7 @@ class _FakeCpp:
         self.enabled.append(on)
 
 
-def _env(mod: Any, fake: _FakeCpp, obs_mode: Optional[str]) -> Any:
+def _env(mod: Any, fake: _FakeCpp, obs_mode: str | None) -> Any:
     env = mod.CppVecEnv.__new__(mod.CppVecEnv)
     env.num_envs = len(fake._infos)
     env.cpp_vec = fake

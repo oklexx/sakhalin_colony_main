@@ -11,21 +11,21 @@ UI показывает причины в статус-баре и логе, т�
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence, Tuple
 
-Cell = Optional[str]
+Cell = str | None
 
 
 @dataclass
 class ScheduleParse:
     """Результат разбора: валидные пары и предупреждения (пропуски, повторы)."""
 
-    rows: List[List[int]] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    rows: list[list[int]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
-def _parse_int(text: Cell, what: str) -> Tuple[Optional[int], Optional[str]]:
+def _parse_int(text: Cell, what: str) -> tuple[int | None, str | None]:
     if text is None or not str(text).strip():
         return None, f"пустое поле «{what}»"
     raw = str(text).strip().replace("_", "").replace(" ", "").replace("\u00a0", "")

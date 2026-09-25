@@ -1,9 +1,10 @@
 """Benchmark: per-step latency with 256 envs + GPU inference."""
+import sys
 import time
+from pathlib import Path
+
 import numpy as np
 import torch
-import sys
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 from cpp_vecenv import make_cpp_vec_env
@@ -25,7 +26,7 @@ obs_t = torch.from_numpy(np.asarray(obs_np, dtype=np.float32)).cuda()
 torch.cuda.synchronize()
 N = 200
 t0 = time.perf_counter()
-for i in range(N):
+for _i in range(N):
     logits = model(obs_t)
     actions = torch.argmax(logits, dim=-1).cpu().numpy().astype(np.int32)
     v.step_async(actions)

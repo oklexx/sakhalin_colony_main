@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import torch
+from collections.abc import Iterator
+
 import numpy as np
-from typing import Optional
+import torch
 
 
 class RolloutBuffer:
@@ -64,17 +65,23 @@ class RolloutBuffer:
         log_prob: torch.Tensor,
         value: torch.Tensor,
         done: torch.Tensor,
-        terminated: Optional[torch.Tensor] = None,
-        action_masks: Optional[torch.Tensor] = None,
-        trunc_value: Optional[torch.Tensor] = None,
-    ):
+        terminated: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+        trunc_value: torch.Tensor | None = None,
+        *,
+        flat: torch.Tensor | None = None,
+    ) -> None:
         """Add one step of data. All tensors shape [n_envs].
 
+        `flat` — только для гибридного буфера (`_TensorRolloutBuffer` с
+        `flat_dim > 0`); у плоского буфера хранить его негде → ошибка.
         `done` is the episode-end flag (terminated | truncated) used for
         reward/length accounting. `terminated` is the true terminal flag used
         for the GAE bootstrap mask; if None it defaults to `done`.
         `action_masks` is [n_envs, n_actions] — 1.0=available, 0.0=blocked.
         """
+        if flat is not None:  # подкласс flat в super().add() не передаёт
+            raise TypeError("RolloutBuffer has no flat-obs storage; use a hybrid buffer")
         if self.pos >= self.n_steps:
             raise RuntimeError("Buffer full, call reset() first")
         start = self.pos * self.n_envs
@@ -96,11 +103,11 @@ class RolloutBuffer:
         if self.pos == self.n_steps:
             self.full = True
 
-    def reset(self):
+    def reset(self) -> None:
         self.pos = 0
         self.full = False
 
-    def compute_gae(self, last_value: torch.Tensor, last_done: torch.Tensor):
+    def compute_gae(self, last_value: torch.Tensor, last_done: torch.Tensor) -> None:
         """Compute GAE advantages and returns.
 
         last_value: [n_envs] value of the state after the last step
@@ -154,7 +161,7 @@ class RolloutBuffer:
             adv = (adv - mean_adv) / (std_adv + 1e-8)
         self.advantages[:n] = adv
 
-    def get_batches(self, batch_size: int):
+    def get_batches(self, batch_size: int) -> Iterator[dict[str, torch.Tensor]]:
         """Yield mini-batches. Each batch: dict of tensors."""
         n = self.n_steps * self.n_envs
         indices = torch.randperm(n, device=self.device)
@@ -172,7 +179,7 @@ class RolloutBuffer:
                 "action_masks": self.action_masks[idx],
             }
 
-    def clear_gpu_memory(self):
+    def clear_gpu_memory(self) -> None:
         torch.cuda.empty_cache()
 
 
@@ -193,7 +200,7 @@ class _TensorRolloutBuffer(RolloutBuffer):
         gae_lambda: float,
         device: torch.device,
         flat_dim: int = 0,
-    ):
+    ) -> None:
         self.n_steps = n_steps
         self.n_envs = n_envs
         self._obs_shape = tuple(obs_shape)
@@ -225,7 +232,20 @@ class _TensorRolloutBuffer(RolloutBuffer):
         self.pos = 0
         self.full = False
 
-    def add(self, obs, action, reward, log_prob, value, done, terminated=None, flat=None, action_masks=None, trunc_value=None):
+    def add(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        reward: torch.Tensor,
+        log_prob: torch.Tensor,
+        value: torch.Tensor,
+        done: torch.Tensor,
+        terminated: torch.Tensor | None = None,
+        action_masks: torch.Tensor | None = None,
+        trunc_value: torch.Tensor | None = None,
+        *,
+        flat: torch.Tensor | None = None,
+    ) -> None:
         """Add one step of data. All tensors shape [n_envs].
 
         `flat` is the flat observation tensor (shape [n_envs, flat_dim]) stored
@@ -244,7 +264,7 @@ class _TensorRolloutBuffer(RolloutBuffer):
             end = self.pos * self.n_envs
             self.flat_obs[start:end] = flat
 
-    def get_batches(self, batch_size: int):
+    def get_batches(self, batch_size: int) -> Iterator[dict[str, torch.Tensor]]:
         """Yield mini-batches. Each batch: dict of tensors."""
         n = self.n_steps * self.n_envs
         indices = torch.randperm(n, device=self.device)

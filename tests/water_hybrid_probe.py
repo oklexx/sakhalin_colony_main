@@ -40,7 +40,7 @@ def land_sig(mm: np.ndarray) -> bytes:
 # ── P1: пара (flat, minimap) на границах эпизодов ────────────────────────────
 
 def p1_pair_on_done(n_steps: int = 9000) -> bool:
-    from python.cpp_vecenv_minimap import CppVecEnvMinimap
+    from cpp_vecenv_minimap import CppVecEnvMinimap
 
     ok = True
     for mode in ("hybrid", "minimap"):
@@ -81,8 +81,8 @@ def p1_pair_on_done(n_steps: int = 9000) -> bool:
 # ── P2: flat-потоки режимов идентичны ───────────────────────────────────────
 
 def p2_flat_parity(n_steps: int = 20) -> bool:
-    from python.cpp_vecenv import CppVecEnv
-    from python.cpp_vecenv_minimap import CppVecEnvMinimap
+    from cpp_vecenv import CppVecEnv
+    from cpp_vecenv_minimap import CppVecEnvMinimap
 
     flat_env = CppVecEnv(n_envs=2, map_size=200, seed=42)
     hyb_env = CppVecEnvMinimap(n_envs=2, map_size=200, seed=42, obs_mode="hybrid")
@@ -109,6 +109,7 @@ def p2_flat_parity(n_steps: int = 20) -> bool:
 
 def p3_branch_dilution(n_samples: int = 256) -> bool:
     import torch
+
     from rl.actor_critic import ActorCritic
     from rl.actor_critic_hybrid import ActorCriticHybrid
     from rl.config import Config, load_default_reward_config

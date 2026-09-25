@@ -74,7 +74,7 @@ def test_build_cost_deducts_from_build_reward():
         env_high.reset(seed=42)
 
         found_build = False
-        for step in range(50):
+        for _step in range(50):
             action = 2  # A_BUILD0
             obs_low, rew_low, done_low, _, _ = env_low.step(action)
             obs_high, rew_high, done_high, _, _ = env_high.step(action)

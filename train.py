@@ -8,10 +8,10 @@ Usage:
   python train.py --compile --amp bfloat16
 """
 import argparse
+import json
 import os
 import sys
 import time
-import json
 from pathlib import Path
 
 import torch
@@ -20,12 +20,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
 
+from rl.async_trainer import AsyncTrainer
 from rl.config import (
-    Config, RewardConfig, load_default_reward_config, default_reward_profile_path,
+    Config,
+    RewardConfig,
+    default_reward_profile_path,
+    load_default_reward_config,
 )
 from rl.curriculum import allowed_ids
 from rl.env_manager import EnvManager
-from rl.async_trainer import AsyncTrainer
 from training_lr import apply_configured_learning_rate
 
 
@@ -211,7 +214,7 @@ def main():
         schedule = []
         for part in args.curriculum_schedule.split(","):
             ts_str, stage_str = part.strip().split(":")
-            schedule.append((int(ts_str), int(stage_str)))
+            schedule.append([int(ts_str), int(stage_str)])
         cfg.curriculum_schedule = schedule
 
     run_dir = Path(cfg.model_dir) / args.name
@@ -279,7 +282,7 @@ def main():
         norm_loaded = False
         for cand in norm_candidates:
             if cand.exists():
-                (getattr(em, "vec_env", None) or em.env).venv.load_normalization(str(cand))
+                em.vec_env.venv.load_normalization(str(cand))
                 print(f"[Resume] normalization loaded from {cand}")
                 norm_loaded = True
                 break
@@ -326,7 +329,7 @@ def main():
                 )
             return new_obs, infos
 
-        em.collect_step = _collect_with_log
+        em.collect_step = _collect_with_log  # type: ignore[method-assign,assignment]
 
     def progress_cb(metrics):
         if writer:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import List
 
 import pytest
 import torch
@@ -35,7 +34,7 @@ def test_legacy_checkpoint_loads_and_projections_stay_zero(compiled):
     with torch.no_grad():
         src.critic_head.weight.add_(1.0)
     dst = ActorCritic(10, 5, [16], CPU)
-    logs: List[str] = []
+    logs: list[str] = []
     report = load_policy_state(dst, _legacy_state(src, compiled), "old.pt", log=logs.append)
     assert torch.equal(dst.critic_head.weight, src.critic_head.weight)
     assert torch.count_nonzero(dst.actor_mask_proj.weight) == 0
@@ -62,7 +61,7 @@ def test_unexpected_keys_are_warned_not_fatal():
     src = ActorCritic(10, 5, [16], CPU)
     state = dict(src.state_dict())
     state["legacy_extra.weight"] = torch.zeros(1)
-    logs: List[str] = []
+    logs: list[str] = []
     rep = load_policy_state(ActorCritic(10, 5, [16], CPU), state, "x.pt", log=logs.append)
     assert rep.unexpected == ["legacy_extra.weight"]
     assert any("unexpected" in m for m in logs)

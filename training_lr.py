@@ -1,9 +1,11 @@
 """Small optimizer/scheduler helper shared by CLI and UI fine-tuning."""
 from __future__ import annotations
 
+from typing import Any
 
-def apply_configured_learning_rate(optimizer, learning_rate: float,
-                                   scheduler=None) -> list[float]:
+
+def apply_configured_learning_rate(optimizer: Any, learning_rate: float,
+                                   scheduler: Any = None) -> list[float]:
     """Set the new run's LR without discarding restored optimizer moments.
 
     ``Optimizer.load_state_dict`` restores checkpoint param-group learning

@@ -17,13 +17,33 @@ from core.bases import STATE_NEED_SUNDUK, STATE_NEED_WORKERS
 from core.game import Game, new_game
 from core.resources import Sunduk
 from core.save import load_game, save_game
-from ui.render import (BG, FG, FG_ACCENT, FG_DIM,
-                       FG_MENU, FG_TITLE, ICON_BUILD, ICON_DEAD,
-                       ICON_NEED_SUNDUK, ICON_NEED_WORKERS,
-                       ICON_NO_SEASON, ICON_PRESERVE, LEGEND, LEGEND_BG,
-                       PANEL_BG, PANEL_FG, PANEL_HEAD, RES_SHORT,
-                       TERRAIN_BG, _asset, _scaled, earth_img, icon,
-                       lot_caption, base_resource_caption)
+from ui.render import (
+    BG,
+    FG,
+    FG_ACCENT,
+    FG_DIM,
+    FG_MENU,
+    FG_TITLE,
+    ICON_BUILD,
+    ICON_DEAD,
+    ICON_NEED_SUNDUK,
+    ICON_NEED_WORKERS,
+    ICON_NO_SEASON,
+    ICON_PRESERVE,
+    LEGEND,
+    LEGEND_BG,
+    PANEL_BG,
+    PANEL_FG,
+    PANEL_HEAD,
+    RES_SHORT,
+    TERRAIN_BG,
+    _asset,
+    _scaled,
+    base_resource_caption,
+    earth_img,
+    icon,
+    lot_caption,
+)
 
 TITLE = "# Сахалинская колония 3.47"
 AUTHOR = "Жмулевский Григорий"
@@ -662,7 +682,7 @@ class GameWindow:
             # буква в углу кнопки (оригинал: lb 15x15 на (l+14, t+14))
             self.text(y + 13, x + 16, letter, FG_DIM)
         # кнопки действий справа от палитры построек (оригинал unMain.dfm)
-        for i, (_, img_idx, row, col) in enumerate(TOOL_BUTTONS):
+        for _, img_idx, row, col in TOOL_BUTTONS:
             x = TOOL_X0 + col * BSTEP
             y = y0 + row * BSTEP
             pygame.draw.rect(self.screen, (30, 40, 34), (x, y, bs, bs),
@@ -882,7 +902,7 @@ class GameWindow:
         # кнопки перемотки времени: день / неделя / месяц
         self._time_buttons = []
         bw, bh = 52, 20
-        for i, (lab, act) in enumerate((("День", "День"), ("Неделя", "Неделя"),
+        for i, (lab, _act) in enumerate((("День", "День"), ("Неделя", "Неделя"),
                                         ("Месяц", "Месяц"))):
             bx = x + i * (bw + 4)
             pygame.draw.rect(self.screen, PANEL_HEAD, (bx, y, bw, bh),
@@ -1176,13 +1196,21 @@ class GameWindow:
                     self.do_action("Строить")
                 return
         if k in (pygame.K_LEFT,) and self.cx > 0:
-            self.cx -= 1; self.map_dirty = True; self._ensure_visible()
+            self.cx -= 1
+            self.map_dirty = True
+            self._ensure_visible()
         elif k in (pygame.K_RIGHT,) and self.cx < g.map_size - 1:
-            self.cx += 1; self.map_dirty = True; self._ensure_visible()
+            self.cx += 1
+            self.map_dirty = True
+            self._ensure_visible()
         elif k in (pygame.K_UP,) and self.cy > 0:
-            self.cy -= 1; self.map_dirty = True; self._ensure_visible()
+            self.cy -= 1
+            self.map_dirty = True
+            self._ensure_visible()
         elif k in (pygame.K_DOWN,) and self.cy < g.map_size - 1:
-            self.cy += 1; self.map_dirty = True; self._ensure_visible()
+            self.cy += 1
+            self.map_dirty = True
+            self._ensure_visible()
         elif k == pygame.K_SPACE:
             self.do_action("День")
         elif k == pygame.K_m:

@@ -1,9 +1,9 @@
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 import torch.nn as nn
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
@@ -92,9 +92,8 @@ def test_load_policy_with_meta(tmp_path):
 def test_load_policy_probes_env_when_meta_missing(tmp_path):
     if not ENV_OK:
         pytest.skip("env not available")
-    from train_ui2.evaluator import _load_policy
-
     from rl.actor_critic import ActorCritic
+    from train_ui2.evaluator import _load_policy
     m = ActorCritic(obs_size=203, n_actions=45, hidden_sizes=[256, 256],
                     device=torch.device("cpu"))
     ckpt_path = tmp_path / "nometa.pt"
@@ -164,8 +163,8 @@ def test_run_eval_with_normalization(tmp_path, monkeypatch):
         json.dump(norm_data, f)
 
     # Patch the real CppColonyEnv from cpp_env module (run_eval imports from there)
-    from cpp_env import CppColonyEnv as RealCppColonyEnv
     import cpp_env
+    from cpp_env import CppColonyEnv as RealCppColonyEnv
 
     instances = []
     original_init = RealCppColonyEnv.__init__
@@ -227,8 +226,8 @@ def _make_hybrid_checkpoint(tmp_path: Path, grid_size: int = 57,
 @pytest.mark.skipif(not ENV_OK, reason="env not available")
 def test_run_eval_hybrid_pushes_policy_grid_into_env(tmp_path, monkeypatch):
     """Regression test for policy grid compatibility."""
-    import train_ui2.evaluator as ev
     import cpp_env as cpp_env_mod
+    import train_ui2.evaluator as ev
 
     ckpt = _make_hybrid_checkpoint(tmp_path, grid_size=32)
 
@@ -252,8 +251,8 @@ def test_run_eval_hybrid_pushes_policy_grid_into_env(tmp_path, monkeypatch):
 @pytest.mark.skipif(not ENV_OK, reason="env not available")
 def test_run_eval_flat_untouched_by_radius_fix(tmp_path, monkeypatch):
     """The flat path must not touch minimap radius (no minimap wrapper there)."""
-    import train_ui2.evaluator as ev
     import cpp_env as cpp_env_mod
+    import train_ui2.evaluator as ev
 
     real_obs = int(cpp_env_mod.CppColonyEnv(map_size=100).observation_space.shape[0])
     from rl.actor_critic import ActorCritic

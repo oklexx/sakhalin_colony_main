@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from rl.config import RewardConfig, Config
+
+from rl.config import Config, RewardConfig
 
 
 def test_reward_config_completeness():

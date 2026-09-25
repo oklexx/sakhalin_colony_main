@@ -4,6 +4,8 @@
 #
 #   make build    — собрать colony_cpp.pyd (CMake, C++17, pybind11)
 #   make test     — полный прогон pytest (нужны torch + собранный colony_cpp.pyd)
+#   make lint     — ruff (полный свод из pyproject.toml), как job `lint` в CI
+#   make typecheck — mypy (конфиг в pyproject.toml), как job `mypy` в CI
 #   make gui      — PySide6-дашборд обучения
 #   make watch    — посмотреть чемпиона: make watch MODEL_DIR=~/colony_runs/models/my_run
 #   make tb       — TensorBoard по логам обучения
@@ -13,7 +15,7 @@ PY      ?= python
 MODEL_DIR ?= ~/colony_runs/models/my_run
 LOG_DIR ?= ~/colony_runs/logs
 
-.PHONY: build test test-fast gui watch tb clean
+.PHONY: build test test-fast lint typecheck gui watch tb clean
 
 build: ## cmake-сборка C++-среды -> python/colony_cpp.pyd
 	$(PY) -m cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -24,6 +26,12 @@ test: ## полный прогон тестов
 
 test-fast: ## быстрый дымовой проход (без torch-тяжёлого)
 	$(PY) -m pytest tests/test_gae.py tests/test_reward_v3.py tests/test_reward_clip.py -x -q
+
+lint: ## ruff — те же правила, что в CI (pip install ruff==0.16.9)
+	$(PY) -m ruff check .
+
+typecheck: ## mypy — тот же набор файлов, что в CI (pip install mypy==2.3.1 numpy)
+	$(PY) -m mypy
 
 gui: ## дашборд обучения (PySide6)
 	$(PY) run_train_ui2.py

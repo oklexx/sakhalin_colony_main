@@ -44,8 +44,8 @@ def make_fixed_env_class():
     шаге пара = (flat нового эпизода, миникарта старого). Здесь миникарта
     читается ПОСЛЕ — как только что сделала это среда.
     """
-    from python.cpp_vecenv import CppVecEnv
-    from python.cpp_vecenv_minimap import CppVecEnvMinimap
+    from cpp_vecenv import CppVecEnv
+    from cpp_vecenv_minimap import CppVecEnvMinimap
 
     class FixedEnv(CppVecEnvMinimap):
         def step_wait(self):
@@ -95,7 +95,7 @@ def run(mode: str, preset: str, seed: int, steps: int, out_dir: Path,
         tag += f"_ent{round(ent_coef * 1000)}"
     out_path = out_dir / f"{tag}.jsonl"
     if mode == "hybridfix":
-        import python.cpp_vecenv_minimap as mm_mod
+        import cpp_vecenv_minimap as mm_mod
         mm_mod.CppVecEnvMinimap = make_fixed_env_class()
 
     cfg = build_cfg(mode, preset, seed, steps, ent_coef)

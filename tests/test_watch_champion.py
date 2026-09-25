@@ -4,7 +4,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "python"))
@@ -24,6 +23,7 @@ def test_curriculum_stage_arg_accepted():
 def test_curriculum_stage_from_meta(tmp_path):
     """When stage is None and meta exists, read stage from meta."""
     import json
+
     import watch_champion
     importlib.reload(watch_champion)
 
@@ -120,6 +120,7 @@ def test_write_action_file(tmp_path):
 def test_read_state_file(tmp_path):
     """read_state should parse the state JSON file including obs."""
     import json
+
     import watch_champion
     importlib.reload(watch_champion)
 
@@ -151,6 +152,7 @@ def test_read_state_missing_file(tmp_path):
 def test_visual_launch_passes_curriculum_json(tmp_path):
     """The GUI exe must receive the computed state over --curriculum JSON."""
     import json
+
     import watch_champion
     importlib.reload(watch_champion)
     from rl.curriculum import build_state

@@ -145,7 +145,7 @@ def test_extraction_daily_saturates():
     wc = build_idx(env, "WaterChannel")
     env.step(wc)
     daily = []
-    for d in range(70):
+    for _d in range(70):
         out = env.step(0)
         if out["reward"] > 1e-6:
             daily.append(out["reward"])
@@ -236,5 +236,5 @@ def test_v3_keys_roundtrip_python():
     assert rc2.loan_penalty == rc.loan_penalty
     # C++ принимает все ключи
     c = colony_cpp.RewardConfig()
-    for k, v in d.items():
+    for k, _v in d.items():
         assert hasattr(c, k), f"C++ RewardConfig не имеет {k} (нужна пересборка pyd)"

@@ -1,9 +1,10 @@
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import torch
 import pytest
+import torch
 
 
 @pytest.fixture
@@ -142,6 +143,7 @@ def test_rollout_buffer_default_masks_are_all_open():
     алокатора обнуляются, поэтому локально тест «случайно» проходил.
     """
     import torch
+
     from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
 
     cpu = torch.device("cpu")
@@ -160,9 +162,10 @@ def test_rollout_buffer_default_masks_are_all_open():
 
 def test_hybrid_ppo_forward():
     import torch
+
     from rl.actor_critic_hybrid import ActorCriticHybrid
-    from rl.rollout_buffer import _TensorRolloutBuffer
     from rl.ppo import PPO
+    from rl.rollout_buffer import _TensorRolloutBuffer
 
     model = ActorCriticHybrid(
         obs_size=289, n_channels=8, grid_size=32,
@@ -180,7 +183,7 @@ def test_hybrid_ppo_forward():
     )
     ppo = PPO(model=model, buffer=buf, device=torch.device("cpu"), use_amp=False)
 
-    for t in range(n_steps):
+    for _t in range(n_steps):
         flat = torch.randn(n_envs, 289)
         mm = torch.randn(n_envs, 8, 32, 32)
         with torch.no_grad():
@@ -206,8 +209,8 @@ def test_hybrid_ppo_forward():
 
 def test_hybrid_save_load_roundtrip(tmp_path):
     from rl.actor_critic_hybrid import ActorCriticHybrid
-    from rl.rollout_buffer import _TensorRolloutBuffer
     from rl.ppo import PPO
+    from rl.rollout_buffer import _TensorRolloutBuffer
 
     model = ActorCriticHybrid(
         obs_size=289, n_channels=8, grid_size=32,

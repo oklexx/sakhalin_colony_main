@@ -51,7 +51,7 @@ def test_tax_daily_bonus_in_cpp_env():
 
     # Step a few times with DAY action
     total_reward = 0.0
-    for i in range(10):
+    for _i in range(10):
         obs, reward, terminated, truncated, info = env.step(0)  # DAY
         total_reward += reward
         if terminated or truncated:

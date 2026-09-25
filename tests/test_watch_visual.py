@@ -348,7 +348,7 @@ def _log_text(path: Path) -> str:
         return ""
 
 
-def _steps(path: Path) -> "list[dict]":
+def _steps(path: Path) -> list[dict]:
     out = []
     for line in _log_text(path).splitlines():
         line = line.strip()

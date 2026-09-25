@@ -58,9 +58,9 @@ def test_training_with_eval_integration(tmp_path):
     """End-to-end: train for a few steps with eval, verify best_model and normalization exist."""
     import torch
 
+    from rl.async_trainer import AsyncTrainer
     from rl.config import Config
     from rl.env_manager import EnvManager
-    from rl.async_trainer import AsyncTrainer
 
     cfg = Config(
         n_envs=2,

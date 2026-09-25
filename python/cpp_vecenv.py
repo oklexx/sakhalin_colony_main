@@ -1,12 +1,15 @@
 import json
 import os
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
+
+import colony_cpp
 import gymnasium as gym
 import numpy as np
-from typing import Optional, Dict, Any, List
 from stable_baselines3.common.vec_env import VecEnv
-import colony_cpp
-from colony_cpp_api import require_colony, stale_allowed, StaleExtensionError
-from pathlib import Path
+
+from colony_cpp_api import StaleExtensionError, require_colony, stale_allowed
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -26,20 +29,20 @@ class CppVecEnv(VecEnv):
         self,
         n_envs: int,
         map_size: int = 280,
-        curriculum=None,  # CurriculumState | dict | None (None = unrestricted)
-        disable_net_worth: Optional[bool] = None,
-        disable_daily_income: Optional[bool] = None,
-        reward_config: Optional[Dict[str, float]] = None,
+        curriculum: Any = None,  # CurriculumState | dict | None (None = unrestricted)
+        disable_net_worth: bool | None = None,
+        disable_daily_income: bool | None = None,
+        reward_config: dict[str, float] | None = None,
         norm_obs: bool = True,
         norm_reward: bool = True,
         clip_obs: float = 10.0,
         clip_reward: float = 10.0,
         seed: int = 0,
         n_threads: int = 0,
-        render_mode: Optional[str] = None,
+        render_mode: str | None = None,
         difficulty: str = "normal",
         tax_to_debt: bool = True,
-    ):
+    ) -> None:
         # PR 3: fail fast on a stale binary (escape: COLONY_ALLOW_STALE_PYD=1).
         require_colony()
         self._seed = seed
@@ -61,10 +64,11 @@ class CppVecEnv(VecEnv):
         _INT_KEYS = {"idle_build_threshold_days"}
         _missing: list[str] = []
         if reward_config:
-            for key, value in reward_config.items():
+            for key, raw_value in reward_config.items():
+                value: float | int = raw_value
                 if key in _INT_KEYS:
                     try:
-                        value = int(value)  # type: ignore[assignment]
+                        value = int(raw_value)
                     except Exception:
                         pass
                 if not hasattr(rc, key):
@@ -100,6 +104,7 @@ class CppVecEnv(VecEnv):
 
         # PR 1: single curriculum contract (duck-typed — no rl import here, so
         # this module stays importable without torch: rl depends on python/, not vice versa).
+        curr_dict: dict[str, Any]
         if curriculum is None:
             curr_dict = {"all_builds": True, "allowed_builds": [], "stage": 0,
                          "all_resources": True, "obs_version": 2}
@@ -145,7 +150,7 @@ class CppVecEnv(VecEnv):
         self._action_masks = np.ones((n_envs, n_actions), dtype=np.float32)
         # Причины закрытых бит той же маски (MaskReason, uint8) — обновляются
         # одним вызовом action_masks_batch() внутри C++ (docs/MONITOR_ACTIONS_2026_09.md §4)
-        self._mask_reasons: Optional[np.ndarray] = None
+        self._mask_reasons: np.ndarray | None = None
 
         # Init SB3 VecEnv (sets self.num_envs, self.observation_space, self.action_space)
         super().__init__(n_envs, observation_space, action_space)
@@ -168,18 +173,18 @@ class CppVecEnv(VecEnv):
             ]
             if len(build_ids) > self.cpp_vec.n_build():
                 build_ids = build_ids[: self.cpp_vec.n_build()]
-        self._build_names: List[str] = [
+        self._build_names: list[str] = [
             "BUILD_" + b.upper().replace(" ", "_") for b in build_ids
         ]
-        self._manager_names: List[str] = [
+        self._manager_names: list[str] = [
             "IMPROVE_LAND", "REPAIR", "REPAIR_ALL", "DEMOLISH", "PRESERVE",
             "UNPRESERVE", "SELL_SURPLUS", "BUY_FOOD", "TAKE_LOAN", "REPAY_LOAN", "PAY_TAX",
         ]
         # Directional road actions appended after the managers (constants.h
         # N_ROAD_DIRS). They extend the road frontier towards a compass
         # direction instead of the BFS-first cell BUILD_ROAD uses.
-        self._road_dir_names: List[str] = ["ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"]
-        self._action_names: List[str] = (
+        self._road_dir_names: list[str] = ["ROAD_E", "ROAD_W", "ROAD_S", "ROAD_N"]
+        self._action_names: list[str] = (
             ["DAY", "WEEK"] + self._build_names + self._manager_names + self._road_dir_names
         )
         # Trim to actual n_actions if C++ has fewer
@@ -189,14 +194,14 @@ class CppVecEnv(VecEnv):
         while len(self._action_names) < n_actions:
             self._action_names.append(f"ACTION_{len(self._action_names)}")
 
-    def reset(self):
+    def reset(self) -> np.ndarray:
         seeds = [self._seed + i * 10000 for i in range(self.num_envs)]
         self.cpp_vec.reset_batch(seeds)
         self._action_masks = np.asarray(
             self.cpp_vec.action_masks_batch(), dtype=np.float32
         )
         self._mask_reasons = self._read_mask_reasons()
-        self.reset_infos = [{} for _ in range(self.num_envs)]
+        self.reset_infos: list[dict[str, Any]] = [{} for _ in range(self.num_envs)]
         self._reset_seeds()
         self._reset_options()
         return self._get_obs()
@@ -205,7 +210,7 @@ class CppVecEnv(VecEnv):
         actions_list = actions.tolist() if hasattr(actions, "tolist") else list(actions)
         self.cpp_vec.step_async_batch(actions_list)
 
-    def step_wait(self):
+    def step_wait(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, Any]]]:
         result = self.cpp_vec.step_wait_batch()
         obs = self._reshape_obs(result.obs)
         rewards = np.array(result.rewards, dtype=np.float64)
@@ -281,7 +286,7 @@ class CppVecEnv(VecEnv):
         """Return current action masks [n_envs, n_actions]."""
         return self._action_masks
 
-    def _read_mask_reasons(self) -> Optional[np.ndarray]:
+    def _read_mask_reasons(self) -> np.ndarray | None:
         """Коды MaskReason [n_envs, n_actions] к свежим маскам или None.
 
         None — старый бинарь под COLONY_ALLOW_STALE_PYD (нет биндинга):
@@ -298,7 +303,7 @@ class CppVecEnv(VecEnv):
         return arr.reshape(self.num_envs, -1)
 
     @property
-    def mask_reasons(self) -> Optional[np.ndarray]:
+    def mask_reasons(self) -> np.ndarray | None:
         """Причины закрытых бит текущей маски [n_envs, n_actions] (или None).
 
         Тот же вызов action_masks_batch(), что и `action_masks` — состояние
@@ -307,7 +312,7 @@ class CppVecEnv(VecEnv):
         return self._mask_reasons
 
     @property
-    def action_names(self) -> List[str]:
+    def action_names(self) -> list[str]:
         """Return list of action names matching action indices."""
         return list(self._action_names)
 
@@ -323,7 +328,7 @@ class CppVecEnv(VecEnv):
               f"бутстрап V(s_T) на усечении пропускается; устаревший colony_cpp "
               f"(COLONY_ALLOW_STALE_PYD)? Пересоберите расширение.", flush=True)
 
-    def _checked_indices(self, indices) -> List[int]:
+    def _checked_indices(self, indices: int | Iterable[int] | None) -> list[int]:
         """Индексы по контракту SB3 VecEnv (None | int | iterable) с проверкой границ."""
         idx = [int(i) for i in self._get_indices(indices)]
         bad = [i for i in idx if not 0 <= i < self.num_envs]
@@ -331,14 +336,15 @@ class CppVecEnv(VecEnv):
             raise IndexError(f"env indices {bad} out of range 0..{self.num_envs - 1}")
         return idx
 
-    def get_attr(self, attr_name: str, indices=None):
+    def get_attr(self, attr_name: str, indices: int | Iterable[int] | None = None) -> list[Any]:
         # Одна батч-среда отвечает за все N подсред: атрибут общий, но длина и
         # порядок ответа — как у VecEnv (по одному значению на индекс). Раньше
         # при любом indices возвращался список длины 1 (P2-2).
         value = getattr(self, attr_name)
         return [value for _ in self._checked_indices(indices)]
 
-    def set_attr(self, attr_name: str, value, indices=None):
+    def set_attr(self, attr_name: str, value: Any,
+                 indices: int | Iterable[int] | None = None) -> None:
         # Атрибут общий на батч: частичная установка изменила бы ВСЕ подсреды.
         idx = self._checked_indices(indices)
         if len(idx) != self.num_envs:
@@ -347,7 +353,8 @@ class CppVecEnv(VecEnv):
                 f"CppVecEnv хранит атрибуты общими на все {self.num_envs} сред")
         setattr(self, attr_name, value)
 
-    def env_method(self, method_name: str, *method_args, indices=None, **method_kwargs):
+    def env_method(self, method_name: str, *method_args: Any,
+                   indices: int | Iterable[int] | None = None, **method_kwargs: Any) -> list[Any]:
         # Метод батча вызывается ОДИН раз (раньше — N раз: env_method("reset")
         # сбросил бы все среды N раз), результат раздаётся по индексам.
         idx = self._checked_indices(indices)
@@ -358,29 +365,31 @@ class CppVecEnv(VecEnv):
         result = getattr(self, method_name)(*method_args, **method_kwargs)
         return [result for _ in idx]
 
-    def env_is_wrapped(self, wrapper_class, indices=None):
+    def env_is_wrapped(self, wrapper_class: type,
+                       indices: int | Iterable[int] | None = None) -> list[bool]:
         return [False for _ in self._checked_indices(indices)]
 
     @property
-    def venv(self):
+    def venv(self) -> Any:
+        """Сырой C++ ColonyVecEnvCpp (нормализация, миникарты, диагностика)."""
         return self.cpp_vec
 
     def _get_obs(self) -> np.ndarray:
         raw = self.cpp_vec.obs_buffer()
         return self._reshape_obs(raw)
 
-    def _reshape_obs(self, raw) -> np.ndarray:
+    def _reshape_obs(self, raw: Any) -> np.ndarray:
         arr = np.asarray(raw, dtype=np.float32)
         return arr.reshape(self.num_envs, -1)
 
     def dump_obs(self, env_idx: int = 0) -> str:
         """Return a human-readable observation dump for one sub-env."""
-        return self.cpp_vec.dump_obs(env_idx)
+        return str(self.cpp_vec.dump_obs(env_idx))
 
-    def get_images(self):
+    def get_images(self) -> list[None]:
         return [None] * self.num_envs
 
-    def render(self):
+    def render(self) -> np.ndarray | None:
         if self.render_mode == "rgb_array":
             return np.zeros((self.num_envs, 400, 400, 3), dtype=np.uint8)
         return None
@@ -389,13 +398,13 @@ class CppVecEnv(VecEnv):
 def make_cpp_vec_env(
     n_envs: int = 8,
     map_size: int = 280,
-    curriculum=None,
+    curriculum: Any = None,
     disable_net_worth: bool = False,
     disable_daily_income: bool = False,
-    reward_config: Optional[Dict[str, float]] = None,
+    reward_config: dict[str, float] | None = None,
     seed: int = 0,
     n_threads: int = 0,
-    render_mode: Optional[str] = None,
+    render_mode: str | None = None,
     difficulty: str = "normal",
 ) -> CppVecEnv:
     """Factory for creating CppVecEnv."""

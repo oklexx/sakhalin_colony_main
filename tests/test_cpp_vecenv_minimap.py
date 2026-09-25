@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import pytest
 import torch
+
 from rl.config import Config
 from rl.env_manager import EnvManager
 
@@ -104,7 +105,7 @@ def test_minimap_pair_uses_post_reset_state_mock():
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
     pytest.importorskip("colony_cpp", reason="colony_cpp не собран (make build)")
-    from python.cpp_vecenv_minimap import CppVecEnvMinimap
+    from cpp_vecenv_minimap import CppVecEnvMinimap
 
     for obs_mode in ("hybrid", "minimap"):
         env = CppVecEnvMinimap(n_envs=1, map_size=64, obs_mode=obs_mode, seed=0)
@@ -135,7 +136,7 @@ def test_hybrid_pair_matches_current_state_live():
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
     pytest.importorskip("colony_cpp", reason="colony_cpp не собран (make build)")
-    from python.cpp_vecenv_minimap import CppVecEnvMinimap
+    from cpp_vecenv_minimap import CppVecEnvMinimap
 
     env = CppVecEnvMinimap(n_envs=1, map_size=64, obs_mode="hybrid", seed=3)
     try:

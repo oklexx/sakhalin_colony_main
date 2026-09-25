@@ -16,6 +16,7 @@ When bindings gain features that Python depends on, advertise them in
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 
 #: Extension API version Python expects.
 EXTENSION_MIN_VERSION = 7
@@ -72,7 +73,7 @@ def extension_info() -> dict | None:
         return {"version": 0, "features": [], "src_sha": "unknown"}
 
 
-def require_colony(required=REQUIRED_FEATURES, allow_stale: bool = False) -> dict:
+def require_colony(required: Iterable[str] | None = REQUIRED_FEATURES, allow_stale: bool = False) -> dict:
     """Verify the loaded colony_cpp binary is fresh enough; return its info.
 
     Raises StaleExtensionError (not a warning) when the binary predates

@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import builtins
 import queue as _queue
+
 #!/usr/bin/env python3
 """Worker process for train_ui: runs training or eval in a separate process.
 
@@ -17,8 +19,9 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TextIO
+from typing import Any, TextIO
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -36,7 +39,9 @@ def _build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--config", type=str, help="path to config JSON (train mode)")
     mode.add_argument("--eval-model", type=str, dest="eval_model", help="model path (eval mode)")
     p.add_argument("--name", type=str, default="", help="run name (train mode)")
-    p.add_argument("--output", type=str, default="", help="path to JSONL message file")
+    # Обязателен: run_train/run_eval пишут весь протокол в MsgFile — без него
+    # воркер раньше падал на первом же `None.write(...)`.
+    p.add_argument("--output", type=str, required=True, help="path to JSONL message file")
     p.add_argument("--command-file", type=str, default="", dest="command_file",
                    help="path to JSONL command file (optional)")
     p.add_argument("--resume-model", type=str, default="", help="path to model .pt to load weights from (fine-tuning)")
@@ -50,7 +55,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _read_config(path: Path) -> Dict[str, Any]:
+def _read_config(path: Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         d = json.load(f)
     if not isinstance(d, dict):
@@ -64,7 +69,7 @@ class MsgFile:
     def __init__(self, path: str):
         self._path = path
         self._lock = threading.Lock()
-        self._fh: Optional[TextIO] = None
+        self._fh: TextIO | None = None
 
     def open(self) -> None:
         self._fh = open(self._path, "a", encoding="utf-8")
@@ -101,7 +106,7 @@ WarnFn = Callable[[str], None]
 
 
 def dispatch_command(d: Any, stop_event: threading.Event,
-                     command_queue: Optional[_queue.Queue] = None,
+                     command_queue: _queue.Queue | None = None,
                      warn: WarnFn = _default_warn, source: str = "command") -> bool:
     """Разобрать одну команду UI и передать её трейнеру. True = пришёл «Стоп».
 
@@ -148,7 +153,7 @@ def dispatch_command(d: Any, stop_event: threading.Event,
     return False
 
 
-def _parse_command_line(line: str, warn: WarnFn, source: str) -> Optional[Any]:
+def _parse_command_line(line: str, warn: WarnFn, source: str) -> Any | None:
     """JSON одной строки команды; битая строка — предупреждение и None."""
     try:
         return json.loads(line)
@@ -157,7 +162,7 @@ def _parse_command_line(line: str, warn: WarnFn, source: str) -> Optional[Any]:
         return None
 
 
-def _watch_stdin(stop_event: threading.Event, command_queue: Optional[_queue.Queue] = None,
+def _watch_stdin(stop_event: threading.Event, command_queue: _queue.Queue | None = None,
                  warn: WarnFn = _default_warn) -> None:
     """Команды из stdin (резервный канал; UI пишет в файл команд)."""
     try:
@@ -176,7 +181,7 @@ def _watch_stdin(stop_event: threading.Event, command_queue: Optional[_queue.Que
 
 
 def process_command_lines(data: str, stop_event: threading.Event,
-                          command_queue: Optional[_queue.Queue] = None,
+                          command_queue: _queue.Queue | None = None,
                           warn: WarnFn = _default_warn) -> bool:
     """Обработать порцию строк файла команд. True = получен «Стоп»."""
     for line in data.splitlines():
@@ -192,7 +197,7 @@ def process_command_lines(data: str, stop_event: threading.Event,
 
 
 def _watch_commands(command_file: str, stop_event: threading.Event,
-                    command_queue: Optional[_queue.Queue] = None,
+                    command_queue: _queue.Queue | None = None,
                     warn: WarnFn = _default_warn) -> None:
     """Файл команд JSONL от UI (основной канал)."""
     offset = 0
@@ -227,8 +232,8 @@ def _watch_commands(command_file: str, stop_event: threading.Event,
         time.sleep(0.5)
 
 
-def run_train(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_event: threading.Event,
-              resume_model: str = "", command_queue: Optional[_queue.Queue] = None) -> int:
+def run_train(cfg_dict: dict[str, Any], run_name: str, mf: MsgFile, stop_event: threading.Event,
+              resume_model: str = "", command_queue: _queue.Queue | None = None) -> int:
     # import queue already at top
     _orig_print = builtins.print
 
@@ -244,20 +249,21 @@ def run_train(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_event: 
             except Exception:
                 pass
 
-    builtins.print = _print  # type: ignore[assignment]
+    builtins.print = _print
 
     try:
         return _run_train_inner(cfg_dict, run_name, mf, stop_event, resume_model, command_queue)
     finally:
-        builtins.print = _orig_print  # type: ignore[assignment]
+        builtins.print = _orig_print
 
 
-def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_event: threading.Event,
-                      resume_model: str = "", command_queue: Optional[_queue.Queue] = None) -> int:
+def _run_train_inner(cfg_dict: dict[str, Any], run_name: str, mf: MsgFile, stop_event: threading.Event,
+                      resume_model: str = "", command_queue: _queue.Queue | None = None) -> int:
     import torch
+
+    from rl.async_trainer import AsyncTrainer
     from rl.config import Config, RewardConfig
     from rl.env_manager import EnvManager
-    from rl.async_trainer import AsyncTrainer
 
     home = Path.home()
     model_dir = str(home / "colony_runs" / "models" / run_name)
@@ -328,7 +334,7 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
                 pass
 
     log("info", f"[Worker] run={run_name}")
-    log("info", f"[Worker] === TRAINING PARAMETERS ===")
+    log("info", "[Worker] === TRAINING PARAMETERS ===")
     log("info", f"[Worker] steps={cfg.total_timesteps:,} envs={cfg.n_envs} n_steps={cfg.n_steps} "
                 f"batch_size={cfg.batch_size} n_epochs={cfg.n_epochs}")
     log("info", f"[Worker] lr={cfg.learning_rate} gamma={cfg.gamma} gae_lambda={cfg.gae_lambda} "
@@ -423,7 +429,7 @@ def _run_train_inner(cfg_dict: Dict[str, Any], run_name: str, mf: MsgFile, stop_
         for nc in norm_candidates:
             if nc.exists():
                 try:
-                    (getattr(em, "vec_env", None) or em.env).venv.load_normalization(str(nc))
+                    em.vec_env.venv.load_normalization(str(nc))
                     log("info", f"[Worker] loaded normalization stats from {nc}")
                     norm_loaded = True
                     break
@@ -532,9 +538,8 @@ def _install_termination_handler() -> None:
 def main() -> int:
     args = _build_parser().parse_args()
 
-    mf = MsgFile(args.output) if args.output else None
-    if mf:
-        mf.open()
+    mf = MsgFile(args.output)
+    mf.open()
 
     stop_event = threading.Event()
 
@@ -543,10 +548,7 @@ def main() -> int:
     def warn(message: str) -> None:
         # Проблемы с командами видны в логе UI, а не только в stderr воркера
         # (UI запускает его с stderr=DEVNULL).
-        if mf:
-            mf.write(P.LogMsg(level="warn", message=message))
-        else:
-            _default_warn(message)
+        mf.write(P.LogMsg(level="warn", message=message))
 
     _install_termination_handler()
 
@@ -561,8 +563,7 @@ def main() -> int:
             target=_watch_commands, args=(cmd_file, stop_event, command_queue, warn), daemon=True)
         cmd_thread.start()
 
-    if mf:
-        mf.write(P.ReadyMsg())
+    mf.write(P.ReadyMsg())
 
     rc = 1
     try:
@@ -579,15 +580,13 @@ def main() -> int:
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        if mf:
-            try:
-                mf.write(P.ErrorMsg(message=f"{type(e).__name__}: {e}\n{tb}"))
-            except Exception:
-                pass
+        try:
+            mf.write(P.ErrorMsg(message=f"{type(e).__name__}: {e}\n{tb}"))
+        except Exception:
+            pass
         rc = 1
     finally:
-        if mf:
-            mf.close()
+        mf.close()
 
     return rc
 

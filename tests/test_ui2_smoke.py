@@ -54,10 +54,10 @@ def test_ui2_smoke(tmp_path, monkeypatch):
         pytest.skip(f"QApplication не создаётся: {exc}")
     assert app is not None
 
+    from rl.config import RewardConfig
     from train_ui2 import protocol as P
     from train_ui2.main_window import MainWindow2
     from train_ui2.models import ModelRegistry
-    from rl.config import RewardConfig
 
     FAILS = []
 

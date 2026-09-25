@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Callable, List, Mapping, Optional
 
 import torch
 import torch.nn as nn
@@ -17,7 +17,7 @@ def orthogonal_init(module: nn.Module, gain: float = 1.0) -> None:
             nn.init.constant_(module.bias, 0.0)
 
 
-def init_module_list(modules: List[nn.Module], gain: float = 1.0, sqrt2: bool = False) -> None:
+def init_module_list(modules: list[nn.Module], gain: float = 1.0, sqrt2: bool = False) -> None:
     g = math.sqrt(2) if sqrt2 else gain
     for m in modules:
         orthogonal_init(m, gain=g)
@@ -27,7 +27,7 @@ class ActorCriticBase(nn.Module):
     """Mixin with shared helpers: params, state_dict handling, distribution."""
 
     @property
-    def params(self) -> List[nn.Parameter]:
+    def params(self) -> list[nn.Parameter]:
         return [p for p in self.parameters() if p.requires_grad]
 
     def state_dict_for_env(self) -> dict:
@@ -40,7 +40,9 @@ class ActorCriticBase(nn.Module):
         load_policy_state(self, state)
 
     @staticmethod
-    def _categorical_log_prob(logits: torch.Tensor, action: torch.Tensor | None):
+    def _categorical_log_prob(
+        logits: torch.Tensor, action: torch.Tensor | None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.distributions.Categorical]:
         dist = torch.distributions.Categorical(logits=logits)
         if action is None:
             action = dist.sample()
@@ -60,8 +62,8 @@ _COMPILE_PREFIX = "_orig_mod."
 class PolicyLoadReport:
     """Что пропущено/лишнее при загрузке весов (для лога вызывающего)."""
 
-    missing_optional: List[str] = field(default_factory=list)
-    unexpected: List[str] = field(default_factory=list)
+    missing_optional: list[str] = field(default_factory=list)
+    unexpected: list[str] = field(default_factory=list)
 
 
 def clean_policy_state(state: Mapping[str, torch.Tensor]) -> dict:
@@ -74,7 +76,7 @@ def clean_policy_state(state: Mapping[str, torch.Tensor]) -> dict:
 
 def load_policy_state(model: nn.Module, state: Mapping[str, torch.Tensor],
                       ckpt_path: str = "<state_dict>",
-                      log: Optional[Callable[[str], None]] = None) -> PolicyLoadReport:
+                      log: Callable[[str], None] | None = None) -> PolicyLoadReport:
     """Единая загрузка весов политики (P1-3 ревью 2026-09-24).
 
     Раньше в проекте было четыре копии этого кода с разными правилами:

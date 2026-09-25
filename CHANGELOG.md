@@ -3,6 +3,38 @@
 Формат: `## [дата]` + список изменений. Завершённые задачи из [STATE.md](STATE.md)
 переносятся сюда. Источники: `docs/*_2026_09.md`, аудиты, README §11.
 
+## [2026-09-25] — CI: полный ruff + mypy
+
+Закрыт хвост P3-3 из [docs/CODE_REVIEW_2026_09_24.md](docs/CODE_REVIEW_2026_09_24.md).
+
+- **ruff: полный свод из `pyproject.toml`** (E/W/F/I/B/UP) вместо минимального
+  `--select`: 712 → 0. `ruff --fix` (PEP 585/604, порядок импортов), вручную —
+  `;`-строки в UI, `l`→`line`, `pytest.raises(Exception)` → `RuntimeError` с
+  `match`, docstring `rl/env_manager.py` снова модульный (стоял после
+  `from __future__`). `E402` разрешён только скриптам с `sys.path`-преамбулой.
+- **mypy в CI** (job `mypy`, `make typecheck`): 179 → 0 по `rl/`, `train_ui2/`,
+  `python/` и CLI-скриптам. torch/PySide6/gymnasium/SB3 — `follow_imports =
+  "skip"`: результат одинаков в CI (только numpy) и локально.
+- **Баги, найденные mypy:**
+  - `train_ui2/worker.py`: без `--output` `run_train`/`run_eval` падали на
+    `None.write(...)` — `--output` теперь обязателен.
+  - `_TensorRolloutBuffer.add`: `flat` стоял 8-м позиционным и перехватывал
+    `action_masks` при позиционном вызове по контракту базы. Теперь `flat`
+    keyword-only в обеих сигнатурах; плоский буфер на `flat=` падает, а не
+    теряет его молча.
+  - `python.cpp_vecenv` и `cpp_vecenv` грузились как **два разных модуля**
+    (monkeypatch `scripts/water_ab_run.py` мог не долетать до `EnvManager`).
+    Везде плоское имя.
+  - `em.env` (атрибута нет) в fallback'ах сохранения/загрузки нормализации
+    (`async_trainer`, `worker`, `train.py`) → `em.vec_env`; фейки тестов обновлены.
+  - `watch_champion.py`: `_choose_action` в двух ветках возвращал 2 значения
+    вместо 3 (распаковка падала бы в `except` и маскировалась под «ошибку
+    инференса»); `read_state` пропускал не-dict JSON.
+  - `python/cpp_env.make_env` был аннотирован `-> gym.Env`, а возвращает фабрику.
+- Типы: `ResolvedCurriculum`, `EvalResult`, `Preset`, `WatchRow` (TypedDict)
+  вместо `dict[str, object]`, из-за которых висели `# type: ignore`.
+- Тесты: `tests/test_typing_fixes.py`.
+
 ## [2026-09-25] — Код-ревью, Этап 2: наблюдаемость и гигиена (P3)
 
 Продолжение [docs/CODE_REVIEW_2026_09_24.md](docs/CODE_REVIEW_2026_09_24.md): P3-1…P3-8.

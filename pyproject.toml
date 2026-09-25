@@ -4,7 +4,8 @@
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-src = ["rl", "python", "train_ui2", "tests"]
+# "." — корень (rl, train_ui2, ui, tests, training_lr), "python" — cpp_env, colony_cpp_api…
+src = [".", "python"]
 extend-exclude = ["raylib", "saved", "build"]
 
 [tool.ruff.lint]
@@ -21,12 +22,29 @@ ignore = [
     "B008",  # вызовы в дефолтных аргументах (PySide6-паттерны)
 ]
 
+[tool.ruff.lint.isort]
+# `core` — пакет старого pygame-клиента (ui/), в репозитории его нет.
+known-first-party = ["core"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011", "S101"]
 "train_ui2/*" = ["E402"]
+# Скрипты: сначала sys.path (корень + python/), потом импорты проекта.
+"train.py" = ["E402"]
+"watch_champion.py" = ["E402"]
+"tests/test_smoke_fixes.py" = ["E402"]
+"tests/test_worker_finetune.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.10"
+# `python/` — плоские модули (cpp_env, colony_cpp_api…), импортируются без
+# префикса пакета: код кладёт python/ в sys.path, mypy — через mypy_path.
+files = [
+    "rl", "train_ui2", "python",
+    "train.py", "watch_champion.py", "training_lr.py", "run_train_ui2.py",
+]
+mypy_path = "python"
+explicit_package_bases = true
 strict = false
 disallow_untyped_defs = true
 warn_redundant_casts = true
@@ -35,21 +53,29 @@ warn_return_any = true
 no_implicit_optional = true
 check_untyped_defs = true
 
-# C-расширения и библиотеки без stubs:
+# C-расширение (в job'е mypy не собирается):
 [[tool.mypy.overrides]]
-module = [
-    "colony_cpp.*",
-    "colony_cpp_api",
-    "PySide6.*",
-    "pyqtgraph.*",
-    "torch.*",
-    "gymnasium.*",
-    "stable_baselines3.*",
-    "tensorboard.*",
-]
+module = ["colony_cpp", "colony_cpp.*"]
 ignore_missing_imports = true
 
+# Тяжёлые зависимости: follow_imports = "skip" → их API для mypy — Any,
+# и результат одинаков с установленными пакетами и без них (CI-job ставит
+# только numpy, локально обычно стоит всё). Типизированный numpy проверяется.
 [[tool.mypy.overrides]]
-module = ["train_ui2.*"]
-# UI-код на PySide6 пока не доведён до strict — без полного запрета
+module = [
+    "torch", "torch.*",
+    "PySide6", "PySide6.*",
+    "pyqtgraph", "pyqtgraph.*",
+    "gymnasium", "gymnasium.*",
+    "stable_baselines3", "stable_baselines3.*",
+    "tensorboard", "tensorboard.*",
+]
+ignore_missing_imports = true
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
+[[tool.mypy.overrides]]
+module = ["train_ui2.*", "train", "watch_champion"]
+# UI-код на PySide6 и CLI-скрипты: аннотации не обязательны, но тела функций
+# всё равно проверяются (check_untyped_defs = true).
 disallow_untyped_defs = false

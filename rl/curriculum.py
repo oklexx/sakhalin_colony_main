@@ -7,11 +7,28 @@ into a `CurriculumState`; the C++ side never interprets stages or lists again
 """
 from __future__ import annotations
 
+import os
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Sequence
+from typing import Any, TypedDict
+
+#: Набор механик/ID на входе: CSV-строка, список/кортеж или None (= не задан).
+MechanicsRaw = str | Iterable[str] | None
+#: Мета-файлы (meta.json, best_model.meta.json) — сырой JSON.
+MetaDict = dict[str, Any]
+
+
+class ResolvedCurriculum(TypedDict):
+    """Результат `resolve_curriculum`: эффективный сценарий модели."""
+
+    curriculum_stage: int
+    unlock_ids: str
+    use_curriculum_tab: bool | None
+    allowed: list[str]
+    resources: str | list[str] | None
 
 # Stage → building ids (as in configs/bases.json without City)
-STAGE_MAP: Dict[int, List[str]] = {
+STAGE_MAP: dict[int, list[str]] = {
     1: ["House", "SmallHouse", "Farm", "Garden", "Mushroom", "WaterChannel",
         "Refinery", "Fish", "HuntingLand", "CowFarm", "Apiary", "Hothouse",
         "Puerperal", "Road"],
@@ -23,7 +40,7 @@ STAGE_MAP: Dict[int, List[str]] = {
 }
 
 # All 32 buildable ids in canonical order (same SET as C++ BUILD_SUBSET)
-ALL_IDS: List[str] = [
+ALL_IDS: list[str] = [
     "Farm", "Garden", "WaterChannel", "Sawmill", "Coalmine", "Ironmine", "Refinery", "Goldmine",
     "PowerStation", "HydroStation", "Road", "House", "SmallHouse", "Fish", "CoalCut",
     "HuntingLand", "CowFarm", "Mushroom", "BigHouse", "BigFarm", "Apiary", "Torchlight", "Hothouse",
@@ -34,7 +51,7 @@ _ALL_IDS_SET = frozenset(ALL_IDS)
 
 # Канон — configs/bases.json: BigRefinary (не BigRefinery!), WaterChannel
 # (не Water_Channel). Частые опечатки нормализуются, остальное — ошибка.
-BUILD_ALIASES: Dict[str, str] = {
+BUILD_ALIASES: dict[str, str] = {
     "BigRefinery": "BigRefinary",
     "Water_Channel": "WaterChannel",
 }
@@ -92,7 +109,7 @@ _MECHANIC_ALIASES = {
 }
 
 
-def parse_mechanic_ids(raw) -> List[str]:
+def parse_mechanic_ids(raw: MechanicsRaw) -> list[str]:
     """Parse a comma/list mechanic set and fail closed on unknown names."""
     if raw is None or raw == "":
         return []
@@ -104,8 +121,8 @@ def parse_mechanic_ids(raw) -> List[str]:
         return list(MECHANIC_NAMES)
     if any(x == "none" for x in items):
         items = [x for x in items if x != "none"]
-    out: List[str] = []
-    unknown: List[str] = []
+    out: list[str] = []
+    unknown: list[str] = []
     for item in items:
         name = _MECHANIC_ALIASES.get(item)
         if name is None:
@@ -119,7 +136,7 @@ def parse_mechanic_ids(raw) -> List[str]:
     return [name for name in MECHANIC_NAMES if name in out]
 
 
-def normalize_enabled_mechanics(raw=None) -> tuple[str, ...]:
+def normalize_enabled_mechanics(raw: MechanicsRaw = None) -> tuple[str, ...]:
     """Return canonical enabled mechanics; missing means legacy/all enabled."""
     if raw is None or raw == "":
         return MECHANIC_NAMES
@@ -130,15 +147,15 @@ def normalize_enabled_mechanics(raw=None) -> tuple[str, ...]:
     return tuple(parse_mechanic_ids(raw))
 
 
-def enabled_from_disabled(raw=None) -> tuple[str, ...]:
+def enabled_from_disabled(raw: MechanicsRaw = None) -> tuple[str, ...]:
     """Convert Config.disabled_mechanics into the canonical allow-list."""
     disabled = set(parse_mechanic_ids(raw))
     return tuple(name for name in MECHANIC_NAMES if name not in disabled)
 
 def mechanics_enabled_at_step(
     step: int,
-    disabled_mechanics=None,
-    unlock_schedule=None,
+    disabled_mechanics: MechanicsRaw = None,
+    unlock_schedule: Any = None,
 ) -> tuple[str, ...]:
     """Return the monotonic mechanic allow-list at a training step.
 
@@ -231,7 +248,7 @@ _RESOURCE_SET = frozenset(RESOURCE_NAMES)
 # дня, хоронить политика на налоге нечестно.
 STAGE1_PRESET_NAME = "stage1"
 
-STAGE1_PRESET: Dict[str, object] = {
+STAGE1_PRESET: dict[str, object] = {
     # Разрешённые здания (unions со stage 1 в ids_for_stage; stage=0 => ровно
     # этот набор).
     "unlock_ids": ",".join([
@@ -257,7 +274,7 @@ STAGE1_PRESET: Dict[str, object] = {
 }
 
 
-def apply_stage1_preset(cfg) -> None:
+def apply_stage1_preset(cfg: Any) -> None:
     """Наложить пресет «Стадия 1: база и ресурсы» на Config-подобный объект.
 
     Один источник и для CLI (``--preset stage1``), и для UI (кнопка на
@@ -295,7 +312,7 @@ class CurriculumState:
     enabled_mechanics: tuple[str, ...] = MECHANIC_NAMES
 
     @classmethod
-    def all(cls, stage_report: int = 0) -> "CurriculumState":
+    def all(cls, stage_report: int = 0) -> CurriculumState:
         """Unrestricted state (conventionally carries ALL_IDS for logging)."""
         return cls(True, tuple(ALL_IDS), True, _FULL_WEIGHTS, stage_report, 2,
                    MECHANIC_NAMES)
@@ -313,7 +330,7 @@ class CurriculumState:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "CurriculumState":
+    def from_dict(cls, d: dict) -> CurriculumState:
         """Tolerant read of the transport form (unknown keys ignored)."""
         allowed = d.get("allowed_builds", ())
         weights = d.get("resource_weights", None)
@@ -329,7 +346,7 @@ class CurriculumState:
         )
 
 
-def parse_unlock_ids(unlock_ids: str | List[str] | None) -> List[str]:
+def parse_unlock_ids(unlock_ids: str | list[str] | None) -> list[str]:
     """Normalise a manual unlock set (CSV string or list) to an ordered list.
 
     Aliases (BigRefinery→BigRefinary, Water_Channel→WaterChannel) are folded to
@@ -343,9 +360,9 @@ def parse_unlock_ids(unlock_ids: str | List[str] | None) -> List[str]:
         raw = unlock_ids.split(",")
     else:
         raw = [str(s) for s in unlock_ids]
-    out: List[str] = []
+    out: list[str] = []
     seen: set[str] = set()
-    unknown: List[str] = []
+    unknown: list[str] = []
     for item in raw:
         bid = item.strip()
         if not bid:
@@ -368,7 +385,7 @@ def parse_unlock_ids(unlock_ids: str | List[str] | None) -> List[str]:
 
 
 def manual_ids_csv(
-    unlock_ids: str | List[str] | None,
+    unlock_ids: str | list[str] | None,
     use_curriculum_tab: bool = True,
 ) -> str:
     """Manual curriculum set as CSV, honouring the «Ручной набор» checkbox.
@@ -381,7 +398,7 @@ def manual_ids_csv(
     return ",".join(parse_unlock_ids(unlock_ids))
 
 
-def parse_resources(csv_or_list: str | List[str] | None) -> List[float] | None:
+def parse_resources(csv_or_list: str | list[str] | None) -> list[float] | None:
     """Normalise a resource-priority set to 9 soft weights (PR 4).
 
     ``None``/``""`` ⇒ ``None`` (all_resources: full legacy behaviour). Otherwise
@@ -406,7 +423,7 @@ def parse_resources(csv_or_list: str | List[str] | None) -> List[float] | None:
     return [1.0 if r in picked else 0.0 for r in RESOURCE_NAMES]
 
 
-def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List[str]:
+def ids_for_stage(stage: int, unlock_ids: str | list[str] | None = None) -> list[str]:
     """Cumulative ids up to stage (0 = all), plus explicit manual `unlock_ids`.
 
     Mirrors the C++ `ColonyEnvCpp` logic it replaced: если задан непустой ручной
@@ -417,13 +434,13 @@ def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List
 
     if stage == 0 and not manual:
         return list(ALL_IDS)
-    out: List[str] = []
+    out: list[str] = []
     for s in range(1, stage + 1):
         out.extend(STAGE_MAP.get(s, []))
     out.extend(manual)
     # de-duplicate while preserving order
     seen: set[str] = set()
-    uniq: List[str] = []
+    uniq: list[str] = []
     for bid in out:
         if bid not in seen:
             seen.add(bid)
@@ -433,11 +450,11 @@ def ids_for_stage(stage: int, unlock_ids: str | List[str] | None = None) -> List
 
 def build_state(
     stage: int,
-    unlock_ids: str | List[str] | None = None,
+    unlock_ids: str | list[str] | None = None,
     use_curriculum_tab: bool = True,
-    resources: str | List[str] | None = None,
+    resources: str | list[str] | None = None,
     obs_version: int = 2,
-    enabled_mechanics=None,
+    enabled_mechanics: MechanicsRaw = None,
 ) -> CurriculumState:
     """Compute the CurriculumState from (stage, manual set, checkbox).
 
@@ -474,9 +491,9 @@ def build_state(
 
 def allowed_ids(
     stage: int,
-    unlock_ids: str | List[str] | None = None,
+    unlock_ids: str | list[str] | None = None,
     use_curriculum_tab: bool = True,
-) -> List[str]:
+) -> list[str]:
     """Single entry point: building ids allowed by stage + manual set.
 
     This is THE function every env instance must use (training, eval, watch) so
@@ -485,7 +502,7 @@ def allowed_ids(
     return ids_for_stage(stage, unlock_ids=manual_ids_csv(unlock_ids, use_curriculum_tab))
 
 
-def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
+def curriculum_from_meta(meta: MetaDict | None) -> MetaDict:
     """Extract curriculum settings from a model/run meta dict.
 
     Accepts both layouts:
@@ -507,7 +524,7 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
     if not isinstance(nested, dict):
         nested = {}
 
-    def pick(*keys: str):
+    def pick(*keys: str) -> Any:
         for src in (meta, nested):
             for key in keys:
                 if key in src and src[key] is not None:
@@ -539,7 +556,7 @@ def curriculum_from_meta(meta: Dict[str, object] | None) -> Dict[str, object]:
 _META_NAMES = ("best_model.meta.json", "meta.json")
 
 
-def read_curriculum_meta(model_dir) -> Dict[str, object]:
+def read_curriculum_meta(model_dir: str | os.PathLike[str]) -> MetaDict:
     """Read curriculum settings from the meta files in a model directory.
 
     ``best_model.meta.json`` usually carries only the stage, while the run
@@ -550,7 +567,7 @@ def read_curriculum_meta(model_dir) -> Dict[str, object]:
     import json
     from pathlib import Path
 
-    out: Dict[str, object] = {
+    out: MetaDict = {
         "curriculum_stage": None,
         "unlock_ids": None,
         "use_curriculum_tab": None,
@@ -567,7 +584,7 @@ def read_curriculum_meta(model_dir) -> Dict[str, object]:
         if not meta_path.exists():
             continue
         try:
-            with open(meta_path, "r", encoding="utf-8") as f:
+            with open(meta_path, encoding="utf-8") as f:
                 meta = json.load(f)
         except (OSError, ValueError):
             continue
@@ -578,13 +595,13 @@ def read_curriculum_meta(model_dir) -> Dict[str, object]:
 
 
 def resolve_curriculum(
-    model_dir,
-    meta: Dict[str, object] | None = None,
+    model_dir: str | os.PathLike[str] | None,
+    meta: MetaDict | None = None,
     curriculum_stage: int | None = None,
-    unlock_ids: str | List[str] | None = None,
+    unlock_ids: str | list[str] | None = None,
     use_curriculum_tab: bool | None = None,
-    resources: str | List[str] | None = None,
-) -> Dict[str, object]:
+    resources: str | list[str] | None = None,
+) -> ResolvedCurriculum:
     """Resolve the effective curriculum for a model (explicit args win).
 
     Returns ``{"curriculum_stage", "unlock_ids", "use_curriculum_tab",
@@ -615,14 +632,14 @@ def resolve_curriculum(
 
 
 def resolve_state(
-    model_dir,
-    meta: Dict[str, object] | None = None,
+    model_dir: str | os.PathLike[str] | None,
+    meta: MetaDict | None = None,
     curriculum_stage: int | None = None,
-    unlock_ids: str | List[str] | None = None,
+    unlock_ids: str | list[str] | None = None,
     use_curriculum_tab: bool | None = None,
-    resources: str | List[str] | None = None,
+    resources: str | list[str] | None = None,
     obs_version: int = 2,
-    enabled_mechanics=None,
+    enabled_mechanics: MechanicsRaw = None,
 ) -> CurriculumState:
     """resolve_curriculum + build_state in one call (eval/watch paths).
 
@@ -669,10 +686,10 @@ def resolve_state(
     # manual_csv is already checkbox-filtered, so the tab is trivially True here.
     # resources fall back to the stored run scenario (explicit args win).
     return build_state(
-        int(resolved["curriculum_stage"]),  # type: ignore[arg-type]
-        str(resolved["unlock_ids"]),
+        resolved["curriculum_stage"],
+        resolved["unlock_ids"],
         True,
-        resolved["resources"],  # type: ignore[arg-type]
+        resolved["resources"],
         obs_version,
         mechanics_raw,
     )
@@ -703,7 +720,8 @@ def obs_size_for_version(version: int) -> int:
         raise ValueError(f"unknown obs_version: {version!r}") from None
 
 
-def stored_obs_version(model_dir, meta: Dict[str, object] | None = None) -> int | None:
+def stored_obs_version(model_dir: str | os.PathLike[str] | None,
+                       meta: MetaDict | None = None) -> int | None:
     """Obs version a checkpoint was trained with, from its meta files.
 
     Returns None when there is nothing to read (no meta files, no meta dict);
@@ -716,7 +734,7 @@ def stored_obs_version(model_dir, meta: Dict[str, object] | None = None) -> int 
             if stored.get(key) is None and value is not None:
                 stored[key] = value
     if stored.get("obs_version") is not None:
-        return int(stored["obs_version"])  # type: ignore[arg-type]
+        return int(stored["obs_version"])
     if model_dir is not None:
         from pathlib import Path
 
@@ -749,8 +767,8 @@ def check_obs_version_compat(
 
 def resolve_obs_version(
     explicit: int | None,
-    model_dir=None,
-    meta: Dict[str, object] | None = None,
+    model_dir: str | os.PathLike[str] | None = None,
+    meta: MetaDict | None = None,
     *,
     default: int = CURRENT_OBS_VERSION,
 ) -> int:
@@ -768,7 +786,7 @@ def resolve_obs_version(
     return int(stored) if stored is not None else int(default)
 
 
-def ckpt_flat_width(state_dict) -> int | None:
+def ckpt_flat_width(state_dict: Any) -> int | None:
     """First-layer flat input width of a checkpoint state_dict.
 
     None for CNN-only policies (no flat input at all). Used by the resume
@@ -805,7 +823,7 @@ def check_policy_obs_compat(
     )
 
 
-def allowed_buildings_for_stage(stage: int) -> List[str]:
+def allowed_buildings_for_stage(stage: int) -> list[str]:
     """Legacy helper returning BUILD_ prefixed names (EnvManager compatibility)."""
     ids = ids_for_stage(stage)
     # EnvManager expects BUILD_* + managers + DAY/WEEK etc. Keep that expansion there.
@@ -813,7 +831,7 @@ def allowed_buildings_for_stage(stage: int) -> List[str]:
 
 
 def stage_progress(step: int, schedule: Sequence[Sequence[int]],
-                   base_stage: int = 0) -> Dict[str, object]:
+                   base_stage: int = 0) -> dict[str, object]:
     """Прогресс текущего этапа курикулума в шагах — для UI-монитора.
 
     Смысл цифры — «сколько шагов съедено из бюджета этапа», а не «насколько
@@ -836,7 +854,7 @@ def stage_progress(step: int, schedule: Sequence[Sequence[int]],
     step = max(0, int(step))
     base = int(base_stage or 0)
 
-    pairs: List[tuple[int, int]] = []
+    pairs: list[tuple[int, int]] = []
     for row in (schedule or []):
         try:
             threshold, stage = int(row[0]), int(row[1])
@@ -854,7 +872,7 @@ def stage_progress(step: int, schedule: Sequence[Sequence[int]],
     start = max((t for t, s in pairs if step >= t and s <= stage), default=0)
     nxt = min((t for t, _s in pairs if t > step), default=None)
 
-    out: Dict[str, object] = {
+    out: dict[str, object] = {
         "stage": stage,
         "start_step": start,
         "next_at_step": nxt,

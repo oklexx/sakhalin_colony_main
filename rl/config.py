@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import warnings
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 # Для аннотации Config.curriculum_state (ruff F821, get_type_hints). Цикла нет:
 # rl.curriculum зависит только от stdlib и rl.config не импортирует.
@@ -20,7 +21,7 @@ from rl.curriculum import CurriculumState
 DEFAULT_REWARD_PROFILE = "reward_v4.json"
 
 
-def default_reward_profile_path() -> Optional[Path]:
+def default_reward_profile_path() -> Path | None:
     """Путь к каноническому профилю наград (или None)."""
     p = Path(__file__).resolve().parent.parent / "configs" / DEFAULT_REWARD_PROFILE
     return p if p.exists() else None
@@ -28,14 +29,14 @@ def default_reward_profile_path() -> Optional[Path]:
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _as_dict(obj: Any) -> Dict[str, Any]:
+def _as_dict(obj: Any) -> dict[str, Any]:
     """Dataclass → dict via introspection (DRY, no hardcoded field lists)."""
     if not is_dataclass(obj):
         raise TypeError(f"expected dataclass, got {type(obj)}")
     return {f.name: getattr(obj, f.name) for f in fields(obj)}
 
 
-def _update_dataclass_from_dict(obj: Any, data: Dict[str, Any], *, coerce_int: set[str] = frozenset()) -> None:
+def _update_dataclass_from_dict(obj: Any, data: dict[str, Any], *, coerce_int: AbstractSet[str] = frozenset()) -> None:
     """In-place update of dataclass fields from dict, ignoring unknown keys."""
     allowed = {f.name for f in fields(obj)}
     for k, v in data.items():
@@ -144,11 +145,11 @@ class RewardConfig:
 
     # ── serialization ──
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return _as_dict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any], base: Optional["RewardConfig"] = None) -> "RewardConfig":
+    def from_dict(cls, data: dict[str, Any], base: RewardConfig | None = None) -> RewardConfig:
         """Create from dict; only explicitly present keys override base.
         Accepts nested {"reward": {...}} form. Base defaults to canonical profile.
         """
@@ -212,7 +213,7 @@ class Config:
     # surplus» and «credit» are enabled — the manager slots that the first
     # survival loop needs. Old configs without these fields keep the legacy
     # all-enabled behaviour (Config.from_dict resets them to []).
-    disabled_mechanics: List[str] = field(
+    disabled_mechanics: list[str] = field(
         default_factory=lambda: [
             "improve_land", "repair", "destroy", "preservation",
             "buy_food", "manual_tax",
@@ -221,7 +222,7 @@ class Config:
     # Unlock entries are additive and applied by absolute environment steps.
     # Empty by default: stage 2 is a separate run with its own config (or the
     # user edits the schedule manually in the UI).
-    mechanics_unlock_schedule: List = field(default_factory=list)
+    mechanics_unlock_schedule: list = field(default_factory=list)
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     # ── PPO ──
@@ -241,7 +242,7 @@ class Config:
     target_kl: float = 0.02  # 0 disables KL early-stop
 
     # ── network / observation ──
-    net_arch: List[int] = field(default_factory=lambda: [256, 256])
+    net_arch: list[int] = field(default_factory=lambda: [256, 256])
     obs_mode: str = "flat"  # flat | minimap | hybrid
     # DEPRECATED / dead: ColonyEnvCpp::minimap() emits a fixed global 32x32 and
     # _make_model() passes grid_size=32 explicitly, so this value is ignored
@@ -256,13 +257,13 @@ class Config:
     save_freq: int = 500_000
     eval_freq: int = 100_000
     eval_episodes: int = 20
-    eval_score_weights: Tuple[float, float, float, float] = (0.10, 1.0, 0.10, 0.0001)
+    eval_score_weights: tuple[float, float, float, float] = (0.10, 1.0, 0.10, 0.0001)
     eval_min_bases: int = 5
     eval_min_days: float = 730.0
     eval_use_median: bool = True
-    eval_seeds: List[int] = field(default_factory=lambda: [42])
+    eval_seeds: list[int] = field(default_factory=lambda: [42])
     early_stopping_patience: int = 0
-    curriculum_schedule: List[List[int]] = field(default_factory=list)  # [[step, stage], ...]
+    curriculum_schedule: list[list[int]] = field(default_factory=list)  # [[step, stage], ...]
 
     # ── performance ──
     device: str = "cuda"
@@ -317,7 +318,7 @@ class Config:
 
         # torch availability warnings — keep non-fatal for CPU-only / test envs
         try:
-            import torch  # type: ignore
+            import torch
         except Exception:
             return
         if self.torch_compile and not torch.cuda.is_available():
@@ -327,7 +328,7 @@ class Config:
                 stacklevel=3,
             )
         if self.use_amp and self.amp_dtype == "bfloat16" and torch.cuda.is_available():
-            if not torch.cuda.is_bf16_supported():  # type: ignore[attr-defined]
+            if not torch.cuda.is_bf16_supported():
                 warnings.warn(
                     "amp_dtype='bfloat16' but GPU has no BF16 — AMP falls back to float32.",
                     UserWarning,
@@ -335,9 +336,9 @@ class Config:
                 )
 
     # ── serialization ──
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Flat dict + nested reward (backward compatible)."""
-        data: Dict[str, Any] = {}
+        data: dict[str, Any] = {}
         for f in fields(self):
             if f.name == "reward":
                 continue
@@ -347,7 +348,7 @@ class Config:
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Config":
+    def from_dict(cls, data: dict[str, Any]) -> Config:
         """Create Config from flat dict (handles legacy nested reward & curriculum aliases)."""
         if not isinstance(data, dict):
             raise TypeError(f"Config.from_dict expected dict, got {type(data)}")
@@ -372,7 +373,7 @@ class Config:
             except Exception:
                 pass
 
-        cfg = cls(**filtered)  # type: ignore[arg-type]
+        cfg = cls(**filtered)
 
         # A pre-mechanic config/checkpoint had no gating contract. Preserve its
         # legacy all-enabled behaviour; newly created Config() instances use
@@ -403,7 +404,7 @@ class Config:
 
         return cfg
 
-    def load_from_file(self, path: str | Path) -> "Config":
+    def load_from_file(self, path: str | Path) -> Config:
         """In-place update from JSON file (partial). Returns self for chaining."""
         p = Path(path)
         if not p.exists():
@@ -466,7 +467,7 @@ class Config:
             step, self.disabled_mechanics, self.mechanics_unlock_schedule
         )
 
-    def curriculum_meta(self) -> Dict[str, Any]:
+    def curriculum_meta(self) -> dict[str, Any]:
         """Curriculum fields to persist next to a checkpoint (meta.json)."""
         return {
             "curriculum_stage_at_best": int(self.curriculum_stage),

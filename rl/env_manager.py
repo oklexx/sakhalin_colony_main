@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Environment manager — bridges C++ vectorized env and PyTorch policy.
 
 Extracted factories (_ensure_python_path, _make_vec_env, _make_model,
@@ -8,16 +6,25 @@ observation-mode branching. Public API is unchanged for Config/EnvManager
 consumers.
 """
 
+from __future__ import annotations
+
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 
 from rl.action_monitor import ActionLegalityMonitor, MaskReasonMonitor
 from rl.config import Config
+
+if TYPE_CHECKING:
+    from cpp_vecenv import CppVecEnv
+    from rl._nn_common import ActorCriticBase
+    from rl.curriculum import CurriculumState
+    from rl.ppo import PPO
+    from rl.rollout_buffer import RolloutBuffer
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -28,12 +35,12 @@ def _ensure_python_path() -> None:
         sys.path.insert(0, python_dir)
 
 
-def _make_vec_env(cfg: Config):
+def _make_vec_env(cfg: Config) -> CppVecEnv:
     """Create CppVecEnv (with or without minimap observations)."""
-    from python.cpp_vecenv import CppVecEnv  # lazy import after path fix
+    from cpp_vecenv import CppVecEnv  # lazy import after path fix
 
     reward_cfg = cfg.reward.to_dict()
-    common = dict(
+    common: dict[str, Any] = dict(
         n_envs=cfg.n_envs,
         map_size=cfg.map_size,
         # PR 1: один вычисленный контракт вместо (stage, unlock_ids)
@@ -45,7 +52,7 @@ def _make_vec_env(cfg: Config):
     )
     # minimap / hybrid need minimap observation plumbing
     if cfg.obs_mode in ("minimap", "hybrid"):
-        from python.cpp_vecenv_minimap import CppVecEnvMinimap  # type: ignore
+        from cpp_vecenv_minimap import CppVecEnvMinimap
 
         return CppVecEnvMinimap(
             **common,
@@ -55,7 +62,7 @@ def _make_vec_env(cfg: Config):
     return CppVecEnv(**common)
 
 
-def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device):
+def _make_model(cfg: Config, obs_size: int, n_actions: int, device: torch.device) -> ActorCriticBase:
     """Instantiate correct policy class for cfg.obs_mode."""
     if cfg.obs_mode == "flat":
         from rl.actor_critic import ActorCritic
@@ -90,7 +97,7 @@ def _make_buffer(
     obs_size: int,
     n_actions: int,
     device: torch.device,
-):
+) -> RolloutBuffer:
     """Create rollout buffer (flat tensor or N-D tensor variant for minimap/hybrid)."""
     from rl.rollout_buffer import RolloutBuffer, _TensorRolloutBuffer
 
@@ -127,7 +134,7 @@ def _make_buffer(
     )
 
 
-def _make_ppo(cfg: Config, model, buffer):
+def _make_ppo(cfg: Config, model: ActorCriticBase, buffer: RolloutBuffer) -> PPO:
     from rl.ppo import PPO
 
     steps_per_rollout = cfg.n_steps * cfg.n_envs
@@ -192,18 +199,18 @@ class EnvManager:
 
         # expose commonly accessed attributes for backward compat
         self.n_envs: int = self.vec_env.num_envs
-        self.obs_size: int = getattr(self.vec_env, "obs_size", lambda: 0)() if callable(getattr(self.vec_env, "obs_size", None)) else getattr(self.vec_env, "obs_size", 0)  # type: ignore
+        self.obs_size: int = getattr(self.vec_env, "obs_size", lambda: 0)() if callable(getattr(self.vec_env, "obs_size", None)) else getattr(self.vec_env, "obs_size", 0)
         # fallback if obs_size not directly available — infer from observation_space
         if not self.obs_size:
             try:
-                self.obs_size = int(self.vec_env.observation_space.shape[0])  # type: ignore
+                self.obs_size = int(self.vec_env.observation_space.shape[0])
             except Exception:
                 self.obs_size = 0
 
         try:
-            self.n_actions: int = int(self.vec_env.action_space.n)  # type: ignore
+            self.n_actions: int = int(self.vec_env.action_space.n)
         except Exception:
-            self.n_actions = getattr(self.vec_env, "n_actions", 0)  # type: ignore
+            self.n_actions = getattr(self.vec_env, "n_actions", 0)
 
         # minimap env alias (for minimap-specific helpers)
         self.mm_env = self.vec_env if cfg.is_minimap else None
@@ -212,14 +219,14 @@ class EnvManager:
         self.buffer = _make_buffer(cfg, self.n_envs, self.obs_size, self.n_actions, device)
         self.ppo = _make_ppo(cfg, self.model, self.buffer)
 
-        self._obs: Optional[torch.Tensor | Dict[str, torch.Tensor]] = None
+        self._obs: torch.Tensor | dict[str, torch.Tensor] | None = None
         self._last_dones = np.zeros(self.n_envs, dtype=bool)
 
         # Мониторинг легальности действий (см. rl/action_monitor.py). Среда
         # обязана отдавать маски — collect_step читает self.vec_env.action_masks
         # безусловно, — поэтому отдельная проверка «есть ли маски» тут только
         # молча выключала бы метрику на пустом месте.
-        self._action_legality: Optional[ActionLegalityMonitor] = (
+        self._action_legality: ActionLegalityMonitor | None = (
             ActionLegalityMonitor(self.n_actions)
             if bool(getattr(cfg, "monitor_action_legality", True))
             else None
@@ -227,7 +234,7 @@ class EnvManager:
         # Та же причина закрытия (деньги / нет участка / курикулум) — едет тем
         # же флагом, что и легальность: колонка панели появляется только там,
         # где вообще считается след маски (docs/MONITOR_ACTIONS_2026_09.md §4).
-        self._action_reasons: Optional[MaskReasonMonitor] = (
+        self._action_reasons: MaskReasonMonitor | None = (
             MaskReasonMonitor(self.n_actions)
             if self._action_legality is not None
             else None
@@ -240,7 +247,7 @@ class EnvManager:
             return x.to(device=self.device, dtype=torch.float32)
         return torch.as_tensor(np.asarray(x), device=self.device, dtype=torch.float32)
 
-    def _policy_obs(self, obs: Any):
+    def _policy_obs(self, obs: Any) -> Any:
         """Convert env obs to policy input (tensor / dict / tuple)."""
         if isinstance(obs, dict):
             return {k: self._to_tensor(v) for k, v in obs.items()}
@@ -256,7 +263,7 @@ class EnvManager:
         self._last_dones[:] = False
         return self._obs
 
-    def step(self, actions: np.ndarray):
+    def step(self, actions: np.ndarray) -> tuple[Any, np.ndarray, np.ndarray, list[dict[str, Any]]]:
         """Step vec env (sync). Returns (obs, rewards, dones, infos)."""
         obs, rewards, dones, infos = self.vec_env.step(actions)
         self._obs = self._policy_obs(obs)
@@ -265,7 +272,7 @@ class EnvManager:
 
     # ── rollout integration ──
 
-    def collect_step(self, obs: Any = None) -> Tuple[Any, List[Dict[str, Any]]]:
+    def collect_step(self, obs: Any = None) -> tuple[Any, list[dict[str, Any]]]:
         """Collect one step into rollout buffer (policy sampling).
 
         Returns (new_obs, infos) for the trainer's episode tracking.
@@ -351,7 +358,7 @@ class EnvManager:
 
     # ── мониторинг (UI: вкладка «Мониторинг») ──
 
-    def pop_action_legality(self) -> Dict[str, float]:
+    def pop_action_legality(self) -> dict[str, float]:
         """Доля шагов роллаута, на которых действие было легальным (0..100).
 
         Окно — ровно один только что собранный роллаут: счётчики обнуляются,
@@ -363,7 +370,7 @@ class EnvManager:
             return {}
         return self._action_legality.pop_percent(self.action_names)
 
-    def pop_action_mask_reasons(self) -> Dict[str, str]:
+    def pop_action_mask_reasons(self) -> dict[str, str]:
         """Доминирующая причина закрытия маски по действию за роллаут.
 
         Возвращает {имя: "money" | "no_lot" | "curriculum" | "other"} — только
@@ -375,7 +382,7 @@ class EnvManager:
             return {}
         return self._action_reasons.pop_dominant(self.action_names)
 
-    def get_curriculum_progress(self, step: int) -> Dict[str, object]:
+    def get_curriculum_progress(self, step: int) -> dict[str, object]:
         """Прогресс текущего этапа курикулума в шагах (для подписи в UI).
 
         Пересчитывать этапы здесь нельзя — единый источник `rl/curriculum.py`
@@ -393,7 +400,7 @@ class EnvManager:
 
     def _truncation_bootstrap_values(
         self,
-        infos: List[Dict[str, Any]],
+        infos: list[dict[str, Any]],
         truncated_np: np.ndarray,
         action_masks_t: torch.Tensor,
     ) -> torch.Tensor:
@@ -458,10 +465,10 @@ class EnvManager:
 
     # ── curriculum ──
 
-    def _assert_curriculum_parity(self, st) -> None:
+    def _assert_curriculum_parity(self, st: CurriculumState) -> None:
         """EnvManager-side parity check: env.curriculum() == computed state."""
         try:
-            got = self.vec_env.venv.curriculum()  # type: ignore[attr-defined]
+            got = self.vec_env.venv.curriculum()
         except AttributeError:
             return  # exotic wrapper without .venv — nothing to check against
         # Buildings and resources are independent axes (open buildings +
@@ -501,7 +508,7 @@ class EnvManager:
             f"expected={want_mechanics} (rebuild colony_cpp)")
 
     @property
-    def action_names(self) -> List[str]:
+    def action_names(self) -> list[str]:
         """Action labels in env order (trainer top_actions, loop detector).
 
         Sourced from the vec env so monitoring labels can never drift from
@@ -517,11 +524,11 @@ class EnvManager:
         except Exception:
             return []
 
-    def get_allowed_buildings(self) -> List[str]:
+    def get_allowed_buildings(self) -> list[str]:
         """Return ids allowed by current curriculum stage + manual set."""
         return self.get_allowed_buildings_for_stage(self.cfg.curriculum_stage)
 
-    def get_allowed_buildings_for_stage(self, stage: int) -> List[str]:
+    def get_allowed_buildings_for_stage(self, stage: int) -> list[str]:
         """Ids allowed at `stage` (stage preset ∪ manual set from the UI tab)."""
         try:
             from rl.curriculum import allowed_ids
@@ -534,7 +541,7 @@ class EnvManager:
         except Exception:
             # fallback: ask env
             try:
-                return list(self.vec_env.build_ids())  # type: ignore
+                return list(self.vec_env.build_ids())
             except Exception:
                 return []
 
@@ -543,7 +550,7 @@ class EnvManager:
         self._curriculum_progress_step = max(0, int(step))
         st = self.cfg.curriculum_state(self._curriculum_progress_step)
         try:
-            venv = self.vec_env.venv  # type: ignore[attr-defined]
+            venv = self.vec_env.venv
         except AttributeError:
             return
         venv.set_curriculum(st.to_dict())

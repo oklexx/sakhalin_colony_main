@@ -20,56 +20,78 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QProgressBar, QScrollArea, QSpinBox, QSplitter, QTabWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 _PROJECT = Path(__file__).resolve().parent.parent
 if str(_PROJECT) not in sys.path:
     sys.path.insert(0, str(_PROJECT))
 
-from train_ui2 import protocol as P
-from train_ui2.curriculum_table import parse_schedule_rows
-from train_ui2.soft_stop import STOP_GRACE_S, SoftStop
-from train_ui2.models import ModelRegistry, pick_model_file
 from rl.config import RewardConfig as _RC
-
+from train_ui2 import protocol as P
 from train_ui2 import theme as T
 from train_ui2.charts import Bars, Chart, action_ru
-from train_ui2.monitor import fmt_pct, split_by_panel, watch_report
 from train_ui2.controls import ParamGroup, StatCard
+from train_ui2.curriculum_table import ScheduleParse, parse_schedule_rows
+from train_ui2.models import ModelRegistry, pick_model_file
+from train_ui2.monitor import fmt_pct, split_by_panel, watch_report
+from train_ui2.soft_stop import STOP_GRACE_S, SoftStop
 
 CONFIG_PATH = Path.home() / "colony_runs" / "sakhalin_colony_ui2" / "config.json"
 
 # centralised constants (backward compat re-export)
 from train_ui2.constants import (
-    PARAM_GROUPS,
-    REWARD_GROUPS,
-    REWARD_FLAGS,
-    CURRICULUM_STAGE_MAP,
     ALL_BUILD_IDS,
     BUILD_CAPTIONS,
-    RESOURCE_IDS,
-    RESOURCE_CAPTIONS,
-    KEY_ACTIONS_MONITOR,
     CONFIG_VERSION,
-    MECHANIC_IDS,
+    CURRICULUM_STAGE_MAP,
+    KEY_ACTIONS_MONITOR,
     MECHANIC_CAPTIONS,
-    PRESETS,
+    MECHANIC_IDS,
+    PARAM_GROUPS,
     PRESET_ORDER,
+    PRESETS,
+    RESOURCE_CAPTIONS,
+    RESOURCE_IDS,
+    REWARD_FLAGS,
+    REWARD_GROUPS,
 )
 from train_ui2.icons import (
     building_icon as _building_icon,
-    resource_icon as _resource_icon,
-    format_steps as _fmt_steps,
+)
+from train_ui2.icons import (
     escape_html as _esc,
+)
+from train_ui2.icons import (
+    format_steps as _fmt_steps,
+)
+from train_ui2.icons import (
+    resource_icon as _resource_icon,
 )
 
 # eval lines look like:
@@ -82,34 +104,34 @@ _BEST_RE = re.compile(
 
 
 class MainWindow2(QMainWindow):
-    def __init__(self, models_dir: Optional[Path] = None):
+    def __init__(self, models_dir: Path | None = None):
         super().__init__()
         self.setWindowTitle("Sakhalin Colony — Training UI 2.0")
         self.resize(1240, 940)
         self.registry = ModelRegistry(models_dir)
-        self.config: Dict[str, Any] = self._load_state()
+        self.config: dict[str, Any] = self._load_state()
 
         # worker state
-        self._train_proc: Optional[subprocess.Popen] = None
-        self._msg_file: Optional[str] = None
+        self._train_proc: subprocess.Popen | None = None
+        self._msg_file: str | None = None
         self._msg_offset = 0
-        self._cmd_file: Optional[str] = None
-        self._cfg_tmp: Optional[str] = None
+        self._cmd_file: str | None = None
+        self._cfg_tmp: str | None = None
         self._soft_stop = SoftStop()
-        self._cur_table_warnings: List[str] = []
+        self._cur_table_warnings: list[str] = []
         self._msg_timer = QTimer(self)
         self._msg_timer.timeout.connect(self._poll_worker)
         # watch state
-        self._watch_proc: Optional[subprocess.Popen] = None
-        self._watch_log: Optional[str] = None
+        self._watch_proc: subprocess.Popen | None = None
+        self._watch_log: str | None = None
         self._watch_offset = 0
         self._watch_timer = QTimer(self)
         self._watch_timer.timeout.connect(self._poll_watch)
-        self._extra_cfg: Dict[str, Any] = {}
+        self._extra_cfg: dict[str, Any] = {}
         # curriculum state
-        self._building_checks: Dict[str, QCheckBox] = {}
-        self._resource_checks: Dict[str, QCheckBox] = {}
-        self._mechanic_checks: Dict[str, QCheckBox] = {}
+        self._building_checks: dict[str, QCheckBox] = {}
+        self._resource_checks: dict[str, QCheckBox] = {}
+        self._mechanic_checks: dict[str, QCheckBox] = {}
 
         self._build_ui()
         self._restore_state()
@@ -192,8 +214,8 @@ class MainWindow2(QMainWindow):
         scroll.setFrameShape(QScrollArea.NoFrame)
         cols = QHBoxLayout()
         cols.setSpacing(8)
-        col_w: List[QVBoxLayout] = [QVBoxLayout(), QVBoxLayout()]
-        self.pgroups: Dict[str, ParamGroup] = {}
+        col_w: list[QVBoxLayout] = [QVBoxLayout(), QVBoxLayout()]
+        self.pgroups: dict[str, ParamGroup] = {}
         for i, (title, keys) in enumerate(PARAM_GROUPS.items()):
             g = ParamGroup(title, keys)
             g.value_changed.connect(self._on_param_changed)
@@ -215,8 +237,10 @@ class MainWindow2(QMainWindow):
         inner.addWidget(self.cmb_obs_mode, row, 1, Qt.AlignLeft)
         row += 1
         inner.addWidget(T.field_label("Миникарта R", "Радиус миникарты (сетка 2R+1)"), row, 0)
-        self.spn_mm_radius = QSpinBox(); self.spn_mm_radius.setRange(4, 32)
-        self.spn_mm_radius.setValue(14); self.spn_mm_radius.setFixedWidth(92)
+        self.spn_mm_radius = QSpinBox()
+        self.spn_mm_radius.setRange(4, 32)
+        self.spn_mm_radius.setValue(14)
+        self.spn_mm_radius.setFixedWidth(92)
         self.spn_mm_radius.valueChanged.connect(lambda _: self._on_param_changed())
         inner.addWidget(self.spn_mm_radius, row, 1, Qt.AlignLeft)
         row += 1
@@ -234,7 +258,8 @@ class MainWindow2(QMainWindow):
         self.chk_use_curriculum_tab.stateChanged.connect(lambda _: self._on_param_changed())
         stage_bar.addWidget(self.chk_use_curriculum_tab)
         stage_bar.addStretch(1)
-        stage_w = QWidget(); stage_w.setLayout(stage_bar)
+        stage_w = QWidget()
+        stage_w.setLayout(stage_bar)
         inner.addWidget(stage_w, row, 1, Qt.AlignLeft)
         row += 1
         inner.addWidget(T.field_label("Карта", "Каждый старт — новый seed (новая карта)"), row, 0)
@@ -248,20 +273,25 @@ class MainWindow2(QMainWindow):
         seed_bar.addWidget(self.btn_seed_dice)
         seed_bar.addWidget(self.chk_rand_seed)
         seed_bar.addStretch(1)
-        seed_w = QWidget(); seed_w.setLayout(seed_bar)
+        seed_w = QWidget()
+        seed_w.setLayout(seed_bar)
         inner.addWidget(seed_w, row, 1, Qt.AlignLeft)
 
         # network + performance group (custom widgets)
         perf = T.group("Сеть и производительность")
         pg = perf.layout()
         pg.addWidget(T.field_label("Слоёв"), 0, 0)
-        self.spn_layers = QSpinBox(); self.spn_layers.setRange(1, 4)
-        self.spn_layers.setValue(2); self.spn_layers.setFixedWidth(92)
+        self.spn_layers = QSpinBox()
+        self.spn_layers.setRange(1, 4)
+        self.spn_layers.setValue(2)
+        self.spn_layers.setFixedWidth(92)
         self.spn_layers.valueChanged.connect(lambda _: self._on_param_changed())
         pg.addWidget(self.spn_layers, 0, 1, Qt.AlignLeft)
         pg.addWidget(T.field_label("Ширина слоя"), 1, 0)
-        self.spn_width = QSpinBox(); self.spn_width.setRange(32, 2048)
-        self.spn_width.setSingleStep(32); self.spn_width.setValue(256)
+        self.spn_width = QSpinBox()
+        self.spn_width.setRange(32, 2048)
+        self.spn_width.setSingleStep(32)
+        self.spn_width.setValue(256)
         self.spn_width.setFixedWidth(92)
         self.spn_width.valueChanged.connect(lambda _: self._on_param_changed())
         pg.addWidget(self.spn_width, 1, 1, Qt.AlignLeft)
@@ -274,16 +304,20 @@ class MainWindow2(QMainWindow):
         self.chk_compile.stateChanged.connect(lambda _: self._on_param_changed())
         pg.addWidget(self.chk_compile, 3, 0, 1, 2)
         pg.addWidget(T.field_label("Потоки C++", "0 = авто"), 4, 0)
-        self.spn_cpp_threads = QSpinBox(); self.spn_cpp_threads.setRange(0, 64)
-        self.spn_cpp_threads.setValue(0); self.spn_cpp_threads.setFixedWidth(92)
+        self.spn_cpp_threads = QSpinBox()
+        self.spn_cpp_threads.setRange(0, 64)
+        self.spn_cpp_threads.setValue(0)
+        self.spn_cpp_threads.setFixedWidth(92)
         self.spn_cpp_threads.valueChanged.connect(lambda _: self._on_param_changed())
         pg.addWidget(self.spn_cpp_threads, 4, 1, Qt.AlignLeft)
         col_w[1].addWidget(perf)
         for c in col_w:
             c.addStretch(1)
-            w = QWidget(); w.setLayout(c)
+            w = QWidget()
+            w.setLayout(c)
             cols.addWidget(w, 1)
-        scroll_w = QWidget(); scroll_w.setLayout(cols)
+        scroll_w = QWidget()
+        scroll_w.setLayout(cols)
         scroll.setWidget(scroll_w)
         root.addWidget(scroll, 1)
         return page
@@ -377,11 +411,13 @@ class MainWindow2(QMainWindow):
         bar.addWidget(T.button("💾 Профиль…", self._save_reward_json, tooltip="Сохранить профиль наград"))
         root.addLayout(bar)
 
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         from PySide6.QtWidgets import QGridLayout
-        grid = QGridLayout(); grid.setSpacing(8)
-        self.rgroups: Dict[str, ParamGroup] = {}
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        self.rgroups: dict[str, ParamGroup] = {}
         for i, (title, keys) in enumerate(REWARD_GROUPS.items()):
             g = ParamGroup(title, keys)
             g.value_changed.connect(self._on_param_changed)
@@ -389,7 +425,7 @@ class MainWindow2(QMainWindow):
             grid.addWidget(g, i // 2, i % 2)
         # boolean ablation switches
         flags_box = T.group("Отключение подсистем (абляции)")
-        self.rflags: Dict[str, Any] = {}
+        self.rflags: dict[str, Any] = {}
         for i, (key, label, tip) in enumerate(REWARD_FLAGS):
             chk = T.check(label, False, tip)
             chk.stateChanged.connect(self._on_param_changed)
@@ -397,7 +433,8 @@ class MainWindow2(QMainWindow):
             flags_box.layout().addWidget(chk, i, 0, 1, 2)
         grid.addWidget(flags_box, (len(REWARD_GROUPS) + 1) // 2, 1)
         grid.setRowStretch((len(REWARD_GROUPS) + 1) // 2 + 1, 1)
-        w = QWidget(); w.setLayout(grid)
+        w = QWidget()
+        w.setLayout(grid)
         scroll.setWidget(w)
         root.addWidget(scroll, 1)
         return page
@@ -453,13 +490,18 @@ class MainWindow2(QMainWindow):
         preset_bar.addWidget(T.label("Расписание: шаг → этап (curriculum_schedule)", T.DIM))
         root.addLayout(preset_bar)
 
-        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
-        inner = QWidget(); lay = QVBoxLayout(inner); lay.setSpacing(10); lay.setContentsMargins(4,4,4,4)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setSpacing(10)
+        lay.setContentsMargins(4,4,4,4)
 
         # Buildings group
         bgroup = T.group(f"Здания курикулума — отмеченные попадут в unlock_ids ({len(ALL_BUILD_IDS)} шт.)")
-        bgrid = QGridLayout(); bgrid.setSpacing(4)
+        bgrid = QGridLayout()
+        bgrid.setSpacing(4)
         # header legend
         # 4 columns × 8 rows = 32
         cols = 4
@@ -467,7 +509,9 @@ class MainWindow2(QMainWindow):
             r = idx // cols
             c = idx % cols
             cell = QWidget()
-            h = QHBoxLayout(cell); h.setContentsMargins(2,1,2,1); h.setSpacing(4)
+            h = QHBoxLayout(cell)
+            h.setContentsMargins(2,1,2,1)
+            h.setSpacing(4)
             chk = QCheckBox()
             chk.setToolTip(f"{bid} — {BUILD_CAPTIONS.get(bid, bid)}")
             chk.stateChanged.connect(self._on_curriculum_changed)
@@ -494,12 +538,15 @@ class MainWindow2(QMainWindow):
 
         # Resources group
         rgroup = T.group("Ресурсы курикулума — добыча выбранных ресурсов даёт бонусы (curriculum_resources)")
-        rgrid = QGridLayout(); rgrid.setSpacing(4)
+        rgrid = QGridLayout()
+        rgrid.setSpacing(4)
         for idx, rid in enumerate(RESOURCE_IDS):
             r = idx // 3
             c = idx % 3
             cell = QWidget()
-            h = QHBoxLayout(cell); h.setContentsMargins(2,1,2,1); h.setSpacing(4)
+            h = QHBoxLayout(cell)
+            h.setContentsMargins(2,1,2,1)
+            h.setSpacing(4)
             chk = QCheckBox()
             chk.setChecked(True)
             chk.stateChanged.connect(self._on_curriculum_changed)
@@ -530,11 +577,14 @@ class MainWindow2(QMainWindow):
 
         # Actions group (механики): 11 менеджерских кнопок ИИ в 8 группах.
         agroup = T.group("Действия ИИ (кроме строительства) — что разрешено")
-        agrid = QGridLayout(); agrid.setSpacing(4)
+        agrid = QGridLayout()
+        agrid.setSpacing(4)
         for idx, mid in enumerate(MECHANIC_IDS):
             r, c = idx // 2, idx % 2
             cell = QWidget()
-            h = QHBoxLayout(cell); h.setContentsMargins(2,1,2,1); h.setSpacing(4)
+            h = QHBoxLayout(cell)
+            h.setContentsMargins(2,1,2,1)
+            h.setSpacing(4)
             chk = QCheckBox()
             cap, tip = MECHANIC_CAPTIONS.get(mid, (mid, mid))
             chk.setToolTip(tip)
@@ -548,13 +598,14 @@ class MainWindow2(QMainWindow):
         agroup.layout().addLayout(agrid, 0, 0)
         agroup.layout().addWidget(T.label(
             "Галочка = ИИ может пользоваться действием. «Продать излишки» и «Кредиты банка» нужны для базовой "
-            "экономики; ремонт и консервация пригодятся на этапе 2, когда здания начнут изнашиваться.", 
+            "экономики; ремонт и консервация пригодятся на этапе 2, когда здания начнут изнашиваться.",
             T.DIM, word_wrap=True), 1, 0)
         lay.addWidget(agroup)
 
         # Schedule group
         sgroup = T.group("Расписание курикулума — на каком шаге какой этап включается")
-        sgrid = QGridLayout(); sgrid.setSpacing(6)
+        sgrid = QGridLayout()
+        sgrid.setSpacing(6)
         self.tbl_curriculum = QTableWidget(0, 2)
         self.tbl_curriculum.setHorizontalHeaderLabels(["шаг (total_timesteps)", "этап (0–3)"])
         self.tbl_curriculum.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -563,10 +614,17 @@ class MainWindow2(QMainWindow):
         self.tbl_curriculum.setFixedHeight(120)
         sgrid.addWidget(self.tbl_curriculum, 0, 0, 1, 4)
         sgrid.addWidget(T.label("Шаг:", T.DIM), 1, 0)
-        self.spn_cur_step = QSpinBox(); self.spn_cur_step.setRange(0, 100_000_000); self.spn_cur_step.setSingleStep(50000); self.spn_cur_step.setValue(200000); self.spn_cur_step.setFixedWidth(110)
+        self.spn_cur_step = QSpinBox()
+        self.spn_cur_step.setRange(0, 100_000_000)
+        self.spn_cur_step.setSingleStep(50000)
+        self.spn_cur_step.setValue(200000)
+        self.spn_cur_step.setFixedWidth(110)
         sgrid.addWidget(self.spn_cur_step, 1, 1)
         sgrid.addWidget(T.label("Этап:", T.DIM), 1, 2)
-        self.spn_cur_stage = QSpinBox(); self.spn_cur_stage.setRange(0, 3); self.spn_cur_stage.setValue(1); self.spn_cur_stage.setFixedWidth(60)
+        self.spn_cur_stage = QSpinBox()
+        self.spn_cur_stage.setRange(0, 3)
+        self.spn_cur_stage.setValue(1)
+        self.spn_cur_stage.setFixedWidth(60)
         sgrid.addWidget(self.spn_cur_stage, 1, 3)
         btn_add = T.button("＋ Добавить", self._curriculum_add_schedule)
         btn_del = T.button("－ Удалить", self._curriculum_del_schedule, "danger")
@@ -660,7 +718,7 @@ class MainWindow2(QMainWindow):
         self._on_curriculum_changed()
         self.log("info", f"Режим обучения: {p['title']} — {p['summary']}")
 
-    def _detect_preset(self) -> Optional[str]:
+    def _detect_preset(self) -> str | None:
         """Какому пресету соответствует текущее состояние галочек (или None)."""
         for pid in PRESET_ORDER:
             p = PRESETS[pid]
@@ -734,17 +792,17 @@ class MainWindow2(QMainWindow):
             self.tbl_curriculum.removeRow(r)
         self._on_curriculum_changed()
 
-    def _curriculum_table_cells(self) -> List[List[Optional[str]]]:
-        cells: List[List[Optional[str]]] = []
+    def _curriculum_table_cells(self) -> list[list[str | None]]:
+        cells: list[list[str | None]] = []
         for r in range(self.tbl_curriculum.rowCount()):
-            row: List[Optional[str]] = []
+            row: list[str | None] = []
             for c in (0, 1):
                 item = self.tbl_curriculum.item(r, c)
                 row.append(item.text() if item is not None else None)
             cells.append(row)
         return cells
 
-    def _parse_curriculum_table(self):
+    def _parse_curriculum_table(self) -> ScheduleParse:
         """Разбор таблицы + громкое сообщение о каждой отброшенной строке (P2-1)."""
         max_stage = max(CURRICULUM_STAGE_MAP) if CURRICULUM_STAGE_MAP else 0
         parsed = parse_schedule_rows(self._curriculum_table_cells(), max_stage)
@@ -758,10 +816,10 @@ class MainWindow2(QMainWindow):
         self._cur_table_warnings = list(parsed.warnings)
         return parsed
 
-    def _collect_curriculum_schedule(self) -> List[List[int]]:
+    def _collect_curriculum_schedule(self) -> list[list[int]]:
         return self._parse_curriculum_table().rows
 
-    def _set_curriculum_schedule(self, sched: List[List[int]]):
+    def _set_curriculum_schedule(self, sched: list[list[int]]):
         self.tbl_curriculum.setRowCount(0)
         for step, stage in sorted(sched):
             r = self.tbl_curriculum.rowCount()
@@ -830,8 +888,10 @@ class MainWindow2(QMainWindow):
         bar.addWidget(self.spn_watch_seed)
         bar.addWidget(T.button("🎲", self._random_watch_seed, tooltip="Случайный seed"))
         bar.addWidget(T.label("Размер:", T.DIM))
-        self.spn_watch_map = QSpinBox(); self.spn_watch_map.setRange(100, 500)
-        self.spn_watch_map.setValue(280); self.spn_watch_map.setFixedWidth(70)
+        self.spn_watch_map = QSpinBox()
+        self.spn_watch_map.setRange(100, 500)
+        self.spn_watch_map.setValue(280)
+        self.spn_watch_map.setFixedWidth(70)
         self.spn_watch_map.setToolTip("Должен совпадать с тренировочным map_size!")
         bar.addWidget(self.spn_watch_map)
         bar.addWidget(T.label("Скорость:", T.DIM))
@@ -866,7 +926,7 @@ class MainWindow2(QMainWindow):
 
     # ─────────────────────────── state ───────────────────────────
 
-    def _load_state(self) -> Dict[str, Any]:
+    def _load_state(self) -> dict[str, Any]:
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
                 d = json.load(f)
@@ -963,7 +1023,9 @@ class MainWindow2(QMainWindow):
         if cur_res == "":
             # empty = all resources (legacy) → check all
             for chk in self._resource_checks.values():
-                chk.blockSignals(True); chk.setChecked(True); chk.blockSignals(False)
+                chk.blockSignals(True)
+                chk.setChecked(True)
+                chk.blockSignals(False)
         else:
             selected = set(s.strip() for s in cur_res.split(",") if s.strip())
             for rid, chk in self._resource_checks.items():
@@ -997,16 +1059,16 @@ class MainWindow2(QMainWindow):
         ) and k not in self._all_param_keys()}
         self._update_preset_status()
 
-    def _all_param_keys(self):
-        keys = set()
+    def _all_param_keys(self) -> set[str]:
+        keys: set[str] = set()
         for g in list(self.pgroups.values())+list(self.rgroups.values()):
             keys.update(g.rows.keys())
         keys.update(self.rflags.keys())
         return keys
 
-    def _collect_config(self) -> Dict[str, Any]:
-        cfg: Dict[str, Any] = dict(self._extra_cfg)
-        params: Dict[str, Any] = {}
+    def _collect_config(self) -> dict[str, Any]:
+        cfg: dict[str, Any] = dict(self._extra_cfg)
+        params: dict[str, Any] = {}
         for g in self.pgroups.values():
             params.update(g.values())
         for g in self.rgroups.values():
@@ -1100,7 +1162,7 @@ class MainWindow2(QMainWindow):
         self.pgroups["Среда"].rows["seed"].set_value(seed)
         self.log("info", f"Seed карты: {seed}")
 
-    def _start_training(self, resume_model: Optional[Path] = None):
+    def _start_training(self, resume_model: Path | None = None):
         if self._train_proc and self._train_proc.poll() is None:
             self.log("warn", "Обучение уже запущено")
             return
@@ -1228,7 +1290,7 @@ class MainWindow2(QMainWindow):
         self._send_command(P.CMD_BOOST_ENTROPY, {"factor": 2.0})
         self.log("info", "Команда: ent_coef ×2")
 
-    def _send_command(self, cmd: str, payload: dict = None) -> bool:
+    def _send_command(self, cmd: str, payload: dict[str, Any] | None = None) -> bool:
         if not self._cmd_file:
             self.log("error", f"команда {cmd!r} не отправлена: нет файла команд")
             return False
@@ -1249,7 +1311,7 @@ class MainWindow2(QMainWindow):
                 size = -1
             if size > self._msg_offset:
                 try:
-                    with open(self._msg_file, "r", encoding="utf-8") as f:
+                    with open(self._msg_file, encoding="utf-8") as f:
                         f.seek(self._msg_offset)
                         data = f.read()
                         self._msg_offset = f.tell()
@@ -1542,7 +1604,7 @@ class MainWindow2(QMainWindow):
                 self.tbl_models.setItem(row, c, item)
             self.cmb_watch_model.addItem(m.name, str(m.path))
 
-    def _selected_model_path(self) -> Optional[Path]:
+    def _selected_model_path(self) -> Path | None:
         row = self.tbl_models.currentRow()
         if row < 0:
             return None
@@ -1705,7 +1767,7 @@ class MainWindow2(QMainWindow):
             args.append("--visual")
         if self.chk_watch_sample.isChecked():
             args.append("--sample")
-        popen_kwargs: Dict[str, Any] = {
+        popen_kwargs: dict[str, Any] = {
             "cwd": str(_PROJECT),
             "stderr": subprocess.STDOUT,
             "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -1753,7 +1815,7 @@ class MainWindow2(QMainWindow):
                 size = 0
         if size > self._watch_offset:
             try:
-                with open(self._watch_log, "r", encoding="utf-8") as f:
+                with open(self._watch_log, encoding="utf-8") as f:
                     f.seek(self._watch_offset)
                     data = f.read()
                     tell = f.tell()

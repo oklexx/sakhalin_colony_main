@@ -24,7 +24,6 @@ from rl.curriculum import (  # noqa: E402
     resolve_curriculum,
 )
 
-
 # ── SSOT helpers ────────────────────────────────────────────────────────────
 
 def test_manual_set_at_stage_zero_only_allows_that_set():
