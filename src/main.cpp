@@ -114,11 +114,19 @@ int main(int argc, char* argv[]) {
     int map_size = 280;
     Curriculum curriculum;  // default: everything allowed
 
+    // Bugfix ("Stale Binary Risk"): нераспознанный/обрезанный флаг раньше
+    // молча проглатывался (см. тот же фикс в src/gui.cpp) — делаем парсинг
+    // строгим и здесь, чтобы поведение обоих бинарников было одинаковым.
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--seed" && i + 1 < argc) seed = std::stoll(argv[++i]);
-        else if (arg == "--map-size" && i + 1 < argc) map_size = std::stoi(argv[++i]);
-        else if (arg == "--curriculum" && i + 1 < argc) {
+        bool needs_value = (arg == "--seed" || arg == "--map-size" || arg == "--curriculum");
+        if (needs_value && i + 1 >= argc) {
+            std::cerr << "ERROR: флаг " << arg << " требует значение, но оно не передано\n";
+            return 1;
+        }
+        if (arg == "--seed") seed = std::stoll(argv[++i]);
+        else if (arg == "--map-size") map_size = std::stoi(argv[++i]);
+        else if (arg == "--curriculum") {
             try {
                 curriculum = Curriculum::from_json(argv[++i]);
             } catch (const std::exception& e) {
@@ -133,6 +141,11 @@ int main(int argc, char* argv[]) {
                       << "                           [--curriculum JSON | --curriculum-all]\n"
                       << "  JSON: {\"all_builds\":bool,\"allowed_builds\":[...],\"stage\":int}\n";
             return 0;
+        }
+        else {
+            std::cerr << "ERROR: неизвестный флаг " << arg
+                      << " (см. --help)\n";
+            return 1;
         }
     }
 
