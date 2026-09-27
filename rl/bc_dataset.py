@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import glob
 import json
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,7 +67,7 @@ class DemoStep:
     source: str                # originating file path (for error messages)
 
 
-def _iter_jsonl(path: Path):
+def _iter_jsonl(path: Path) -> Iterator[tuple[int, dict]]:
     with open(path, encoding="utf-8") as f:
         for lineno, line in enumerate(f, start=1):
             line = line.strip()
@@ -112,7 +113,7 @@ def load_demo_file(path: str | Path) -> list[DemoStep]:
     return steps
 
 
-def load_demo_files(paths: list[str | Path]) -> list[DemoStep]:
+def load_demo_files(paths: Sequence[str | Path]) -> list[DemoStep]:
     """Load and concatenate multiple demo files.
 
     Episode indices are renumbered globally (offset per file) so a
@@ -242,7 +243,7 @@ class BCDataset(Dataset):
     def __len__(self) -> int:
         return len(self.steps)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         s = self.steps[idx]
         return (
             torch.from_numpy(s.obs),

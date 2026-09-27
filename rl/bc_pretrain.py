@@ -111,7 +111,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _to_tensors(steps, obs_size: int, n_actions: int, device: torch.device):
+def _to_tensors(
+    steps: list, obs_size: int, n_actions: int, device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if not steps:
         return (
             torch.empty(0, obs_size, device=device),
