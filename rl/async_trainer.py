@@ -14,7 +14,7 @@ import torch
 
 from rl.config import Config
 from rl.env_manager import EnvManager
-from rl.episode_diagnostics import EpisodeDiagnosticsWriter
+from rl.episode_diagnostics import EpisodeDiagnosticsWriter, _json_safe
 from rl.loop_detector import LoopDetector
 from train_ui2 import protocol as P
 
@@ -172,6 +172,23 @@ class AsyncTrainer:
             self.logger.info(msg)
         else:
             print(msg, flush=True)
+
+    def _append_jsonl(self, path: Path, record: dict) -> None:
+        """Append one JSON record as a line — best-effort, never raises.
+
+        Used for `eval_history.jsonl` / `tournament_history.jsonl` (см.
+        docs/CHAMPION_SELECTION_2026_09.md): a durable, append-only audit
+        trail of every evaluation/tournament run, independent of the live
+        `self.metrics` snapshot (which the UI only keeps the LATEST value
+        of) and independent of `best_model.meta.json` (which only reflects
+        the CURRENT champion, not the history of who held the title).
+        """
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(_json_safe(record)) + "\n")
+        except OSError as ex:
+            self._log(f"[History] WARNING: не удалось дописать {path.name}: {ex}")
 
     def _check_stop(self) -> bool:
         if self._stop:
@@ -734,6 +751,13 @@ class AsyncTrainer:
         bases_std = float(np.std(all_bases)) if all_bases else 0.0
         bases_p25 = float(np.percentile(all_bases, 25)) if all_bases else 0.0
         days_std = float(np.std(all_days)) if all_days else 0.0
+        # Downside-risk visibility (не влияет на score/пороги по умолчанию —
+        # только логируется/сохраняется в meta, чтобы «хрупкий» чемпион,
+        # который иногда рано погибает, был виден человеку при отборе, а не
+        # маскировался средним/медианой по эпизодам). См. docs/CHAMPION_SELECTION_2026_09.md.
+        days_p10 = float(np.percentile(all_days, 10)) if all_days else 0.0
+        bases_p10 = float(np.percentile(all_bases, 10)) if all_bases else 0.0
+        days_worst = float(np.min(all_days)) if all_days else 0.0
 
         w1, w2, w3, w4 = getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))
         variance_penalty = 0.2 * bases_std + 0.001 * days_std
@@ -775,6 +799,26 @@ class AsyncTrainer:
                 f"thresholds={'PASS' if thresholds_met else 'FAIL'}"
             )
 
+        # Champion-selection improvement (см. docs/CHAMPION_SELECTION_2026_09.md):
+        # персистентная история КАЖДОГО eval (не только момента, когда найден
+        # новый чемпион) — раньше видна была только последняя точка через
+        # self.metrics, а вся траектория score/days/bases по ходу обучения
+        # нигде не сохранялась и пропадала при перезапуске UI. Файл лежит
+        # рядом с моделью и не требует дополнительной инфраструктуры
+        # (train_ui2/charts.py может читать его напрямую).
+        self._append_jsonl(save_dir / "eval_history.jsonl", {
+            "total_timesteps": total_done,
+            "wall_time_s": time.time(),
+            "seeds": list(seeds),
+            "episodes": len(all_days),
+            "days": days_agg, "bases": bases_agg, "people": people_agg,
+            "return": return_agg, "water": water_agg, "water_ready": water_ready_agg,
+            "days_p10": days_p10, "bases_p10": bases_p10, "days_worst": days_worst,
+            "days_std": days_std, "bases_std": bases_std,
+            "score": score, "thresholds_met": bool(thresholds_met),
+            "is_new_best": bool(thresholds_met and (self.best_score is None or score > self.best_score)),
+        })
+
         if thresholds_met and (self.best_score is None or score > self.best_score):
             self.best_score = score
             self.best_eval_days = days_agg
@@ -794,6 +838,12 @@ class AsyncTrainer:
                 "best_water": water_agg,
                 "best_water_ready": water_ready_agg,
                 "water_score": water_score,
+                # Downside-risk: p10/worst по days и bases за прогон eval — виден
+                # хрупкий чемпион (высокая медиана, но иногда ранняя гибель),
+                # который средний/медианный score раньше маскировал.
+                "days_p10": days_p10,
+                "bases_p10": bases_p10,
+                "days_worst": days_worst,
                 "score_weights": list(getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))),
                 "min_bases": min_bases,
                 "min_days": min_days,
@@ -1196,6 +1246,12 @@ class AsyncTrainer:
 
                 import random
                 seeds = [random.randint(1, 999999) for _ in range(5)]
+                # Champion-selection improvement: раньше сиды турнира нигде не
+                # сохранялись — при разборе «почему победил именно этот
+                # чекпойнт» результат было невозможно воспроизвести. Логируем
+                # явно (видно в логе UI и в tournament_history.jsonl).
+                self._log(f"[Tournament] Seeds: {seeds}")
+                tournament_records: list[dict] = []
                 use_median = getattr(self.cfg, "eval_use_median", True)
                 w1, w2, w3, w4 = getattr(self.cfg, "eval_score_weights", (0.10, 1.0, 0.10, 0.0001))
                 min_b = getattr(self.cfg, "eval_min_bases", 5)
@@ -1306,11 +1362,19 @@ class AsyncTrainer:
                         # И нет катастрофического банкротства (return > -5000)
                         water_qualified = (water_agg >= 1.0 and bases_agg >= 2 and days_agg >= 60.0)
                         thresholds_ok = (bases_agg >= min_b and days_agg >= min_d) or water_qualified
+                        tournament_records.append({
+                            "candidate": cp.name, "score": sc, "days": days_agg,
+                            "bases": bases_agg, "people": people_agg, "return": return_agg,
+                            "water": water_agg, "water_ready": water_ready_agg,
+                            "thresholds_ok": bool(thresholds_ok),
+                            "disqualified_bankrupt": bool(return_agg <= -5000.0),
+                        })
                         if thresholds_ok and return_agg > -5000.0 and sc > best_cand_score:
                             best_cand_score = sc
                             best_cand_path = cp
                     except Exception as ex:
                         self._log(f"[Tournament] Candidate {cp.name} evaluation error: {ex}")
+                        tournament_records.append({"candidate": cp.name, "error": str(ex)})
                     finally:
                         tournament_done += 1
                         percent = 100.0 * tournament_done / max(1, tournament_total)
@@ -1321,13 +1385,33 @@ class AsyncTrainer:
                                   f"({tournament_done}/{tournament_total}), "
                                   f"remaining≈{eta_min:.1f} min")
 
+                # Champion-selection improvement: полная разбивка по кандидатам
+                # (не только победитель) — аудит «почему модель X не победила»
+                # без необходимости перезапускать турнир.
+                self._append_jsonl(save_dir / "tournament_history.jsonl", {
+                    "wall_time_s": time.time(),
+                    "total_timesteps": total_done,
+                    "seeds": list(seeds),
+                    "candidates": tournament_records,
+                    "winner": best_cand_path.name if best_cand_path is not None else None,
+                    "winner_score": best_cand_score if best_cand_path is not None else None,
+                })
+
                 if best_cand_path is not None:
                     self._log(f"[Tournament] Winner: {best_cand_path.name} (score={best_cand_score:.1f})")
                     import shutil
-                    shutil.copy(str(best_cand_path), str(save_dir / "best_model.pt"))
-                    cp_norm = Path(str(best_cand_path).replace(".pt", ".norm.json"))
-                    if cp_norm.exists():
-                        shutil.copy(str(cp_norm), str(save_dir / "best_model.norm.json"))
+                    dest = save_dir / "best_model.pt"
+                    # Bugfix: когда чемпионом остаётся уже текущий best_model.pt
+                    # (частый и абсолютно нормальный исход турнира), src и dst —
+                    # один и тот же файл, и shutil.copy бросает SameFileError.
+                    # Это ловилось общим `except Exception` ниже и турнир
+                    # помечался как "error", хотя решение турнира было верным
+                    # и менять было нечего — вводящая в заблуждение диагностика.
+                    if best_cand_path.resolve() != dest.resolve():
+                        shutil.copy(str(best_cand_path), str(dest))
+                        cp_norm = Path(str(best_cand_path).replace(".pt", ".norm.json"))
+                        if cp_norm.exists():
+                            shutil.copy(str(cp_norm), str(save_dir / "best_model.norm.json"))
                     self._update_best_meta_curriculum(save_dir)
             except Exception as te:
                 self.metrics.tournament = "error"

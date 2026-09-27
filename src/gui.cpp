@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -195,6 +196,98 @@ static int sel_bx = -1, sel_by = -1;
 static bool can_build_cell(const Game& g, const BaseData& bd, int x, int y) {
     return g.can_build_at(bd, x, y).first;
 }
+static bool game_over = false;
+
+// ═══ Demo recording (behavioral cloning): --record-demo PATH ═══
+//
+// Задача: обучать модель на уже сыгранной человеком партии (imitation
+// learning / behavioral cloning) — см. docs/IMITATION_LEARNING_2026_09.md.
+// Ключевой факт, из-за которого просто "логировать клики мышью" не работает:
+// RL-действия (env.step()) НЕ принимают координаты — строительство ищет
+// клетку через find_lot() внутри среды, а "менеджерские" действия
+// (REPAIR/DESTROY/PRESERVE/...) сами выбирают цель (find_slowest_base() и
+// т.п.). Человеческий интерактивный режим этого gui.cpp обычно вызывает
+// g.build()/gm.restore()/gm.destroy() НАПРЯМУЮ, в обход env.step() — значит
+// obs/reward/action_mask, которые видел бы RL-агент, для этих кликов вообще
+// не считаются, и клик нельзя один-в-один сопоставить (obs, action) паре.
+//
+// Поэтому запись демонстраций — ОТДЕЛЬНЫЙ opt-in режим (--record-demo), а не
+// изменение поведения по умолчанию: когда он включён, клики по постройкам и
+// по кнопкам менеджеров (см. do_build_area() и обработчики ниже) вместо
+// прямого вызова Game::* идут через env.step(action) — ровно тот интерфейс,
+// которым пользуется RL-политика. Расплата: точное место (x,y), которое
+// выбрал человек, и произвольная сумма кредита/продажи ИГНОРИРУЮТСЯ — пишется
+// только «какое решение принял человек» (тип действия), а конкретную клетку
+// или сумму, как и для RL-агента, выбирает сама среда. Это не баг: RL-агент
+// тоже не может указать точную клетку, так что демонстрация обязана быть
+// на том же уровне абстракции, иначе датасет для BC не будет соответствовать
+// пространству действий политики.
+//
+// Без --record-demo (по умолчанию) ничего не меняется: do_build_area() и
+// остальные обработчики работают как раньше, байт в байт.
+static bool g_record_demo = false;
+static std::ofstream* g_demo_file = nullptr;
+static int g_demo_steps_written = 0;
+
+static void demo_record_open(const std::string& path) {
+    g_demo_file = new std::ofstream(path, std::ios::app);
+    if (!g_demo_file->is_open()) {
+        fprintf(stderr, "ERROR: не удалось открыть --record-demo файл: %s\n", path.c_str());
+        delete g_demo_file;
+        g_demo_file = nullptr;
+        g_record_demo = false;
+        return;
+    }
+    g_record_demo = true;
+}
+
+// Одна строка JSONL на шаг: тот же набор полей, что и ai_write_state (obs/
+// action_mask/action/reward/terminated), чтобы датасет для BC читался тем же
+// парсером, что и headless-ai state.json (см. rl/bc_dataset.py). Демо-файл —
+// append-only лог одного процесса (не читается конкурентно во время записи),
+// поэтому atomic tmp+rename здесь не нужен, в отличие от ai_write_state.
+static void demo_record_step(const std::vector<float>& obs, int action,
+                             const std::vector<float>& mask, double reward,
+                             bool terminated) {
+    if (!g_record_demo || g_demo_file == nullptr) return;
+    std::ofstream& f = *g_demo_file;
+    f << "{\"action\":" << action << ",\"reward\":" << reward
+      << ",\"terminated\":" << (terminated ? "true" : "false") << ",\"obs\":[";
+    for (size_t i = 0; i < obs.size(); i++) { f << obs[i]; if (i + 1 < obs.size()) f << ","; }
+    f << "],\"action_mask\":[";
+    for (size_t i = 0; i < mask.size(); i++) { f << mask[i]; if (i + 1 < mask.size()) f << ","; }
+    f << "]}\n";
+    f.flush();
+    g_demo_steps_written++;
+}
+
+static void demo_record_close() {
+    if (g_demo_file != nullptr) {
+        g_demo_file->flush();
+        g_demo_file->close();
+        delete g_demo_file;
+        g_demo_file = nullptr;
+    }
+}
+
+// Единая точка входа "человек принял решение action" для режима записи:
+// снимает obs/mask ДО шага (это и есть состояние, на основе которого принято
+// решение — то же самое, что видит RL-политика в rollout), делает env.step
+// (тот же вызов, что использует и headless-ai, и обучение), и пишет тройку
+// (obs, action, reward/terminated) в демо-файл. Вне режима записи это
+// эквивалент обычного env.step(action) без побочных эффектов.
+static ColonyEnvCpp::StepOut env_step_and_record(ColonyEnvCpp& env, int action) {
+    if (g_record_demo) {
+        std::vector<float> pre_obs = env.obs();
+        std::vector<float> pre_mask = env.action_mask();
+        auto out = env.step(action);
+        demo_record_step(pre_obs, action, pre_mask, out.rew, out.terminated);
+        return out;
+    }
+    return env.step(action);
+}
+
+
 static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
                           int x0, int y0, int x1, int y1, int px, int py,
                           std::string& status) {
@@ -216,6 +309,25 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
             cells.push_back({x, y});
         }
     if (cells.empty()) { status = "Место занято"; return; }
+
+    if (g_record_demo) {
+        // BUILD_<id> (см. заголовок блока demo recording выше): RL сама
+        // выбирает клетку через find_lot() внутри env.step() — точная
+        // клетка/область, которую выделил человек, здесь НЕ используется,
+        // важно только «сколько построек этого типа» человек хотел поставить
+        // (одна — одиночный клик, area.size() — протяжка). Каждая постройка —
+        // отдельный env.step(action), т.е. отдельный день, как у RL-агента.
+        int built = 0;
+        for (size_t i = 0; i < cells.size(); ++i) {
+            if (!env.build_allowed(bid)) { status = "Постройка закрыта курикулумом"; break; }
+            auto out = env_step_and_record(env, action);
+            built++;
+            if (out.terminated) { game_over = true; break; }
+        }
+        status = built > 0 ? TextFormat("Построено (демо-режим): %d", built)
+                            : "Не удалось построить (см. лог)";
+        return;
+    }
     // If buildings exist, start from cells adjacent to existing buildings
     // Otherwise start from top-left corner
     std::vector<Cell> frontier, remaining;
@@ -342,7 +454,6 @@ static void draw_build_pixel(int x, int y, int sz, const std::string& id, bool s
 }
 
 // ═══ Time helpers (День / Неделя / Месяц / jump) ═══
-static bool game_over = false;
 static Rectangle g_time_btn[3];
 static Rectangle g_date_strip = {0, 0, 0, 0};
 static Rectangle g_tool_rect[12];
@@ -503,17 +614,47 @@ static void ai_write_state(const Game& g, const std::vector<float>& obs, int act
             return;
         }
     }
-    // На Windows rename не проходит, пока читатель держит целевой файл открытым:
-    // несколько коротких попыток, затем запасной путь — перезапись копированием.
-    for (int attempt = 0; attempt < 5; ++attempt) {
+    // На Windows rename не проходит, пока читатель держит целевой файл открытым
+    // (в т.ч. антивирус/индексатор, который открывает файл на сканирование —
+    // см. внешнее ревью, "File IPC Latency" / "Обработка исключений при
+    // неполной записи JSON"): раньше было всего 5×2мс=10мс попыток, и любая
+    // задержка чтения дольше этого окна проваливалась в fallback ниже.
+    // Бэкофф увеличен (~15 попыток, суммарно до ~300мс) — это покрывает
+    // типичную короткую блокировку файла антивирусом и почти никогда не
+    // доходит до non-atomic fallback.
+    for (int attempt = 0; attempt < 15; ++attempt) {
         std::error_code ec;
         std::filesystem::rename(tmp_path, ai_state_path, ec);
         if (!ec) return;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2 + attempt * 2));
     }
+    // Крайний случай — файл занят читателем аномально долго. copy_file
+    // поверх ai_state_path НЕ атомарен: читатель может увидеть файл наполовину
+    // перезаписанным (обрезанный/битый JSON). Поэтому сначала копируем во
+    // временный файл РЯДОМ (не в целевой путь), и уже его пытаемся
+    // переименовать в цель ещё раз — rename atomic, а окно гонки остаётся
+    // только в единственном случае, когда цель занята непрерывно все ~300мс+
+    // ретраев, что многократно снижает (но не гарантированно устраняет —
+    // читающая сторона всё равно ретраит при неудачном json.load) вероятность
+    // отдать читателю обрезанный файл.
+    const std::string tmp2_path = ai_state_path + ".tmp2";
     std::error_code ec;
-    std::filesystem::copy_file(tmp_path, ai_state_path,
+    std::filesystem::copy_file(tmp_path, tmp2_path,
                                std::filesystem::copy_options::overwrite_existing, ec);
+    if (!ec) {
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            std::error_code ec2;
+            std::filesystem::rename(tmp2_path, ai_state_path, ec2);
+            if (!ec2) { std::filesystem::remove(tmp_path, ec); return; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        // Совсем крайний случай: и второй rename не прошёл — публикуем
+        // содержимое напрямую (старое поведение), иначе состояние вовсе не
+        // обновится и драйвер уйдёт в таймаут.
+        std::filesystem::copy_file(tmp2_path, ai_state_path,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::remove(tmp2_path, ec);
+    }
     std::filesystem::remove(tmp_path, ec);
 }
 
@@ -832,12 +973,36 @@ int main(int argc, char* argv[]) {
     Curriculum curriculum;  // default: everything allowed
     int minimap_radius = -1;
     std::string reward_config_path;
+    std::string record_demo_path;
     bool tax_policy_cli = false, tax_policy_set = false;
+    // Bugfix (см. docs/CODE_REVIEW внешнего аудита, "Stale Binary Risk"):
+    // раньше нераспознанный/обрезанный флаг молча проглатывался — если
+    // watch_champion.py звал exe, собранный ДО появления флага (например
+    // --minimap-radius), окно тихо играло по старым правилам протокола, и
+    // расхождение всплывало только как необъяснимое поведение модели.
+    // Теперь любой незнакомый флаг или флаг без обязательного значения —
+    // фатальная ошибка с понятным сообщением в stderr (его видно в
+    // gui_output.log и в описании ошибки watch_champion.py), а не тихий
+    // no-op.
+    static const char* kKnownFlags[] = {
+        "--seed", "--map-size", "--curriculum", "--curriculum-all",
+        "--minimap-radius", "--headless-ai", "--actions-file", "--state-file",
+        "--reward-config", "--tax-to-debt", "--tax-dialog", "--record-demo",
+    };
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
-        if (a == "--seed" && i+1 < argc) seed = std::stoll(argv[++i]);
-        else if (a == "--map-size" && i+1 < argc) map_size = std::stoi(argv[++i]);
-        else if (a == "--curriculum" && i+1 < argc) {
+        bool needs_value = (a == "--seed" || a == "--map-size" || a == "--curriculum" ||
+                            a == "--minimap-radius" || a == "--actions-file" ||
+                            a == "--state-file" || a == "--reward-config" ||
+                            a == "--record-demo");
+        if (needs_value && i + 1 >= argc) {
+            fprintf(stderr, "ERROR: флаг %s требует значение, но оно не передано "
+                            "(старый/несовместимый вызов exe?)\n", a.c_str());
+            return 1;
+        }
+        if (a == "--seed") seed = std::stoll(argv[++i]);
+        else if (a == "--map-size") map_size = std::stoi(argv[++i]);
+        else if (a == "--curriculum") {
             try {
                 curriculum = Curriculum::from_json(argv[++i]);
             } catch (const std::exception& e) {
@@ -846,17 +1011,29 @@ int main(int argc, char* argv[]) {
             }
         }
         else if (a == "--curriculum-all") curriculum = Curriculum();
-        else if (a == "--minimap-radius" && i+1 < argc) minimap_radius = std::stoi(argv[++i]);
+        else if (a == "--minimap-radius") minimap_radius = std::stoi(argv[++i]);
         else if (a == "--headless-ai") headless_ai = true;
-        else if (a == "--actions-file" && i+1 < argc) ai_actions_path = argv[++i];
-        else if (a == "--state-file" && i+1 < argc) ai_state_path = argv[++i];
-        else if (a == "--reward-config" && i+1 < argc) reward_config_path = argv[++i];
+        else if (a == "--actions-file") ai_actions_path = argv[++i];
+        else if (a == "--state-file") ai_state_path = argv[++i];
+        else if (a == "--reward-config") reward_config_path = argv[++i];
         // P0 (2026-09-17): налоговая политика. У GUI для человека — диалог
         // налогов («Нет» = конец игры), у наблюдения за моделью — как при
         // обучении (неоплаченный остаток → долг, календарь идёт всегда).
         // По умолчанию выбирается по режиму (см. ниже), флаги — явное переопределение.
         else if (a == "--tax-to-debt") { tax_policy_cli = true; tax_policy_set = true; }
         else if (a == "--tax-dialog") { tax_policy_cli = false; tax_policy_set = true; }
+        // Behavioral cloning: запись демонстраций человека для обучения
+        // (см. docs/IMITATION_LEARNING_2026_09.md). Только человеческий
+        // (не --headless-ai) режим — headless и так управляется извне и его
+        // шаги уже проходят через env.step().
+        else if (a == "--record-demo") record_demo_path = argv[++i];
+        else {
+            fprintf(stderr, "ERROR: неизвестный флаг %s — exe пересобран под другой "
+                            "протокол? Известные флаги:", a.c_str());
+            for (const char* f : kKnownFlags) fprintf(stderr, " %s", f);
+            fprintf(stderr, "\n");
+            return 1;
+        }
     }
 
     auto bd = load_base_data("configs/bases.json");
@@ -947,6 +1124,33 @@ int main(int argc, char* argv[]) {
     env.reset(seed);
     const Game& g = env.game();
     prev_season = g.season;
+    // manager_base_ (A_BUILD0 + n_build_) — приватное поле ColonyEnvCpp;
+    // формула продублирована из src/env.cpp намеренно (public API не меняем
+    // ради одного opt-in режима записи демо). MGR_* — те самые действия
+    // "менеджеров", которые в RL (env.cpp) сами выбирают цель/сумму.
+    const int mgr_base = A_BUILD0 + env.n_build();
+    const int MGR_IMPROVE_LAND = mgr_base + 0;
+    const int MGR_REPAIR       = mgr_base + 1;
+    const int MGR_REPAIR_ALL   = mgr_base + 2;
+    const int MGR_DEMOLISH     = mgr_base + 3;
+    const int MGR_PRESERVE     = mgr_base + 4;
+    const int MGR_UNPRESERVE   = mgr_base + 5;
+
+    // Демо-запись — только для интерактивного (человеческого) режима: у
+    // --headless-ai уже есть свой протокол (actions.txt/state.json), где
+    // КАЖДЫЙ шаг и так идёт через env.step() и не нуждается в этом опт-ине.
+    if (!record_demo_path.empty()) {
+        if (headless_ai) {
+            fprintf(stderr, "WARNING: --record-demo игнорируется в --headless-ai "
+                            "(там протокол watch_champion.py и так пишет каждый шаг)\n");
+        } else {
+            demo_record_open(record_demo_path);
+            if (g_record_demo) {
+                fprintf(stderr, "[Demo] Запись демонстрации в %s (n_actions=%d)\n",
+                        record_demo_path.c_str(), env.n_actions());
+            }
+        }
+    }
 
     cam.target = {(float)g.earth.init_sel_x * TILE, (float)g.earth.init_sel_y * TILE};
     cam.offset = {(float)MAP_X + MAP_W/2.0f, (float)MAP_Y + MAP_H/2.0f};
@@ -1244,23 +1448,104 @@ int main(int argc, char* argv[]) {
                 if (pressed && CheckCollisionPointRec(mpos, g_tool_rect[i])) {
                     static const int acts[12] = {1,2,3,4,5,6,7,8,9,10,11,12};
                     int act = acts[i];
-                    if (act == 7) cur_dlg = DLG_BANK;
-                    else if (act == 9) { dlg_mode = 0; cur_dlg = DLG_MARKET; }
-                    else if (act == 10) { dlg_mode = 1; cur_dlg = DLG_MARKET; }
-                    else if (act == 11) { auto o = env.step(A_DAY); if (o.terminated) game_over = true; }
-                    else if (act == 12) { auto o = env.step(A_WEEK); if (o.terminated) game_over = true; }
+                    // BANK/MARKET: диалоги принимают произвольную сумму
+                    // кредита/количество каждого ресурса, которую печатает
+                    // человек — этому нет соответствия среди 50 фиксированных
+                    // RL-действий (см. docs/IMITATION_LEARNING_2026_09.md,
+                    // раздел "Что не пишется в демо"). g.market_*/g.bank_*
+                    // также меняют состояние в обход env.step(), поэтому не
+                    // отражались бы в записанной траектории вовсе — открывать
+                    // эти диалоги в режиме записи запрещено, чтобы не оставлять
+                    // молчаливо неучтённые скачки состояния между шагами демо.
+                    if (act == 7) {
+                        if (g_record_demo) status = "Банк недоступен в режиме записи демо";
+                        else cur_dlg = DLG_BANK;
+                    }
+                    else if (act == 9) {
+                        if (g_record_demo) status = "Рынок недоступен в режиме записи демо";
+                        else { dlg_mode = 0; cur_dlg = DLG_MARKET; }
+                    }
+                    else if (act == 10) {
+                        if (g_record_demo) status = "Рынок недоступен в режиме записи демо";
+                        else { dlg_mode = 1; cur_dlg = DLG_MARKET; }
+                    }
+                    else if (act == 11) { auto o = env_step_and_record(env, A_DAY); if (o.terminated) game_over = true; }
+                    else if (act == 12) { auto o = env_step_and_record(env, A_WEEK); if (o.terminated) game_over = true; }
                     else if (over_map && cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size()) {
-                        if (act == 1) { auto r = gm.good_earth(cx, cy); if (!r.first) status = r.second; }
+                        if (act == 1) {
+                            // IMPROVE_LAND (manager+0): RL сама решает, какую
+                            // клетку улучшать (find_lot); клик (cx,cy) в
+                            // режиме записи — просто жест "нужно улучшить
+                            // землю", см. заголовок блока demo recording выше.
+                            if (g_record_demo) {
+                                auto o = env_step_and_record(env, MGR_IMPROVE_LAND);
+                                if (o.terminated) game_over = true;
+                            } else {
+                                auto r = gm.good_earth(cx, cy); if (!r.first) status = r.second;
+                            }
+                        }
                         else if (act == 2) {
                             Base* b = gm.find_slowest_base();
                             if (b) { cam.target.x = (float)b->x*TILE; cam.target.y = (float)b->y*TILE; status = "Слабейшее: " + b->data->caption; }
                             else status = "Нет изношенных построек";
                         }
-                        else if (act == 3) { auto r = gm.restore(cx, cy); if (!r.ok) status = r.msg; }
-                        else if (act == 4) { auto r = gm.restore_all(); if (!r.ok) status = r.msg; }
-                        else if (act == 5) { auto r = gm.destroy(cx, cy); if (!r.first) status = r.second; }
-                        else if (act == 6) { if (!gm.undo()) status = "Нечего отменять"; }
-                        else if (act == 8) { auto r = gm.preserve(cx, cy); if (!r.first) status = r.second; }
+                        else if (act == 3) {
+                            // REPAIR (manager+1): RL чинит find_slowest_base(),
+                            // не обязательно ту клетку, что кликнул человек.
+                            if (g_record_demo) {
+                                auto o = env_step_and_record(env, MGR_REPAIR);
+                                if (o.terminated) game_over = true;
+                            } else {
+                                auto r = gm.restore(cx, cy); if (!r.ok) status = r.msg;
+                            }
+                        }
+                        else if (act == 4) {
+                            // REPAIR_ALL (manager+2): 1:1 с человеческой кнопкой.
+                            if (g_record_demo) {
+                                auto o = env_step_and_record(env, MGR_REPAIR_ALL);
+                                if (o.terminated) game_over = true;
+                            } else {
+                                auto r = gm.restore_all(); if (!r.ok) status = r.msg;
+                            }
+                        }
+                        else if (act == 5) {
+                            // DEMOLISH (manager+3): RL сносит find_slowest_base().
+                            if (g_record_demo) {
+                                auto o = env_step_and_record(env, MGR_DEMOLISH);
+                                if (o.terminated) game_over = true;
+                            } else {
+                                auto r = gm.destroy(cx, cy); if (!r.first) status = r.second;
+                            }
+                        }
+                        else if (act == 6) {
+                            // UNDO: нет соответствующего RL-действия (откат
+                            // предыдущего шага сломал бы записанную траекторию).
+                            if (g_record_demo) {
+                                status = "Отмена недоступна в режиме записи демо";
+                            } else if (!gm.undo()) {
+                                status = "Нечего отменять";
+                            }
+                        }
+                        else if (act == 8) {
+                            // PRESERVE/UNPRESERVE: одна кнопка в GUI переключает
+                            // консервацию туда-обратно (Game::preserve делает
+                            // b->preserved = !b->preserved), а RL это два разных
+                            // действия (manager+4 сама находит наименее изношенное
+                            // незаконсервированное, manager+5 — снимает с первого
+                            // законсервированного). Чтобы не перепутать намерение
+                            // человека, смотрим состояние ДО клика: снятие
+                            // консервации с уже законсервированного здания
+                            // логируется как manager+5, а не manager+4.
+                            if (g_record_demo) {
+                                const Base* clicked = gm.base_in_box(cx, cy);
+                                int mgr_action = (clicked != nullptr && clicked->preserved)
+                                    ? MGR_UNPRESERVE : MGR_PRESERVE;
+                                auto o = env_step_and_record(env, mgr_action);
+                                if (o.terminated) game_over = true;
+                            } else {
+                                auto r = gm.preserve(cx, cy); if (!r.first) status = r.second;
+                            }
+                        }
                     }
                 }
             }
@@ -1359,27 +1644,83 @@ int main(int argc, char* argv[]) {
             }
 
             // ─── Keyboard ───
-            if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER)) {
-                auto out = env.step(A_DAY); if (out.terminated) game_over = true;
+            // Дублирует обработчики тулбара (act==11/12/1/3/4/5/6/8/7/9/10)
+            // один в один, включая ветвление по g_record_demo — иначе
+            // человек, играющий горячими клавишами вместо кликов по
+            // тулбару, молча выпадал бы из записи демо (см.
+            // docs/IMITATION_LEARNING_2026_09.md).
+            if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_N)) {
+                auto out = env_step_and_record(env, A_DAY); if (out.terminated) game_over = true;
             }
-            if (IsKeyPressed(KEY_W)) { auto out = env.step(A_WEEK); if (out.terminated) game_over = true; }
+            if (IsKeyPressed(KEY_W)) {
+                auto out = env_step_and_record(env, A_WEEK); if (out.terminated) game_over = true;
+            }
             if (over_map && cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size()) {
-                if (IsKeyPressed(KEY_G)) { auto r = gm.good_earth(cx, cy); if (!r.first) status = r.second; }
+                if (IsKeyPressed(KEY_G)) {
+                    if (g_record_demo) {
+                        auto o = env_step_and_record(env, MGR_IMPROVE_LAND);
+                        if (o.terminated) game_over = true;
+                    } else {
+                        auto r = gm.good_earth(cx, cy); if (!r.first) status = r.second;
+                    }
+                }
                 if (IsKeyPressed(KEY_F)) {
                     Base* b = gm.find_slowest_base();
                     if (b) { cam.target.x = (float)b->x*TILE; cam.target.y = (float)b->y*TILE; status = "Слабейшее: " + b->data->caption; }
                     else status = "Нет изношенных построек";
                 }
-                if (IsKeyPressed(KEY_R)) { auto r = gm.restore(cx, cy); if (!r.ok) status = r.msg; }
-                if (IsKeyPressed(KEY_A)) { auto r = gm.restore_all(); if (!r.ok) status = r.msg; }
-                if (IsKeyPressed(KEY_P)) { auto r = gm.preserve(cx, cy); if (!r.first) status = r.second; }
-                if (IsKeyPressed(KEY_D)) { auto r = gm.destroy(cx, cy); if (!r.first) status = r.second; }
-                if (IsKeyPressed(KEY_U)) { if (!gm.undo()) status = "Нечего отменять"; }
+                if (IsKeyPressed(KEY_R)) {
+                    if (g_record_demo) {
+                        auto o = env_step_and_record(env, MGR_REPAIR);
+                        if (o.terminated) game_over = true;
+                    } else {
+                        auto r = gm.restore(cx, cy); if (!r.ok) status = r.msg;
+                    }
+                }
+                if (IsKeyPressed(KEY_A)) {
+                    if (g_record_demo) {
+                        auto o = env_step_and_record(env, MGR_REPAIR_ALL);
+                        if (o.terminated) game_over = true;
+                    } else {
+                        auto r = gm.restore_all(); if (!r.ok) status = r.msg;
+                    }
+                }
+                if (IsKeyPressed(KEY_P)) {
+                    if (g_record_demo) {
+                        const Base* clicked = gm.base_in_box(cx, cy);
+                        int mgr_action = (clicked != nullptr && clicked->preserved)
+                            ? MGR_UNPRESERVE : MGR_PRESERVE;
+                        auto o = env_step_and_record(env, mgr_action);
+                        if (o.terminated) game_over = true;
+                    } else {
+                        auto r = gm.preserve(cx, cy); if (!r.first) status = r.second;
+                    }
+                }
+                if (IsKeyPressed(KEY_D)) {
+                    if (g_record_demo) {
+                        auto o = env_step_and_record(env, MGR_DEMOLISH);
+                        if (o.terminated) game_over = true;
+                    } else {
+                        auto r = gm.destroy(cx, cy); if (!r.first) status = r.second;
+                    }
+                }
+                if (IsKeyPressed(KEY_U)) {
+                    if (g_record_demo) status = "Отмена недоступна в режиме записи демо";
+                    else if (!gm.undo()) status = "Нечего отменять";
+                }
             }
-            if (IsKeyPressed(KEY_B)) { dlg_mode = 0; cur_dlg = DLG_MARKET; }
-            if (IsKeyPressed(KEY_S)) { dlg_mode = 1; cur_dlg = DLG_MARKET; }
-            if (IsKeyPressed(KEY_K)) cur_dlg = DLG_BANK;
-            if (IsKeyPressed(KEY_N)) { auto o = env.step(A_DAY); if (o.terminated) game_over = true; }
+            if (IsKeyPressed(KEY_B)) {
+                if (g_record_demo) status = "Рынок недоступен в режиме записи демо";
+                else { dlg_mode = 0; cur_dlg = DLG_MARKET; }
+            }
+            if (IsKeyPressed(KEY_S)) {
+                if (g_record_demo) status = "Рынок недоступен в режиме записи демо";
+                else { dlg_mode = 1; cur_dlg = DLG_MARKET; }
+            }
+            if (IsKeyPressed(KEY_K)) {
+                if (g_record_demo) status = "Банк недоступен в режиме записи демо";
+                else cur_dlg = DLG_BANK;
+            }
 
             // ─── Menu shortcuts ───
             if (IsKeyPressed(KEY_F4)) cur_dlg = DLG_NEW;
@@ -1726,6 +2067,11 @@ int main(int argc, char* argv[]) {
         EndDrawing();
     }
 
+    if (g_record_demo) {
+        fprintf(stderr, "[Demo] Записано шагов: %d -> %s\n",
+                g_demo_steps_written, record_demo_path.c_str());
+    }
+    demo_record_close();
     CloseWindow();
     return 0;
 }

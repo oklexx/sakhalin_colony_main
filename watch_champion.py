@@ -121,6 +121,29 @@ def curriculum_action_mask(allowed, action_names):
     return mask if restricted else None
 
 
+def _poll_delay(waited: float) -> float:
+    """Adaptive sleep for IPC busy-wait loops (file polling).
+
+    Bugfix (внешнее ревью, "File IPC Latency/Polling"): раньше обе точки
+    ожидания (`write_action`, `wait_for_state`) спали ФИКСИРОВАННЫЙ интервал
+    (5мс / 20мс) весь таймаут — на медленном диске/при большом числе stat()
+    в секунду это лишняя нагрузка на ФС/планировщик, а сам факт фиксированного
+    интервала никак не помогает: за первые ~100мс шаг почти всегда уже готов
+    (лок-степ: C++ отвечает за один тик кадра), а более долгое ожидание —
+    почти всегда «окно ещё стартует» или «модель на паузе», где нет смысла
+    опрашивать так же часто.
+
+    Отсюда — стартуем с быстрого интервала (отзывчивость в частом случае),
+    затем откатываемся до более редкого поллинга по мере роста времени
+    ожидания (меньше нагрузка на диск при долгом ожидании).
+    """
+    if waited < 0.1:
+        return 0.005
+    if waited < 1.0:
+        return 0.02
+    return 0.05
+
+
 def write_action(action_file: Path, action: int, timeout: float = 2.0) -> bool:
     """Write action int to the IPC file (atomic tmp + rename).
 
@@ -136,13 +159,15 @@ def write_action(action_file: Path, action: int, timeout: float = 2.0) -> bool:
     file — the action was lost and BOTH sides waited for each other forever
     (window open, game frozen, log silent).
     """
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
     consumed = True
     while action_file.exists():
-        if time.monotonic() >= deadline:
+        now = time.monotonic()
+        if now >= deadline:
             consumed = False
             break
-        time.sleep(0.005)
+        time.sleep(min(_poll_delay(now - start), deadline - now))
     tmp = action_file.with_name(action_file.name + ".tmp")
     tmp.write_text(str(action), encoding="utf-8")
     os.replace(tmp, action_file)
@@ -212,17 +237,45 @@ def find_gui_exe() -> "Path | None":
     return None
 
 
-def read_state(state_file: Path) -> dict | None:
-    """Read state JSON from the IPC file. Returns None if not found."""
+#: Быстрые внутренние повторы в `read_state` перед тем, как отдать `None`
+#: наружу. Закрывают гонку записи state.json (см. `ai_write_state` в
+#: src/gui.cpp): C++ пишет во временный файл и делает `rename` — обычно
+#: атомарный, но если читатель (мы) в этот момент держит state.json открытым
+#: (Windows) или антивирус/индексатор сканирует файл, C++ уходит в fallback
+#: `copy_file`, который НЕ атомарен, и короткое окно между началом и концом
+#: копирования может отдать нам обрезанный/битый JSON. Без внутреннего ретрая
+#: это выглядело как пропавший шаг до следующего прохода внешнего цикла
+#: (обычно самовосстанавливалось за ~20мс, но не гарантированно — таймаут был
+#: возможен на медленной ФС). Несколько попыток с микро-паузой почти всегда
+#: успевают дождаться завершения записи в рамках ОДНОГО вызова.
+_READ_STATE_RETRIES = 4
+_READ_STATE_RETRY_DELAY = 0.002
+
+
+def read_state(state_file: Path, *, retries: int = _READ_STATE_RETRIES) -> dict | None:
+    """Read state JSON from the IPC file. Returns None if not found/unreadable.
+
+    Retries a few times (few ms total) on a transient read failure — a
+    half-written file (mid-`rename`/`copy_file` on the C++ side) or a
+    momentary OS-level lock (antivirus/indexer) — before giving up. This does
+    NOT replace the outer polling loop's retries (`wait_for_state`); it just
+    avoids wasting a whole poll interval (or worse, timing out) on a race
+    that typically resolves within a millisecond or two.
+    """
     import json
     if not state_file.exists():
         return None
-    try:
-        with open(state_file, encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-    return data if isinstance(data, dict) else None
+    for attempt in range(retries + 1):
+        try:
+            with open(state_file, encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            if attempt < retries:
+                time.sleep(_READ_STATE_RETRY_DELAY)
+                continue
+            return None
+        return data if isinstance(data, dict) else None
+    return None  # unreachable — the loop above always returns
 
 
 # ── visual watch: IPC hygiene and diagnostics ────────────────────────────────
@@ -330,8 +383,9 @@ def wait_for_state(
     # тестах, и при отладке медленного старта окна.
     timeout = GUI_STEP_TIMEOUT if timeout is None else float(timeout)
     heartbeat = GUI_HEARTBEAT_EVERY if heartbeat is None else float(heartbeat)
-    deadline = time.monotonic() + timeout
-    next_beat = time.monotonic() + heartbeat
+    start = time.monotonic()
+    deadline = start + timeout
+    next_beat = start + heartbeat
     while True:
         stamp = state_stamp(state_file)
         if stamp is not None and (since is None or stamp != since):
@@ -346,7 +400,10 @@ def wait_for_state(
         if on_wait is not None and now >= next_beat:
             next_beat = now + heartbeat
             on_wait(timeout - (deadline - now))
-        time.sleep(0.02)
+        # Адаптивный поллинг (см. `_poll_delay`): быстро в частом случае
+        # (шаг готов почти сразу), реже — при долгом ожидании (меньше
+        # нагрузка на диск/планировщик на медленных дисках).
+        time.sleep(min(_poll_delay(now - start), deadline - now))
 
 
 def describe_gui_failure(proc, exe_path, gui_log: "Path | None", ipc_dir: Path,
