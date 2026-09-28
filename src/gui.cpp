@@ -772,14 +772,29 @@ static void draw_bank(ColonyEnvCpp& env) {
 // ─── NALOG (annual / main) — 2 кнопки: Продать ресурсы / Нет ───
 static void draw_nalog(ColonyEnvCpp& env, bool main_tax) {
     Game& g = env.game();
-    int w = 420, h = 200, x = (WIN_W - w)/2, y = (WIN_H - h)/2;
+    int w = 460, h = main_tax ? 200 : 250, x = (WIN_W - w)/2, y = (WIN_H - h)/2;
     panel(x, y, w, h, main_tax ? "Главный налог" : "Налоги");
     long long total = main_tax ? g.main_tax_amount() : g.annual_tax_amount();
     text(main_tax ? "Каждые 10 лет выплачивается Главный налог."
                       : "Ежегодно следует уплатить налоги за прошедший год:",
              x + 14, y + 40, 14, WHITE);
-    text(TextFormat("Итого: %lld", (long long)total), x + 14, y + 70, 20, {255,220,120,255});
-    text(TextFormat("Ваши деньги: %lld — не хватает.", (long long)g.money), x + 14, y + 95, 14, {255,150,150,255});
+    if (!main_tax) {
+        // Разбор по статьям: видно, за что именно платим (земля/обороты/сборы).
+        text(TextFormat("Земля: %lld клеток x %d = %lld   (выкупленные не в счёт)",
+                        (long long)g.taxed_cells(), NALOG_EARTH,
+                        (long long)(g.taxed_cells() * NALOG_EARTH)),
+             x + 14, y + 58, 13, {200,200,200,255});
+        text(TextFormat("Закупки %lld -> 1%% = %lld    Продажи %lld -> 2%% = %lld",
+                        (long long)g.summ_buy,
+                        (long long)(g.summ_buy * NALOG_BUYPERCENT / 100),
+                        (long long)g.summ_sale,
+                        (long long)(g.summ_sale * NALOG_SALEPERCENT / 100)),
+             x + 14, y + 74, 13, {200,200,200,255});
+        text(TextFormat("Сборы: %d", NALOG_ECOLOGY + NALOG_SOCIAL + NALOG_RES),
+             x + 14, y + 90, 13, {200,200,200,255});
+    }
+    text(TextFormat("Итого: %lld", (long long)total), x + 14, y + (main_tax ? 70 : 110), 20, {255,220,120,255});
+    text(TextFormat("Ваши деньги: %lld — не хватает.", (long long)g.money), x + 14, y + (main_tax ? 95 : 135), 14, {255,150,150,255});
     if (btn(x + 14, y + h - 44, 190, 34, "Продать ресурсы")) {
         dlg_mode = 1;
         tax_from_dialog = true;
@@ -934,7 +949,7 @@ static void draw_top_menu(ColonyEnvCpp& env) {
             Rectangle r = {(float)tx[2], (float)(dy + i*CH), 240, CH};
             bool h = CheckCollisionPointRec(mp, r);
             if (h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                if (i == 0) { strcpy(mess_title,"Помощь"); strcpy(mess_text,"Стрелки — сдвиг карты, Пробел — день, W — неделя,\nB — купить, S — продать, K — банк, G — улучшить,\nF — поиск, R — восстановить, P — блок, D — разобрать,\nU — отмена, ЛКМ по карте — зажать и выделить область, ПКМ — меню зданий (выбор ЛКМ строит)."); cur_dlg = DLG_MESS; }
+                if (i == 0) { strcpy(mess_title,"Помощь"); strcpy(mess_text,"Стрелки — сдвиг карты, Пробел — день, W — неделя,\nB — купить, S — продать, K — банк, G — выкупить участок (снимает налог),\nF — поиск, R — восстановить, P — блок, D — разобрать,\nU — отмена, ЛКМ по карте — зажать и выделить область, ПКМ — меню зданий (выбор ЛКМ строит)."); cur_dlg = DLG_MESS; }
                 else cur_dlg = DLG_ABOUT;
                 open_menu = -1;
             }
@@ -1728,7 +1743,7 @@ int main(int argc, char* argv[]) {
             if (IsKeyPressed(KEY_F2)) cur_dlg = DLG_SAVE;
             if (IsKeyPressed(KEY_F1)) {
                 strcpy(mess_title, "Помощь");
-                strcpy(mess_text, "Стрелки — сдвиг карты, Пробел — день, W — неделя,\nB — купить, S — продать, K — банк, G — улучшить,\nF — поиск, R — восстановить, P — блок, D — разобрать,\nU — отмена, ЛКМ по карте — зажать и выделить область, ПКМ — меню зданий (выбор ЛКМ строит).");
+                strcpy(mess_text, "Стрелки — сдвиг карты, Пробел — день, W — неделя,\nB — купить, S — продать, K — банк, G — выкупить участок (снимает налог),\nF — поиск, R — восстановить, P — блок, D — разобрать,\nU — отмена, ЛКМ по карте — зажать и выделить область, ПКМ — меню зданий (выбор ЛКМ строит).");
                 cur_dlg = DLG_MESS;
             }
             if (IsKeyPressed(KEY_F7)) sound_on = !sound_on;
@@ -1975,7 +1990,7 @@ int main(int argc, char* argv[]) {
             if (over_map && cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size()) {
                 int8_t lot = g.earth.lot(cx, cy);
                 snprintf(st, sizeof(st), "Клетка (%d,%d): %s", cx, cy, LOT_NAMES[lot < 0 || lot > 8 ? 8 : lot]);
-                if (g.is_good(cx, cy)) { int l = (int)strlen(st); snprintf(st + l, sizeof(st) - l, ", улучшена"); }
+                if (g.is_good(cx, cy)) { int l = (int)strlen(st); snprintf(st + l, sizeof(st) - l, ", выкуплена (без налога)"); }
                 const Base* b = g.base_in_box(cx, cy);
                 if (b) {
                     int l = (int)strlen(st);

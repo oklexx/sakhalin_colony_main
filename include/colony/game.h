@@ -109,6 +109,8 @@ public:
     bool main_tax_due() const;
     std::pair<bool, std::string> check_advance() const;
     int64_t annual_tax_amount() const;
+    // Занятые клетки, за которые платится земельный налог (выкупленные — нет).
+    int64_t taxed_cells() const;
     int64_t main_tax_amount() const;
     bool pay_annual_tax();
     bool pay_main_tax();
@@ -189,6 +191,9 @@ public:
     // ---- helpers ----
     const Base* find_slowest_base() const;
     Base* find_slowest_base();
+    // Постройка на невыкупленной земле, с которой выгоднее всего снять налог
+    // (самая дорогая: у неё же максимальная выгода от бонуса к износу).
+    const Base* find_taxed_base() const;
     int64_t take_uid() { return next_uid_++; }
     const std::vector<int32_t>& base_index_map() const { return base_index_map_; }
 

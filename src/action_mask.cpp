@@ -126,14 +126,21 @@ std::vector<float> ColonyEnvCpp::action_mask(std::vector<uint8_t>* reasons) {
             mask[act] = 1.0f;
             if (rs) (*rs)[act] = (uint8_t)MR_OPEN;
         } else if (i == 0) {
-            // IMPROVE_LAND: нужны деньги и участок, который ещё не улучшен.
+            // IMPROVE_LAND: нужны деньги и клетка, за которую ещё платится
+            // земельный налог. Выкуп снимает налог навсегда (см.
+            // docs/PLAN_TAX_PER_CELL.md), поэтому цель — своя занятая клетка;
+            // если вся колония выкуплена, годится и свободный участок рядом.
             if (g.money >= BUYGOODEARTH) {
-                auto cell = find_lot(LT_EVERYWHERE, false);
-                if (cell && !g.is_good(cell->first, cell->second)) {
+                bool has_target = g.find_taxed_base() != nullptr;
+                if (!has_target) {
+                    auto cell = find_lot(LT_EVERYWHERE, false);
+                    has_target = cell && !g.is_good(cell->first, cell->second);
+                }
+                if (has_target) {
                     mask[act] = 1.0f;
                     if (rs) (*rs)[act] = (uint8_t)MR_OPEN;
                 } else if (rs) {
-                    (*rs)[act] = (uint8_t)MR_NO_LOT;  // всё вокруг уже улучшено
+                    (*rs)[act] = (uint8_t)MR_NO_LOT;  // всё уже выкуплено
                 }
             } else if (rs) {
                 (*rs)[act] = (uint8_t)MR_MONEY;

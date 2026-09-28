@@ -155,7 +155,10 @@ std::vector<float> ColonyEnvCpp::obs(const Game& g) const {
     push((float)(std::max(0.0, (double)(g.people - g.now_home_places())) / 100.0));
     push((float)(g.annual_tax_due() ? 1.0 : 0.0));
     push((float)(g.main_tax_due() ? 1.0 : 0.0));
-    push((float)((double)g.annual_tax_amount() / 2e4));
+    // Нормировка 1e5: после перехода на «налог с каждой занятой клетки»
+    // (docs/PLAN_TAX_PER_CELL.md) суммы выросли — в большой колонии с сотней
+    // дорог налог доходит до 60-100 тыс. Размер наблюдения не меняется.
+    push((float)std::min(2.0, (double)g.annual_tax_amount() / 1e5));
     push((float)((double)g.main_tax_amount() / 5e5));
     push((float)((double)g.days_alive / 3650.0));
     push((float)((double)curriculum_.stage_report / 3.0));

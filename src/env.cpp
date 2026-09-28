@@ -349,6 +349,10 @@ double ColonyEnvCpp::net_worth(const Game& g) const {
     double v = (double)g.money - (double)g.credit;
     for (int i = 0; i < SUNDUK_SIZE; i++)
         v += (double)(g.sunduk[i] * SALE_SUNDUK[i]);
+    // Выкупленная земля — актив по цене выкупа: она навсегда снимает земельный
+    // налог с клетки, поэтому покупка не должна выглядеть потерей капитала.
+    for (uint8_t good : g.good_lots)
+        if (good) v += (double)BUYGOODEARTH;
     for (const Base& b : g.bases) {
         const BaseData& d = *b.data;
         if (d.live_years) {
@@ -665,9 +669,20 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         }
     } else if (action == manager_base_ + 0) {
         action_name = "MGR:improve";
-        auto cell2 = find_lot(LT_EVERYWHERE, false);
-        if (!cell2 || !g.good_earth(cell2->first, cell2->second).first) {
+        // Выкуп земли снимает земельный налог с клетки навсегда, поэтому целимся
+        // в свою самую дорогую облагаемую постройку; если облагаемых нет —
+        // берём свободный участок рядом (задел под будущую стройку).
+        bool ok = false;
+        if (const Base* taxed = g.find_taxed_base())
+            ok = g.good_earth(taxed->x, taxed->y).first;
+        if (!ok) {
+            auto cell2 = find_lot(LT_EVERYWHERE, false);
+            ok = cell2 && g.good_earth(cell2->first, cell2->second).first;
+        }
+        if (!ok) {
             rew += cfg_.error_penalty; c_error += cfg_.error_penalty;
+        } else {
+            invalidate_net_worth();
         }
     } else if (action == manager_base_ + 1) {
         action_name = "MGR:repair";

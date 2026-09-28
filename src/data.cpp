@@ -61,7 +61,6 @@ std::vector<BaseData> load_base_data(const std::string& path) {
         b.no_near_base = style_has(style, "no_near_base");
         b.no_preserve = style_has(style, "no_preserve");
         b.plan = style_has(style, "plan");
-        b.no_occupy = style_has(style, "no_occupy");
         b.image_index = d.value("image_index", 0);
         out.push_back(b);
     }

@@ -16,8 +16,6 @@ constexpr int INIT_MONEY = 82000;
 constexpr int INIT_PEOPLE = 28;
 constexpr int START_YEAR = 1890, START_MONTH = 3, START_DAY = 1;
 
-// Улучшенная земля (3.47)
-constexpr int BUYGOODEARTH = 32997;
 
 // Банк
 constexpr int CREDITPERCENT = 2;
@@ -41,12 +39,17 @@ constexpr int ADDPEOPLERANGE = 5;
 
 // Налоги
 constexpr int NALOG_MAIN = 500000;
-constexpr int NALOG_EARTH = 420;
+constexpr int NALOG_EARTH = 420;  // за каждую занятую клетку (и дорога, и здание)
 constexpr int NALOG_BUYPERCENT = 1;
 constexpr int NALOG_SALEPERCENT = 2;
 constexpr int NALOG_ECOLOGY = 509;
 constexpr int NALOG_SOCIAL = 1220;
 constexpr int NALOG_RES = 2957;
+
+// Выкуп участка: снимает земельный налог с клетки навсегда (плюс даёт вдвое
+// более быструю стройку и −16 % износа). Цена привязана к налогу, чтобы при
+// перебалансировке они не разъезжались: окупается за 10 лет владения.
+constexpr int BUYGOODEARTH = 10 * NALOG_EARTH;
 
 // Рынок
 inline constexpr std::array<int, SUNDUK_SIZE> BUY_SUNDUK = {1000, 2, 32, 54, 48, 4, 6, 14, 37};
