@@ -31,6 +31,7 @@
   "unlock_ids": "",
   "use_curriculum_tab": false,
   "curriculum_resources": "",
+  "water_bootstrap": false,
   "tax_to_debt": true,
   "disabled_mechanics": ["improve_land", "preservation", "credit"],
   "mechanics_unlock_schedule": [[200000, ["improve_land", "preservation"]], [500000, ["credit"]]],

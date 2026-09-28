@@ -57,6 +57,15 @@ std::vector<float> ColonyEnvCpp::action_mask(std::vector<uint8_t>* reasons) {
         int act = A_BUILD0 + i;
         const BaseData* d = build_data_[i];
 
+        // Water bootstrap is a phase gate, not a smaller action space: while
+        // the first operational WaterChannel is missing, only the route
+        // (Road) and its goal (WaterChannel) remain selectable. This prevents
+        // a larger catalogue from winning the early policy by local build
+        // bonuses before the water dependency has been solved.
+        if (water_bootstrap_active() && d->id != ROAD_ID && d->id != "WaterChannel") {
+            if (rs) (*rs)[act] = (uint8_t)MR_CURRICULUM;
+            continue;
+        }
         // Curriculum unlock check (first-fail: раньше денег и участка)
         if (!build_allowed(d->id)) {
             if (rs) (*rs)[act] = (uint8_t)MR_CURRICULUM;

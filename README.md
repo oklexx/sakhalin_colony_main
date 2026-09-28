@@ -17,6 +17,7 @@
 | [pyproject.toml](pyproject.toml) | Конфигурация ruff/mypy (стандарты для кода) |
 | [tests/](tests/) | 45 тест-файлов + 24 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
 | [docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md) | Наблюдение за чемпионом в GUI-окне: IPC-протокол, таймауты, диагностика «окно не запустилось» |
+| [docs/TRAIN_AGENT_VIA_GAME_RU.md](docs/TRAIN_AGENT_VIA_GAME_RU.md) | Пошаговая инструкция: запись человеческой игры → BC → PPO и рекомендуемый water-first прогон |
 
 > **Отчёты по проекту:** `REPORT.md`, `REPORT_2026_09.md`, `TRAINING_REPORT.md`,
 > `REVIEW_REPORT.md` в репозитории отсутствуют (исторические имена из старых
@@ -44,9 +45,14 @@ python train.py --steps 2000000 --envs 8 --n-epochs 4 --ent-coef 0.015 \
 
 #    Двухэтапное обучение: сначала «Стадия 1 · база и ресурсы» (минимальная
 #    петля выживания: дорога к воде → водоканал → еда → продажа излишков),
-#    затем «Этап 2 · вся экономика» дообучением от лучшей модели этапа 1
-#    (в UI: вкладка «Модели» → «Дообучить»; см. docs/TWO_STAGE_TRAINING_2026_09.md):
+#    затем «Этап 2 · вся экономика» дообучением от лучшей модели этапа 1.
+#    В stage1 включён water_bootstrap: до рабочего водоканала другие здания
+#    не конкурируют с маршрутом (в UI: вкладка «Модели» → «Дообучить»;
+#    подробности: docs/TWO_STAGE_TRAINING_2026_09.md):
 python train.py --preset stage1 --steps 2000000 --envs 8 --name s1_run
+
+#    Обучение на человеческой игре: запись → behavioral cloning → PPO:
+#    полный рецепт с Windows-командами — docs/TRAIN_AGENT_VIA_GAME_RU.md
 
 # 5. GUI-дашборд обучения
 python run_train_ui2.py

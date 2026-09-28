@@ -26,6 +26,7 @@ class ResolvedCurriculum(TypedDict):
     use_curriculum_tab: bool | None
     allowed: list[str]
     resources: str | list[str] | None
+    water_bootstrap: bool | None
 
 # Stage → building ids (as in configs/bases.json without City)
 STAGE_MAP: dict[int, list[str]] = {
@@ -257,6 +258,8 @@ STAGE1_PRESET: dict[str, object] = {
     ]),
     "use_curriculum_tab": True,
     "curriculum_stage": 0,
+    # Фазовый гейт: сначала Road/WaterChannel, затем выбранные здания.
+    "water_bootstrap": True,
     # Ресурсы, за добычу которых даются бонусы (остальные веса = 0).
     "curriculum_resources": "water,food,wood",
     # Выключенные механики (менеджерские действия). allow-list на шаге 0
@@ -310,6 +313,9 @@ class CurriculumState:
     obs_version: int = 2
     # Appended after the legacy positional fields to keep old callers valid.
     enabled_mechanics: tuple[str, ...] = MECHANIC_NAMES
+    # Fixed action head, phase-gated buildings: Road/WaterChannel first, then
+    # the rest of the selected catalogue after the channel becomes operational.
+    water_bootstrap: bool = False
 
     @classmethod
     def all(cls, stage_report: int = 0) -> CurriculumState:
@@ -327,6 +333,7 @@ class CurriculumState:
             "stage": int(self.stage_report),
             "obs_version": int(self.obs_version),
             "enabled_mechanics": list(self.enabled_mechanics),
+            "water_bootstrap": bool(self.water_bootstrap),
         }
 
     @classmethod
@@ -343,6 +350,7 @@ class CurriculumState:
             stage_report=int(d.get("stage", d.get("stage_report", 0))),
             obs_version=int(d.get("obs_version", 2)),
             enabled_mechanics=normalize_enabled_mechanics(d.get("enabled_mechanics")),
+            water_bootstrap=bool(d.get("water_bootstrap", False)),
         )
 
 
@@ -455,6 +463,7 @@ def build_state(
     resources: str | list[str] | None = None,
     obs_version: int = 2,
     enabled_mechanics: MechanicsRaw = None,
+    water_bootstrap: bool = False,
 ) -> CurriculumState:
     """Compute the CurriculumState from (stage, manual set, checkbox).
 
@@ -485,8 +494,10 @@ def build_state(
     res_tuple = _FULL_WEIGHTS if all_res else tuple(weights)  # type: ignore[arg-type]
     mechanics = normalize_enabled_mechanics(enabled_mechanics)
     if set(ids) == _ALL_IDS_SET:
-        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i, obs_i, mechanics)
-    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i, obs_i, mechanics)
+        return CurriculumState(True, tuple(ALL_IDS), all_res, res_tuple, stage_i, obs_i,
+                              mechanics, bool(water_bootstrap))
+    return CurriculumState(False, tuple(ids), all_res, res_tuple, stage_i, obs_i,
+                           mechanics, bool(water_bootstrap))
 
 
 def allowed_ids(
@@ -519,7 +530,7 @@ def curriculum_from_meta(meta: MetaDict | None) -> MetaDict:
                 "use_curriculum_tab": None, "resources": None,
                 "obs_version": None, "enabled_mechanics": None,
                 "disabled_mechanics": None, "mechanics_unlock_schedule": None,
-                "mechanics_step": None}
+                "mechanics_step": None, "water_bootstrap": None}
     nested = meta.get("config")
     if not isinstance(nested, dict):
         nested = {}
@@ -535,6 +546,7 @@ def curriculum_from_meta(meta: MetaDict | None) -> MetaDict:
     manual = pick("unlock_ids")
     use_tab = pick("use_curriculum_tab")
     resources = pick("curriculum_resources")
+    water_bootstrap = pick("water_bootstrap")
     obs_version = pick("obs_version")
     enabled_mechanics = pick("enabled_mechanics", "mechanics")
     disabled_mechanics = pick("disabled_mechanics")
@@ -545,6 +557,7 @@ def curriculum_from_meta(meta: MetaDict | None) -> MetaDict:
         "unlock_ids": None if manual is None else str(manual),
         "use_curriculum_tab": None if use_tab is None else bool(use_tab),
         "resources": None if resources is None else str(resources),
+        "water_bootstrap": None if water_bootstrap is None else bool(water_bootstrap),
         "obs_version": int(obs_version) if obs_version is not None else None,
         "enabled_mechanics": enabled_mechanics,
         "disabled_mechanics": disabled_mechanics,
@@ -572,6 +585,7 @@ def read_curriculum_meta(model_dir: str | os.PathLike[str]) -> MetaDict:
         "unlock_ids": None,
         "use_curriculum_tab": None,
         "resources": None,
+        "water_bootstrap": None,
         "obs_version": None,
         "enabled_mechanics": None,
         "disabled_mechanics": None,
@@ -628,6 +642,8 @@ def resolve_curriculum(
         "use_curriculum_tab": tab,
         "allowed": allowed_ids(stage_i, manual_csv, True),
         "resources": res_raw,
+        "water_bootstrap": (None if stored.get("water_bootstrap") is None
+                            else bool(stored["water_bootstrap"])),
     }
 
 
@@ -640,6 +656,7 @@ def resolve_state(
     resources: str | list[str] | None = None,
     obs_version: int = 2,
     enabled_mechanics: MechanicsRaw = None,
+    water_bootstrap: bool | None = None,
 ) -> CurriculumState:
     """resolve_curriculum + build_state in one call (eval/watch paths).
 
@@ -685,6 +702,11 @@ def resolve_state(
             )
     # manual_csv is already checkbox-filtered, so the tab is trivially True here.
     # resources fall back to the stored run scenario (explicit args win).
+    stored_water = stored_meta.get("water_bootstrap")
+    meta_water = meta_values.get("water_bootstrap")
+    water_raw = (water_bootstrap if water_bootstrap is not None
+                 else stored_water if stored_water is not None
+                 else meta_water)
     return build_state(
         resolved["curriculum_stage"],
         resolved["unlock_ids"],
@@ -692,6 +714,7 @@ def resolve_state(
         resolved["resources"],
         obs_version,
         mechanics_raw,
+        bool(water_raw) if water_raw is not None else False,
     )
 
 

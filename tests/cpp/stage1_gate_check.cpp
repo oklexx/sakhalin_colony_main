@@ -175,7 +175,58 @@ int main() {
         check(bits[6] == 1, "после unlock слот sell открыт");
     }
 
-    // ── 6. from_json: легаси-имена, all, пусто, мусор ──────────────────────
+    // ── 6. Water bootstrap: сначала маршрут и рабочий канал ────────────────
+    {
+        Curriculum c;
+        c.all_builds = false;
+        c.allowed_builds = {"Road", "WaterChannel", "Farm", "Garden",
+                            "Mushroom", "Fish", "SmallHouse", "House"};
+        c.water_bootstrap = true;
+        ColonyEnvCpp e(bd, ed, 42, 200, c);
+        e.reset(42);
+        e.game().money = 5'000'000;
+        int road_idx = -1, wc_idx = -1, farm_idx = -1;
+        for (int i = 0; i < e.n_build(); ++i) {
+            if (e.build_ids()[i] == "Road") road_idx = i;
+            if (e.build_ids()[i] == "WaterChannel") wc_idx = i;
+            if (e.build_ids()[i] == "Farm") farm_idx = i;
+        }
+        auto initial = e.action_mask();
+        check(road_idx >= 0 && wc_idx >= 0 && farm_idx >= 0,
+              "water bootstrap: required building ids are present");
+        check(initial[A_BUILD0 + farm_idx] == 0.0f,
+              "water bootstrap masks Farm before a working WaterChannel");
+        check(initial[A_BUILD0 + road_idx] == 1.0f,
+              "water bootstrap keeps Road available for the route");
+
+        bool channel_seen = false;
+        bool water_opened = false;
+        for (int step = 0; step < 500 && !channel_seen; ++step) {
+            auto mask = e.action_mask();
+            if (mask[A_BUILD0 + wc_idx] != 0.0f) {
+                water_opened = true;
+                e.step(A_BUILD0 + wc_idx);
+                break;
+            }
+            if (mask[A_BUILD0 + road_idx] != 0.0f) {
+                e.step(A_BUILD0 + road_idx);
+            } else {
+                e.step(A_DAY);
+            }
+        }
+        check(water_opened, "water bootstrap reaches a legal WaterChannel action");
+        for (int step = 0; step < 300 && !e.water_channel_operational(); ++step)
+            e.step(A_DAY);
+        channel_seen = e.water_channel_operational();
+        check(channel_seen, "water bootstrap waits for the channel to become operational");
+        if (channel_seen) {
+            auto after = e.action_mask();
+            check(after[A_BUILD0 + farm_idx] == 1.0f,
+                  "water bootstrap releases Farm after WaterChannel completion");
+        }
+    }
+
+    // ── 7. from_json: легаси-имена, all, пусто, мусор ──────────────────────
     {
         auto c = Curriculum::from_json(R"({"enabled_mechanics":["all"]})");
         bool all_on = true;
@@ -201,6 +252,9 @@ int main() {
             threw = true;
         }
         check(threw, "from_json: неизвестное имя -> runtime_error");
+
+        auto bootstrap = Curriculum::from_json(R"({"water_bootstrap":true})");
+        check(bootstrap.water_bootstrap, "from_json: water_bootstrap round-trips");
 
         auto absent = Curriculum::from_json("{}");
         bool legacy_on = true;

@@ -621,6 +621,7 @@ class AsyncTrainer:
             "unlock_ids": self.cfg.effective_unlock_ids(),
             "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
             "curriculum_resources": str(getattr(self.cfg, "curriculum_resources", "") or ""),
+            "water_bootstrap": bool(getattr(self.cfg, "water_bootstrap", False)),
             "tax_to_debt": bool(getattr(self.cfg, "tax_to_debt", True)),
             # PR 5: without this the eval-dir meta reads as legacy v0 and the
             # stored-vs-env check fails mid-training on a v1 run.
@@ -639,6 +640,7 @@ class AsyncTrainer:
             # PR 5: run_eval's version is explicit-only, so a --obs-version 0
             # training run must thread it here or in-training eval errors out.
             "obs_version": int(getattr(self.cfg, "obs_version", 2)),
+            "water_bootstrap": bool(getattr(self.cfg, "water_bootstrap", False)),
             "tax_to_debt": bool(getattr(self.cfg, "tax_to_debt", True)),
             "enabled_mechanics": list(self.cfg.enabled_mechanics_at(self._curriculum_progress_step)),
         }
@@ -1146,6 +1148,7 @@ class AsyncTrainer:
                             "unlock_ids": self.cfg.effective_unlock_ids(),
                             "use_curriculum_tab": bool(getattr(self.cfg, "use_curriculum_tab", False)),
                             "curriculum_resources": str(getattr(self.cfg, "curriculum_resources", "") or ""),
+                            "water_bootstrap": bool(getattr(self.cfg, "water_bootstrap", False)),
                             "obs_version": int(getattr(self.cfg, "obs_version", 2)),
                             "tax_to_debt": bool(getattr(self.cfg, "tax_to_debt", True)),
                             "enabled_mechanics": list(self.cfg.enabled_mechanics_at(self._curriculum_progress_step)),

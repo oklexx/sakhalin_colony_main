@@ -214,6 +214,7 @@ def run_eval(
     allow_stale_pyd: bool | None = None,
     obs_version: int = 2,
     enabled_mechanics: str | list[str] | None = None,
+    water_bootstrap: bool | None = None,
     tax_to_debt: bool | None = None,
 ) -> EvalResult:
     """Run the trained policy in the colony env and return mean stats.
@@ -308,6 +309,7 @@ def run_eval(
         resources=curriculum_resources,
         obs_version=obs_version,
         enabled_mechanics=enabled_mechanics,
+        water_bootstrap=water_bootstrap,
     )
     cur_stage = resolved["curriculum_stage"]
     manual_csv = resolved["unlock_ids"]

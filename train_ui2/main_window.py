@@ -1050,7 +1050,7 @@ class MainWindow2(QMainWindow):
         self._extra_cfg = {k: v for k, v in cfg.items() if k not in (
             "model_name","difficulty","obs_mode","minimap_radius","curriculum_stage",
             "unlock_ids","use_curriculum_tab","curriculum_resources","curriculum_schedule",
-            "disabled_mechanics","mechanics_unlock_schedule",
+            "disabled_mechanics","mechanics_unlock_schedule","water_bootstrap",
             "net_arch","use_amp","torch_compile","cpp_threads",
             "watch_map_size","watch_seed","watch_visual","watch_speed",
             "config_version"
@@ -1104,6 +1104,9 @@ class MainWindow2(QMainWindow):
             "use_curriculum_tab": self.chk_use_curriculum_tab.isChecked(),
             "curriculum_resources": curriculum_resources,
             "curriculum_schedule": sched,
+            # Stage 1 is the only UI preset that uses the phase-gated water
+            # bootstrap. A hand-edited full run remains legacy/unrestricted.
+            "water_bootstrap": self._detect_preset() == "stage1",
             "disabled_mechanics": [m for m in MECHANIC_IDS if m not in checked_mech],
             # UI не редактирует расписание разблокировки механик: пусто =
             # «не трогать» (worker/Config применит свой дефолт для новых прогонов).

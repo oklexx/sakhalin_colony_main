@@ -29,6 +29,10 @@ struct Curriculum {
     bool all_resources = true;                 // PR 4: false => resource_weights активны
     std::array<double, SUNDUK_SIZE> resource_weights{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
     int stage_report = 0;                      // только для obs-фичи и дампов
+    // Водный bootstrap — опциональный режим первого этапа: пока рабочий
+    // WaterChannel не построен, маска не даёт отвлекаться на другие здания.
+    // Это не меняет число действий и поэтому не ломает архитектуру чекпойнта.
+    bool water_bootstrap = false;
     // Дефолт obs v2 (299) — канонический для всего стека: rl/curriculum
     // CurriculumState.obs_version=2, python-обёртки (cpp_env/cpp_vecenv)
     // передают 2 явно. 0 = 248-dim, 1 = 289-dim frame, 2 = 299-dim (P0:
@@ -67,6 +71,15 @@ public:
     Curriculum curriculum() const { return curriculum_; }
     bool build_allowed(const std::string& id) const {
         return curriculum_.all_builds || curriculum_.allowed_builds.count(id) > 0;
+    }
+    // Stage-1 option: keep the action space fixed, but make the first goal
+    // explicit. It turns off after a *working* WaterChannel exists (not merely
+    // while construction has started), so adding many buildings cannot steal
+    // the early learning signal.
+    bool water_channel_operational() const;
+    bool water_bootstrap_active() const {
+        return curriculum_.water_bootstrap && build_allowed("WaterChannel") &&
+               !water_channel_operational();
     }
     bool mechanic_enabled_for_manager(int manager_index) const {
         if (manager_index < 0 || manager_index >= N_MANAGERS) return true;
