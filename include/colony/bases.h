@@ -30,7 +30,6 @@ public:
     bool no_near_base = false;
     bool no_preserve = false;
     bool plan = false;
-    bool no_occupy = false;
     int image_index = 0;
 
     int64_t live_time_total() const { return live_years * 364; }

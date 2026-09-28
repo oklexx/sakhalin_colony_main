@@ -1,0 +1,20 @@
+# Разумная десятилетка под правила налога с каждой клетки (docs/PLAN_TAX_PER_CELL.md).
+# Итог на 01.03.1900 (seed 42, --pop-cap 700): ≈ 6,43 млн ₽, 12 приисков.
+# /tmp/plan --seed 42 --plan docs/plan_long.txt --pop-cap 700 --days 3653 --trace
+1890-03-01 Mushroom 4
+1890-03-01 Apiary 1
+1890-03-01 Garden 1
+1891-05-22 Goldmine 1
+1891-06-20 Goldmine 1
+1891-09-10 Puerperal 1
+1892-05-20 Goldmine 1
+1892-09-10 Puerperal 2
+1893-05-20 Goldmine 2
+1893-09-10 Puerperal 2
+1894-05-20 Goldmine 3
+1894-09-05 BuyLand 60      # выкуп земли под приисками и магистралями
+1895-05-20 Goldmine 3
+1896-05-20 Goldmine 4
+1896-09-05 BuyLand 60
+1897-05-20 Goldmine 4
+1898-05-20 Goldmine 4

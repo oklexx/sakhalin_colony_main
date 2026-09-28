@@ -305,11 +305,18 @@ std::pair<bool, std::string> Game::check_advance() const {
     return {true, ""};
 }
 
-int64_t Game::annual_tax_amount() const {
-    int64_t occupied_n = 0;
+int64_t Game::taxed_cells() const {
+    // Земельный налог берётся с каждой занятой клетки карты — и с дороги, и со
+    // здания (одна постройка = одна клетка, см. Game::build). Выкупленная земля
+    // (good_earth) от налога освобождена навсегда.
+    int64_t n = 0;
     for (const Base& b : bases)
-        if (!b.data->no_occupy) occupied_n++;
-    return occupied_n * NALOG_EARTH +
+        if (!is_good(b.x, b.y)) n++;
+    return n;
+}
+
+int64_t Game::annual_tax_amount() const {
+    return taxed_cells() * NALOG_EARTH +
            summ_buy * NALOG_BUYPERCENT / 100 +
            summ_sale * NALOG_SALEPERCENT / 100 +
            NALOG_ECOLOGY + NALOG_SOCIAL + NALOG_RES;
@@ -739,8 +746,12 @@ std::pair<bool, std::string> Game::preserve(int x, int y) {
 }
 
 std::pair<bool, std::string> Game::good_earth(int x, int y) {
+    // Выкуп разрешён и под готовой постройкой: иначе правило «выкупленная земля
+    // не облагается налогом» было бы неприменимо к уже отстроенной колонии.
+    // Ускорение стройки при этом действует только если выкупить ДО стройки,
+    // бонус к износу — с момента покупки. При сносе флаг не сбрасывается:
+    // покупается земля, а не здание.
     if (!earth.in_bounds(x, y)) return {false, "Вне карты."};
-    if (base_in_box(x, y)) return {false, "Это место занято."};
     if (is_good(x, y)) return {false, "Нельзя покупать этот участок"};
     int8_t cur = earth.lot(x, y);
     if (!(cur >= LT_NORMAL && cur < LT_LAST))
@@ -818,6 +829,15 @@ Game Game::snapshot() const { return *this; }
 
 Base* Game::find_slowest_base() { return find_slowest(-1); }
 const Base* Game::find_slowest_base() const { return find_slowest(-1); }
+
+const Base* Game::find_taxed_base() const {
+    const Base* best = nullptr;
+    for (const Base& b : bases) {
+        if (is_good(b.x, b.y)) continue;  // за эту клетку налог уже не платится
+        if (best == nullptr || b.data->price > best->data->price) best = &b;
+    }
+    return best;
+}
 
 void Game::reset_milestones() {
     last_base_milestone_ = 0;
