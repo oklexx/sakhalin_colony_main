@@ -151,6 +151,9 @@ class AsyncTrainer:
         # долей считает отдельным счётчиком на весь роллаут (см. ниже) — иначе
         # «циклы» начали бы срабатывать на всём роллауте сразу.
         self._action_history: deque = deque(maxlen=1000)
+        # Всего записей, положенных в _action_history за прогон: абсолютная
+        # нумерация шагов для детектора циклов (deque помнит только хвост).
+        self._action_records_total: int = 0
 
         # ── мониторинг долей действий (вкладка «Мониторинг») ──
         # Счётчик на весь роллаут: исторически доли считались по последним 1000
@@ -440,6 +443,7 @@ class AsyncTrainer:
             action_name = (action_names[action_idx]
                            if action_idx < len(action_names) else f"ACTION_{action_idx}")
             self._action_history.append((env_idx, action_name))
+        self._action_records_total += int(len(step_actions))
 
     def _monitor_warn_once(self, message: str) -> None:
         """Предупреждение о недоступной метрике — ровно один раз за прогон.
@@ -579,13 +583,20 @@ class AsyncTrainer:
         `_action_history` — deque(maxlen=1000): срез deque бросает TypeError,
         из-за чего включённый `loop_detection_enabled` ронял обучение на первом
         же роллауте (ревью 2026-09-24, P3-3/P3-8). Окно фактически ≤ 1000
-        записей — семантика «цикл только что был» (STATE.md).
+        записей — семантика «цикл только что был» (STATE.md). Номера шагов в
+        записях — абсолютные, из `_action_records_total` (2026-09-29); сам
+        `total_done` оставлен в сигнатуре ради вызовов, но не используется.
         """
         if self.loop_detector is None or not self._action_history or window <= 0:
             return 0, None
         recent = list(self._action_history)[-window:]
+        # Абсолютный номер шага записи i (для логов/диагностики): deque хранит
+        # только хвост, поэтому отсчёт идём от счётчика записей, а не от
+        # total_done + i (тот вариант сдвигал нумерацию, как только история
+        # переваливала за 1000 записей или всплывали шаги прошлых роллаутов).
+        base = max(0, self._action_records_total - len(recent))
         action_data = [
-            {"env_idx": env_idx, "action": action_name, "step": total_done + i}
+            {"env_idx": env_idx, "action": action_name, "step": base + i}
             for i, (env_idx, action_name) in enumerate(recent)
         ]
         alerts = self.loop_detector.update_batch(action_data)
@@ -1186,8 +1197,16 @@ class AsyncTrainer:
 
                 es_patience = getattr(self.cfg, "early_stopping_patience", 0)
                 if es_patience > 0:
-                    if self.best_score is not None and (self._es_best_score is None
-                                                        or self.best_score > self._es_best_score):
+                    if self.best_score is None:
+                        # Patience — счётчик ОТСУТСТВИЯ УЛУЧШЕНИЙ score, а не
+                        # отсутствия score вообще. До первого чемпиона
+                        # (thresholds ещё ни разу не пройдены) базовой линии
+                        # нет, и тиканье счётчика здесь убивало именно те
+                        # медленно стартующие прогоны, которым нужно дать
+                        # БОЛЬШЕ шагов до thresholds (ревью 2026-09-29).
+                        self._log("[EarlyStop] базовой линии пока нет "
+                                  "(thresholds не пройдены) — patience не тикает")
+                    elif self._es_best_score is None or self.best_score > self._es_best_score:
                         self._es_best_score = self.best_score
                         self._es_patience = 0
                     else:
@@ -1218,6 +1237,17 @@ class AsyncTrainer:
         self.em.ppo.save(str(final_path))
         norm_path = str(final_path).replace(".pt", ".norm.json")
         self.em.vec_env.venv.save_normalization(norm_path)
+        # Meta — как у checkpoint_*/best_model: без неё watch/eval финалки после
+        # ранней остановки (или в CLI-прогоне, где run meta.json пишет только
+        # UI-воркер) восстанавливали сценарий по best_model.meta.json ЧУЖОГО
+        # чемпиона или вовсе по легаси-дефолту (все механики включены).
+        final_meta_path = Path(str(final_path).replace(".pt", ".meta.json"))
+        try:
+            with open(final_meta_path, "w", encoding="utf-8") as mf:
+                json.dump({"total_timesteps": total_done,
+                           **self._curriculum_meta()}, mf, indent=2)
+        except (OSError, ValueError) as ex:
+            self._log(f"[Meta] WARNING: final meta не записана: {ex}")
         self._log(f"[Save] Final model: {final_path}")
 
         # End-of-Training Tournament: evaluate all candidates and ensure best_model.pt is the true champion

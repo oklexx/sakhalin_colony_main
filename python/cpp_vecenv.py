@@ -248,6 +248,14 @@ class CppVecEnv(VecEnv):
                     info["terminal_observation_norm"] = np.asarray(
                         info["terminal_observation_norm"], dtype=np.float32
                     )
+                # Маска доступности ДЕЙСТВИЙ в s_T (C++ пишет с 2026-09-29) —
+                # контекст критика для V(s_T) на усечении. Старый бинарь ключа
+                # не даёт → EnvManager честно зовёт get_value(action_masks=None)
+                # вместо подстановки маски чужого состояния (s_t).
+                if "terminal_action_mask" in info:
+                    info["terminal_action_mask"] = np.asarray(
+                        info["terminal_action_mask"], dtype=np.float32
+                    )
                 info["TimeLimit.truncated"] = bool(trunceds[i] and not terminateds[i])
             infos.append(info)
 

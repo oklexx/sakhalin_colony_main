@@ -179,5 +179,5 @@ def test_env_manager_skips_bootstrap_without_terminal_obs():
     em.model = _M()
     infos = [{"terminal_observation_missing": True},
              {"terminal_observation": np.zeros(4, dtype=np.float32)}]
-    out = em._truncation_bootstrap_values(infos, np.array([True, True]), torch.ones(2, 5))
+    out = em._truncation_bootstrap_values(infos, np.array([True, True]))
     assert out.tolist() == [0.0, 5.0]

@@ -102,8 +102,16 @@ def test_train_bc_end_to_end_produces_loadable_checkpoint(tmp_path):
     assert ckpt["hidden_sizes"] == [256, 256]
 
     norm = json.loads((out_path.parent / "normalization.json").read_text())
+    # Nested ColonyVecEnvCpp::save_normalization schema (contract with the
+    # C++ vec-env loader — train.py --resume-model feeds it this file
+    # verbatim) + top-level obs_size for the single-env PR 5 check.
     assert norm["obs_size"] == OBS_SIZE
-    assert norm["count"] == summary["n_transitions"]
+    for key in ("obs_rms", "rew_rms", "norm_obs", "norm_reward",
+                "clip_obs", "clip_reward"):
+        assert key in norm, f"normalization.json missing vec-env key {key!r}"
+    assert norm["obs_rms"]["count"] == summary["n_transitions"]
+    assert len(norm["obs_rms"]["mean"]) == OBS_SIZE
+    assert len(norm["obs_rms"]["var"]) == OBS_SIZE
 
 
 def test_train_bc_loadable_by_evaluator(tmp_path):

@@ -551,7 +551,13 @@ def curriculum_from_meta(meta: MetaDict | None) -> MetaDict:
     enabled_mechanics = pick("enabled_mechanics", "mechanics")
     disabled_mechanics = pick("disabled_mechanics")
     mechanics_unlock_schedule = pick("mechanics_unlock_schedule")
-    mechanics_step = pick("curriculum_step", "total_timesteps", "steps_at_checkpoint")
+    # Порядок важен (ревью 2026-09-29): «steps» — ФАКТИЧЕСКИ пройденные шаги
+    # (воркер пишет его в run meta.json), а «total_timesteps» в вложенном
+    # config — это БЮДЖЕТ прогона. При ранней остановке с расписанием механик
+    # бюджет завышал точку реконструкции allow-list — eval/watch видели больше
+    # разблокированных механик, чем модель реально имела на момент сохранения.
+    mechanics_step = pick("curriculum_step", "steps_at_checkpoint", "steps",
+                          "total_timesteps")
     return {
         "curriculum_stage": int(stage) if stage is not None else None,
         "unlock_ids": None if manual is None else str(manual),

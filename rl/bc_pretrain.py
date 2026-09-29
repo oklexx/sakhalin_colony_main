@@ -17,11 +17,16 @@ obs_version / obs_size), so it can be:
   * warm-started into PPO via ``python train.py --resume-model <out>``.
 
 Also writes ``normalization.json`` (and ``<out>.norm.json``) next to the
-checkpoint — ``mean``/``var``/``count``/``obs_size``/``clip``, the schema
-``python/cpp_env.py::Normalizer`` and ``rl/async_trainer.py``'s
-``save_normalization`` use — because ``train.py --resume-model`` looks for
-exactly one of those two paths and otherwise warns and fine-tunes on
-*unnormalized* observations, silently ruining the run.
+checkpoint — во вложенной схеме ``ColonyVecEnvCpp::save_normalization``
+(``obs_rms`` / ``rew_rms`` / ``norm_obs`` / ``norm_reward`` / ``clip_obs`` /
+``clip_reward`` / ``obs_size``), а не в плоской ``mean``/``var``/... форме
+одиночной среды ``python/cpp_env.py::Normalizer.save``. Выбор неслучаен:
+``train.py --resume-model`` скармливает этот файл напрямую в
+``ColonyVecEnvCpp::load_normalization``, который до 2026-09-29 понимал
+только вложенную схему (плоский файл там означал гарантированный crash/UB),
+а eval-путь (``Normalizer.load``) принимает обе — один файл обслуживает и
+resume, и eval. Без файла ``train.py --resume-model`` ругается и дообучает
+на НЕнормализованных наблюдениях, молча портя прогон.
 
 See docs/IMITATION_LEARNING_2026_09.md for the full design write-up,
 including which GUI actions are (and are not) recordable in v1, and why the
@@ -132,6 +137,39 @@ def _masked_logits(model: ActorCritic, obs: torch.Tensor, mask: torch.Tensor) ->
     """
     logits, _ = model(obs, mask)
     return logits.float().masked_fill(mask == 0, -1e9)
+
+
+def vec_normalization_payload(norm: dict, rew_clip: float = 10.0) -> dict:
+    """Завернуть плоские статистики демо в схему ColonyVecEnvCpp::save_normalization.
+
+    Файл обязан загружаться ОБОИМИ читателями нормализации:
+      * ``ColonyVecEnvCpp::load_normalization`` (``train.py --resume-model``,
+        resume воркера) — каноническая вложенная схема; rew-статистики при
+        отсутствии сохраняются, clip читается из ``clip_obs`` (плоский
+        ``clip`` принимается как легаси);
+      * ``python/cpp_env.py::Normalizer.load`` (eval/watch) — читает
+        ``d["obs_rms"]``, когда ключ есть, и валидирует ``obs_size`` (PR 5),
+        поэтому пишем ``clip_obs`` И держим верхнеуровневый ``obs_size``.
+
+    RMS наград стартует нейтральным (mean 0, var 1, count 1): распределение
+    наград демо ничего не говорит о масштабе наград будущего PPO-прогона, а
+    нейтраль — это ровно начальное состояние свежего обучения.
+    """
+    return {
+        "obs_rms": {
+            "mean": list(norm["mean"]),
+            "var": list(norm["var"]),
+            "count": float(norm["count"]),
+        },
+        "rew_rms": {"mean": [0.0], "var": [1.0], "count": 1.0},
+        "norm_obs": True,
+        "norm_reward": True,
+        "clip_obs": float(norm["clip"]),
+        "clip_reward": float(rew_clip),
+        # top-level extra (ignored by the C++ loader): lets the single-env
+        # PR 5 obs-size check and external tooling see the layout width.
+        "obs_size": int(norm["obs_size"]),
+    }
 
 
 def evaluate(
@@ -266,10 +304,11 @@ def train_bc(args: argparse.Namespace) -> dict:
 
     norm_path = out_path.with_suffix(".norm.json")
     also_norm_path = out_path.parent / "normalization.json"
+    norm_payload = vec_normalization_payload(norm)
     with open(norm_path, "w") as f:
-        json.dump(norm, f)
+        json.dump(norm_payload, f)
     with open(also_norm_path, "w") as f:
-        json.dump(norm, f)
+        json.dump(norm_payload, f)
 
     print(f"[BC] saved checkpoint: {out_path}")
     print(f"[BC] saved normalization: {norm_path} and {also_norm_path}")

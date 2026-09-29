@@ -203,6 +203,19 @@ StepBatchResult ColonyVecEnvCpp::step_wait_batch() {
             }
             info["terminal_observation"] = terminal_obs;
             info["terminal_observation_norm"] = terminal_obs_norm;
+            // Контекст доступности действий в s_T — нужен критику для V(s_T)
+            // на усечении: модель обучается на парах (obs, action_mask) ОДНОГО
+            // состояния, и подстановка маски предыдущего шага (s_{T-1}) — это
+            // чужой вход в actor/critic_mask_proj (ревью 2026-09-29). Маска
+            // считается ДО авто-reset; цена — один action_mask() на done-среду
+            // (тот же проход уже делается каждый шаг в action_masks_batch).
+            {
+                std::vector<float> term_mask =
+                    const_cast<ColonyEnvCpp&>(envs_[(size_t)i]).action_mask();
+                if ((int)term_mask.size() == n_actions_) {
+                    info["terminal_action_mask"] = term_mask;
+                }
+            }
             double ep_r = std::isfinite(episode_return_[i]) ? episode_return_[i] : 0.0;
             const auto metrics = envs_[(size_t)i].metrics();
             const auto& final_game = envs_[(size_t)i].game();
@@ -342,19 +355,69 @@ void ColonyVecEnvCpp::save_normalization(const std::string& path) {
     j["norm_reward"] = norm_reward_;
     j["clip_obs"] = clip_obs_;
     j["clip_reward"] = clip_reward_;
+    // Ширина obs нужна валидации при загрузке (и проверке PR 5 в
+    // python/cpp_env.py::Normalizer.load — раньше nested-файл её не нёс,
+    // и eval v2 с нормализацией от v1 молча гонял сдвинутые статистики).
+    j["obs_size"] = obs_size_;
     std::ofstream f(path);
     f << j.dump(2);
 }
 
 void ColonyVecEnvCpp::load_normalization(const std::string& path) {
     std::ifstream f(path);
+    if (!f)
+        throw std::runtime_error(
+            "ColonyVecEnvCpp::load_normalization: cannot open " + path);
     nlohmann::json j;
-    f >> j;
-    obs_rms_.from_json(j["obs_rms"]);
-    rew_rms_.from_json(j["rew_rms"]);
+    f >> j;  // parse error → nlohmann::json::parse_error (внятное сообщение)
+
+    // Две схемы (ревью 2026-09-29):
+    //   A — каноническая vec-env: {"obs_rms": {...}, "rew_rms": {...}, ...};
+    //   B — плоская legacy: {"mean","var","count","obs_size","clip"}
+    //     (python/cpp_env.py::Normalizer.save и файлы rl/bc_pretrain.py до
+    //     2026-09-29). Раньше здесь стояло j["obs_rms"] → null → UB в
+    //     from_json (JSON_ASSERT выключен в release), поэтому BC→PPO resume
+    //     падал или получал мусор в статистиках.
+    nlohmann::json obs_rms_j;
+    if (j.contains("obs_rms")) {
+        obs_rms_j = j["obs_rms"];
+    } else if (j.contains("mean") && j.contains("var")) {
+        obs_rms_j = j;  // плоская схема: весь объект и есть RMS наблюдений
+    } else {
+        throw std::runtime_error(
+            "ColonyVecEnvCpp::load_normalization: unrecognized schema in " + path +
+            " (expected \"obs_rms\" or flat \"mean\"/\"var\" keys)");
+    }
+
+    // Валидация ДО подмены статистик: битый файл не должен оставлять
+    // половинчатое состояние, а mean/var чужой ширины не должны дойти до
+    // normalize() — там RunningMeanStd читает mean_[j] по полю ширины ОБЪЕКТА,
+    // и широкий файл на узком env шёл бы за границы строки наблюдения.
+    RunningMeanStd new_obs_rms;
+    new_obs_rms.from_json(obs_rms_j);  // бросает json-ошибку с описанием
+    if (new_obs_rms.size() != obs_size_)
+        throw std::runtime_error(
+            "ColonyVecEnvCpp::load_normalization: obs width mismatch in " + path +
+            ": file has " + std::to_string(new_obs_rms.size()) +
+            " features, env has " + std::to_string(obs_size_) +
+            " (v0=248, v1=289, v2=299 — check --obs-version)");
+
+    RunningMeanStd new_rew_rms = rew_rms_;  // rew-статистики опциональны
+    if (j.contains("rew_rms")) {
+        RunningMeanStd parsed_rew;
+        parsed_rew.from_json(j["rew_rms"]);
+        if (parsed_rew.size() != 1)
+            throw std::runtime_error(
+                "ColonyVecEnvCpp::load_normalization: rew_rms in " + path +
+                " must have width 1, got " + std::to_string(parsed_rew.size()));
+        new_rew_rms = parsed_rew;
+    }
+
+    obs_rms_ = new_obs_rms;
+    rew_rms_ = new_rew_rms;
     norm_obs_ = j.value("norm_obs", true);
     norm_reward_ = j.value("norm_reward", true);
-    clip_obs_ = j.value("clip_obs", 10.0);
+    clip_obs_ = j.value("clip_obs", j.value("clip", 10.0));
     clip_reward_ = j.value("clip_reward", 10.0);
 }
 
