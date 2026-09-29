@@ -90,9 +90,10 @@ def test_curriculum_from_meta_missing_is_none():
     assert cur == {"curriculum_stage": None, "unlock_ids": None,
                      "use_curriculum_tab": None, "resources": None,
                      "obs_version": None, "enabled_mechanics": None,
-                     "disabled_mechanics": None,
-                     "mechanics_unlock_schedule": None,
-                     "mechanics_step": None}
+                    "disabled_mechanics": None,
+                    "mechanics_unlock_schedule": None,
+                    "mechanics_step": None,
+                    "water_bootstrap": None}
 
 
 def test_read_curriculum_meta_merges_both_files(tmp_path):

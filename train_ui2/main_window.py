@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QTextCursor
@@ -56,9 +56,9 @@ from rl.config import RewardConfig as _RC
 from train_ui2 import protocol as P
 from train_ui2 import theme as T
 from train_ui2.charts import Bars, Chart, action_ru
-from train_ui2.demo import aggregate_demo_stats, copy_demo_files, scan_demo_dir
 from train_ui2.controls import ParamGroup, StatCard
 from train_ui2.curriculum_table import ScheduleParse, parse_schedule_rows
+from train_ui2.demo import DemoStats, aggregate_demo_stats, copy_demo_files, scan_demo_dir
 from train_ui2.models import ModelRegistry, pick_model_file
 from train_ui2.monitor import fmt_pct, split_by_panel, watch_report
 from train_ui2.soft_stop import STOP_GRACE_S, SoftStop
@@ -133,8 +133,8 @@ class MainWindow2(QMainWindow):
         self._bc_timer.timeout.connect(self._poll_bc_process)
         self._bc_log_path: Path | None = None
         self._bc_log_offset = 0
-        self._bc_log_handle = None
-        self._demo_stats = []
+        self._bc_log_handle: TextIO | None = None
+        self._demo_stats: list[DemoStats] = []
         # watch state
         self._watch_proc: subprocess.Popen | None = None
         self._watch_log: str | None = None
