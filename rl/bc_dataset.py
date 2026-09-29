@@ -183,10 +183,13 @@ def validate_consistent_dims(steps: list[DemoStep]) -> tuple[int, int]:
 def compute_normalization(steps: list[DemoStep], clip: float = 10.0) -> dict:
     """Mean/var/count over demo observations.
 
-    Uses the same schema as ``python/cpp_env.py::Normalizer.to_dict()`` /
-    ``ColonyVecEnvCpp::save_normalization`` (mean, var, count, obs_size,
-    clip) so the result can be written straight to a ``normalization.json``
-    and picked up automatically by ``train.py --resume-model``.
+    Flat stats (``mean``, ``var``, ``count``, ``obs_size``, ``clip``) — the
+    shape of ``python/cpp_env.py::Normalizer.to_dict()``. Do NOT write this
+    dict straight to disk for ``train.py --resume-model``: the vec-env
+    loader (``ColonyVecEnvCpp::load_normalization``) wants the nested
+    ``obs_rms``/``rew_rms`` schema — wrap with
+    ``rl.bc_pretrain.vec_normalization_payload`` first (pre-2026-09-29 this
+    file was written flat and PPO resume crashed/mis-normalized on it).
 
     Note: this is a plain batch mean/var over all recorded frames, not an
     online Welford update seeded with the engine's count=1 pseudo-count (see

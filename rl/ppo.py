@@ -324,7 +324,14 @@ class PPO:
         value_loss = nn.functional.smooth_l1_loss(values, returns, beta=10.0)
 
         with torch.no_grad():
-            approx_kl = (old_log_probs - new_log_probs).mean().abs()
+            # KL(pi_old || pi_new) по неотрицательному k1/k3-эстиматору
+            # (Schulman): E[(r - 1) - log r], r = pi_new/pi_old >= 0. Прежний
+            # вариант |mean(old_lp - new_lp)| — это |E[-log r]|: положительные
+            # и отрицательные log-ratio гасили друг друга, оценка держалась
+            # около нуля при реально растущем KL, и ранняя остановка по
+            # target_kl фактически никогда не срабатывала.
+            log_ratio = new_log_probs - old_log_probs
+            approx_kl = ((torch.exp(log_ratio) - 1.0) - log_ratio).mean().clamp_min(0.0)
 
         return policy_loss, value_loss, entropy, approx_kl
 

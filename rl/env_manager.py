@@ -343,9 +343,7 @@ class EnvManager:
         dones_np = np.asarray(dones, dtype=bool)
         dones_t = torch.as_tensor(dones_np, device=self.device)
         truncated_np = dones_np & ~terminated_np
-        trunc_value_t = self._truncation_bootstrap_values(
-            infos, truncated_np, action_masks_t
-        )
+        trunc_value_t = self._truncation_bootstrap_values(infos, truncated_np)
 
         if self.cfg.obs_mode == "hybrid":
             next_flat, next_minimap = next_obs_t
@@ -423,65 +421,80 @@ class EnvManager:
         self,
         infos: list[dict[str, Any]],
         truncated_np: np.ndarray,
-        action_masks_t: torch.Tensor,
     ) -> torch.Tensor:
-        """V(s_T) for truncated envs; zeros elsewhere."""
+        """V(s_T) for truncated envs; zeros elsewhere.
+
+        Маска доступности обязана принадлежать ТОМУ ЖЕ состоянию, что и вход
+        критика: маска шага s_t — это маска ПРЕДЫДУЩЕГО наблюдения, и её
+        подстановка в V(s_T) давала critic_mask_proj чужой контекст
+        (ревью 2026-09-29 — до фикса сюда передавалась маска s_t). Источник
+        правильной маски — ``info["terminal_action_mask"]`` (C++ пишет её с
+        2026-09-29); на старом бинаре критик вызывается с
+        ``action_masks=None`` (нулевой вклад mask-проекций, маски
+        инициализированы нулями), а не с маской чужого состояния.
+        """
         n = self.n_envs
         out = torch.zeros(n, dtype=torch.float32, device=self.device)
         if not np.any(truncated_np):
             return out
         idx = np.flatnonzero(truncated_np)
         model = self.model
-        with torch.no_grad():
-            if self.cfg.obs_mode == "hybrid":
-                flats = []
-                mms = []
-                ok_idx = []
-                for i in idx:
-                    info = infos[int(i)]
-                    flat = info.get("terminal_observation_norm", info.get("terminal_observation"))
-                    mm = info.get("terminal_minimap")
-                    if flat is None or mm is None:
-                        continue
-                    flats.append(np.asarray(flat, dtype=np.float32))
-                    mms.append(np.asarray(mm, dtype=np.float32))
-                    ok_idx.append(int(i))
-                if not ok_idx:
-                    return out
-                flat_t = torch.as_tensor(np.stack(flats), device=self.device, dtype=torch.float32)
-                mm_t = torch.as_tensor(np.stack(mms), device=self.device, dtype=torch.float32)
-                vals = model.get_value(flat_t, mm_t, action_masks=action_masks_t[ok_idx])
-                out[ok_idx] = vals.float().reshape(-1)
-                return out
-            if self.cfg.obs_mode == "minimap":
-                mms = []
-                ok_idx = []
-                for i in idx:
-                    mm = infos[int(i)].get("terminal_minimap")
-                    if mm is None:
-                        continue
-                    mms.append(np.asarray(mm, dtype=np.float32))
-                    ok_idx.append(int(i))
-                if not ok_idx:
-                    return out
-                mm_t = torch.as_tensor(np.stack(mms), device=self.device, dtype=torch.float32)
-                vals = model.get_value(mm_t, action_masks=action_masks_t[ok_idx])
-                out[ok_idx] = vals.float().reshape(-1)
-                return out
-            flats = []
-            ok_idx = []
-            for i in idx:
-                info = infos[int(i)]
+
+        hybrid = self.cfg.obs_mode == "hybrid"
+        minimap_mode = self.cfg.obs_mode == "minimap"
+        flats: list[np.ndarray] = []
+        minis: list[np.ndarray] = []
+        masks: list[np.ndarray | None] = []
+        ok_idx: list[int] = []
+        for i in idx:
+            info = infos[int(i)]
+            if hybrid:
+                flat = info.get("terminal_observation_norm", info.get("terminal_observation"))
+                mm = info.get("terminal_minimap")
+                if flat is None or mm is None:
+                    continue
+                flats.append(np.asarray(flat, dtype=np.float32))
+                minis.append(np.asarray(mm, dtype=np.float32))
+            elif minimap_mode:
+                mm = info.get("terminal_minimap")
+                if mm is None:
+                    continue
+                minis.append(np.asarray(mm, dtype=np.float32))
+            else:
                 flat = info.get("terminal_observation_norm", info.get("terminal_observation"))
                 if flat is None:
                     continue
                 flats.append(np.asarray(flat, dtype=np.float32))
-                ok_idx.append(int(i))
-            if not ok_idx:
-                return out
-            flat_t = torch.as_tensor(np.stack(flats), device=self.device, dtype=torch.float32)
-            vals = model.get_value(flat_t, action_masks=action_masks_t[ok_idx])
-            out[ok_idx] = vals.float().reshape(-1)
+            term_mask = info.get("terminal_action_mask")
+            masks.append(None if term_mask is None
+                         else np.asarray(term_mask, dtype=np.float32))
+            ok_idx.append(int(i))
+        if not ok_idx:
+            return out
+
+        def _to_device(arrays: list[np.ndarray], rows: list[int]) -> torch.Tensor:
+            return torch.as_tensor(np.stack([arrays[k] for k in rows]),
+                                   device=self.device, dtype=torch.float32)
+
+        with torch.no_grad():
+            for rows, need_masks in (([k for k in range(len(ok_idx)) if masks[k] is not None], True),
+                                     ([k for k in range(len(ok_idx)) if masks[k] is None], False)):
+                if not rows:
+                    continue
+                env_rows = np.asarray([ok_idx[k] for k in rows], dtype=np.int64)
+                mask_t = (_to_device(masks, rows)  # type: ignore[arg-type]
+                          if need_masks else None)
+                if hybrid:
+                    vals = model.get_value(_to_device(flats, rows),
+                                           _to_device(minis, rows),
+                                           action_masks=mask_t)
+                elif minimap_mode:
+                    vals = model.get_value(_to_device(minis, rows),
+                                           action_masks=mask_t)
+                else:
+                    vals = model.get_value(_to_device(flats, rows),
+                                           action_masks=mask_t)
+                out[env_rows] = vals.float().reshape(-1)
         return out
 
     # ── curriculum ──

@@ -316,13 +316,19 @@ def main():
         def _collect_with_log(obs):
             new_obs, infos = _orig_collect(obs)
             _step_counter[0] += 1
-            # Get last actions from env
+            # Действия только что сделанного шага — из rollout-буфера (последняя
+            # записанная строка): атрибута em.vec_env._last_actions у CppVecEnv
+            # нет и не было, поэтому до 2026-09-29 в лог уходил вечный -1.
             try:
-                last_actions = em.vec_env._last_actions
-            except AttributeError:
-                last_actions = None
+                pos = em.buffer.pos - 1
+                step_actions = (em.buffer.actions[pos * em.n_envs:(pos + 1) * em.n_envs]
+                                .cpu().numpy())
+            except Exception:
+                # Лог наблюдательный: если буфер не читается (pos=0, другое
+                # устройство), пишем -1, а не роняем обучение (RULES.md).
+                step_actions = None
             for i in range(em.n_envs):
-                a = int(last_actions[i]) if last_actions is not None else -1
+                a = int(step_actions[i]) if step_actions is not None else -1
                 info_str = infos[i] if i < len(infos) and infos[i] else "{}"
                 action_logger.write(
                     f"step={_step_counter[0]} env={i} action={a} {info_str}\n"

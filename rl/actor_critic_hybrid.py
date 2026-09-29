@@ -11,8 +11,12 @@ from rl._nn_common import ActorCriticBase, orthogonal_init
 class ActorCriticHybrid(ActorCriticBase):
     """Hybrid actor-critic: flat vector + minimap CNN branches concatenated.
 
-    Observation is a dict with keys 'flat' [B, F] and 'minimap' [B, C, R, R].
-    If observation is a single tensor, it is treated as flat-only.
+    Observation is a dict with keys 'flat' [B, F] and 'minimap' [B, C, R, R]
+    (или кортеж (flat, minimap)). Обе ветки ОБЯЗАТЕЛЬНЫ: joint-ствол имеет
+    ширину flat_out + cnn_out, поэтому flat-only тензор не имеет валидного
+    пути через сеть — forward() бросает внятный ValueError вместо гибели
+    внутри matmul. Для одновходовых режимов наблюдения — ActorCritic (flat)
+    или ActorCriticCNN (minimap).
 
     Branch balance (2026-09-22, docs/WATER_HYBRID_AB_2026_09.md): the CNN
     flatten used to contribute 64*G*G = 65 536 features against the flat
@@ -194,7 +198,14 @@ class ActorCriticHybrid(ActorCriticBase):
             h_cnn = self.cnn_head(self.cnn_pool(self.cnn(mini)).flatten(1))
             h = torch.cat([h_flat, h_cnn], dim=1)
         elif flat_in is not None:
-            h = self.flat_trunk(flat_in)
+            # The joint trunk expects flat_out + cnn_out: a flat-only call
+            # silently reached the first joint Linear and died there with a
+            # mat1/mat2 shape error (ревью 2026-09-29). Say so instead.
+            raise ValueError(
+                "hybrid policy needs BOTH branches: flat-only input cannot "
+                "feed the joint trunk (sized flat_out + cnn_out). Pass the "
+                "(flat, minimap) pair — use ActorCritic for a flat-only "
+                "obs_mode)")
         elif mini is not None:
             # The joint trunk is sized flat_out + cnn_out: a minimap-only call
             # cannot match it. Say so instead of failing inside a matmul.

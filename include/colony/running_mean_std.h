@@ -2,7 +2,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <json.hpp>
@@ -115,9 +117,27 @@ public:
     }
 
     void from_json(const nlohmann::json& j) {
-        mean_ = j["mean"].get<std::vector<double>>();
-        var_ = j["var"].get<std::vector<double>>();
-        count_ = j["count"].get<double>();
+        // Валидация до записи: раньше j["mean"] на null/не-объекте это
+        // JSON_ASSERT (в release — UB), а mean/var разной длины или пустые
+        // массивы доезжали до normalize() и давали обращения вне границ.
+        if (!j.is_object() || !j.contains("mean") || !j.contains("var")) {
+            throw std::runtime_error(
+                "RunningMeanStd::from_json: expected an object with \"mean\" and \"var\"");
+        }
+        std::vector<double> mean = j["mean"].get<std::vector<double>>();
+        std::vector<double> var = j["var"].get<std::vector<double>>();
+        if (mean.empty() || mean.size() != var.size()) {
+            throw std::runtime_error(
+                "RunningMeanStd::from_json: empty mean/var or size mismatch");
+        }
+        double count = j.value("count", 1.0);
+        if (!std::isfinite(count) || count <= 0.0) {
+            throw std::runtime_error(
+                "RunningMeanStd::from_json: count must be a positive finite number");
+        }
+        mean_ = std::move(mean);
+        var_ = std::move(var);
+        count_ = count;
     }
 
 private:

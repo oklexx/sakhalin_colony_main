@@ -204,9 +204,14 @@ def test_loop_detector_update_does_not_slice_deque() -> None:
     trainer = AsyncTrainer.__new__(AsyncTrainer)
     trainer.loop_detector = LoopDetector({"consecutive_threshold": 3})
     trainer._action_history = deque(maxlen=1000)
+    # счётчик записей истории — с 2026-09-29 абсолютная нумерация шагов
+    # детектора идёт от него (в бою ведётся в _track_step_actions)
+    trainer._action_records_total = 0
     for _ in range(5):
         trainer._action_history.append((0, "day"))
+        trainer._action_records_total += 1
     trainer._action_history.append((1, "week"))
+    trainer._action_records_total += 1
 
     n_loops, name = trainer._update_loop_detector(window=64, total_done=0)
     assert n_loops == 1 and name == "day"
