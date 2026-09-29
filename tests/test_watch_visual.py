@@ -547,6 +547,13 @@ def test_resolve_model_file_prefers_requested(wc, tmp_path):
     assert wc.resolve_model_file(d, "final_model.pt") == d / "final_model.pt"
 
 
+def test_resolve_model_file_accepts_bc_model(wc, tmp_path):
+    d = tmp_path / "bc"
+    d.mkdir()
+    (d / "model.pt").write_bytes(b"bc")
+    assert wc.resolve_model_file(d, "best_model.pt") == d / "model.pt"
+
+
 def test_resolve_model_file_falls_back_to_best_before_checkpoints(wc, tmp_path):
     """Прерванный прогон: final нет, но есть чемпион турнира и чекпойнты.
 

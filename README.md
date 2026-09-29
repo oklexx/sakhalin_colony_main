@@ -17,7 +17,7 @@
 | [pyproject.toml](pyproject.toml) | Конфигурация ruff/mypy (стандарты для кода) |
 | [tests/](tests/) | 45 тест-файлов + 24 C++-пробы: `python -m pytest` (нужны torch + собранный `colony_cpp.pyd`) |
 | [docs/GUI_WATCH_2026_09.md](docs/GUI_WATCH_2026_09.md) | Наблюдение за чемпионом в GUI-окне: IPC-протокол, таймауты, диагностика «окно не запустилось» |
-| [docs/TRAIN_AGENT_VIA_GAME_RU.md](docs/TRAIN_AGENT_VIA_GAME_RU.md) | Пошаговая инструкция: запись человеческой игры → BC → PPO и рекомендуемый water-first прогон |
+| [docs/TRAIN_AGENT_VIA_GAME_RU.md](docs/TRAIN_AGENT_VIA_GAME_RU.md) | Пошаговая инструкция и вкладка UI «Игра → BC»: запись человеческой игры → BC → PPO и рекомендуемый water-first прогон |
 
 > **Отчёты по проекту:** `REPORT.md`, `REPORT_2026_09.md`, `TRAINING_REPORT.md`,
 > `REVIEW_REPORT.md` в репозитории отсутствуют (исторические имена из старых
@@ -389,8 +389,10 @@ normalization.json             # пишется при старте и кажд�
 
 ## 9. UI-дашборд (train_ui2/)
 
-`python run_train_ui2.py` → главное окно, 6 вкладок: **Обучение / Мониторинг /
-Награды / Курикулум / Модели / Наблюдение**. Обучение идёт в отдельном процессе
+`python run_train_ui2.py` → главное окно, 7 вкладок: **Обучение / Игра → BC /
+Мониторинг / Награды / Курикулум / Модели / Наблюдение**. На вкладке «Игра → BC»
+можно запустить запись человеческой партии, подключить готовые JSONL, проверить
+их размеры и выполнить BC → PPO без ручного запуска команд. Обучение идёт в отдельном процессе
 `train_ui2/worker.py`, протокол — JSONL (protocol.py: progress/log/saved/done/error;
 команды boost_entropy / pause_training / resume_training / stop_training /
 reset_curriculum — единый словарь `protocol.CMD_*`, незнакомая команда пишет

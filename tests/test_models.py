@@ -172,6 +172,15 @@ def test_pick_model_file_prefers_final_then_best_then_checkpoint(tmp_path):
     assert pick_model_file(tmp_path) is None
 
 
+def test_pick_model_file_accepts_bc_model(tmp_path):
+    from train_ui2.models import pick_model_file
+
+    d = tmp_path / "bc_run"
+    d.mkdir()
+    (d / "model.pt").write_bytes(b"bc")
+    assert pick_model_file(d) == d / "model.pt"
+
+
 def test_latest_checkpoint_orders_by_steps_not_by_name(tmp_path):
     """«Последний» чекпойнт — по ЧИСЛУ шагов, не по лексикографии имени."""
     from train_ui2.models import latest_checkpoint

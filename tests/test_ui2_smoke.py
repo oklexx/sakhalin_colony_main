@@ -1,6 +1,6 @@
 """Offscreen smoke-тест Training UI 2.0 (настоящие коды MainWindow2).
 
-Проверяет: построение всех 6 вкладок, обработку сообщений воркера
+Проверяет: построение всех 7 вкладок, обработку сообщений воркера
 (`_handle_msg`, включая regex eval-строки), парсинг лога наблюдения
 (`_poll_watch`), сброс наград к каноническому профилю, roundtrip
 collect/restore конфига и изоляцию state-файла от старого UI.
@@ -102,9 +102,12 @@ def test_ui2_smoke(tmp_path, monkeypatch):
           and all(chk.isChecked() for chk in win._mechanic_checks.values()))
 
     # ── tabs ──
-    check("6 tabs", win.tabs.count() == 6, f"got {win.tabs.count()}")
+    check("7 tabs", win.tabs.count() == 7, f"got {win.tabs.count()}")
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    check("tab titles", titles == ["Обучение", "Мониторинг", "Награды", "Курикулум", "Модели", "Наблюдение"], str(titles))
+    check("tab titles", titles == ["Обучение", "Игра → BC", "Мониторинг", "Награды", "Курикулум", "Модели", "Наблюдение"], str(titles))
+    check("demo/BC controls exist",
+          hasattr(win, "edit_demo_dir") and hasattr(win, "btn_record_demo")
+          and hasattr(win, "btn_bc") and hasattr(win, "btn_bc_ppo"))
 
     # ── param groups present with all keys ──
     p_keys = set()
