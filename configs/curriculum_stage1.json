@@ -1,0 +1,20 @@
+{
+  "_comment": "Единый сценарий первого этапа: сначала Road/WaterChannel, затем минимальная еда.",
+  "all_builds": false,
+  "allowed_builds": [
+    "Road",
+    "WaterChannel",
+    "Garden",
+    "Farm",
+    "Mushroom",
+    "Fish",
+    "SmallHouse",
+    "House"
+  ],
+  "all_resources": false,
+  "resource_weights": [0, 1, 0, 0, 0, 0, 1, 1, 0],
+  "stage": 0,
+  "obs_version": 2,
+  "enabled_mechanics": ["sell", "credit"],
+  "water_bootstrap": true
+}

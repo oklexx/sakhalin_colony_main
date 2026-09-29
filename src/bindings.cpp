@@ -91,6 +91,7 @@ Curriculum curriculum_from_dict(const py::dict& d) {
         for (const auto& v : d["allowed_builds"]) c.allowed_builds.insert(v.cast<std::string>());
     }
     if (d.contains("stage")) c.stage_report = d["stage"].cast<int>();
+    if (d.contains("water_bootstrap")) c.water_bootstrap = d["water_bootstrap"].cast<bool>();
     // PR 4: ресурсные веса (ровно SUNDUK_SIZE чисел, иначе fail-fast).
     if (d.contains("all_resources")) c.all_resources = d["all_resources"].cast<bool>();
     if (d.contains("resource_weights")) {
@@ -124,6 +125,7 @@ py::dict curriculum_to_dict(const Curriculum& c) {
     std::sort(ids.begin(), ids.end());
     d["allowed_builds"] = ids;
     d["stage"] = c.stage_report;
+    d["water_bootstrap"] = c.water_bootstrap;
     d["all_resources"] = c.all_resources;
     std::vector<double> w(c.resource_weights.begin(), c.resource_weights.end());
     d["resource_weights"] = w;

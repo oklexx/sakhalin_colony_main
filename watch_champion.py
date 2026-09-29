@@ -207,7 +207,7 @@ def resolve_model_file(model_dir: Path, requested: str = "best_model.pt") -> Pat
     wanted = model_dir / requested
     if wanted.exists():
         return wanted
-    for name in ("final_model.pt", "best_model.pt"):
+    for name in ("final_model.pt", "best_model.pt", "model.pt"):
         cand = model_dir / name
         if cand.exists():
             return cand

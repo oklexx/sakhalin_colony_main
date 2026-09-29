@@ -199,6 +199,10 @@ class Config:
     # False = unlock_ids игнорируется, действует только curriculum_stage.
     use_curriculum_tab: bool = False
     curriculum_resources: str = ""  # csv, e.g. "water,wood,coal"; "" = all
+    # Phase-gated first step: Road/WaterChannel are the only build goals until
+    # the first channel is operational. Disabled by default for legacy/full
+    # runs; the stage1 preset turns it on.
+    water_bootstrap: bool = False
     # P0 (2026-09-17): 0 = 248-dim, 1 = 289-dim (frame), 2 = 299-dim (+dx,dy
     # к ближайшим wood/coal/iron/oil/gold). 2 — дефолт: без направлений 12
     # из 32 построек недостижимы политикой (карты в flat-obs нет).
@@ -458,6 +462,7 @@ class Config:
             self.curriculum_resources,
             self.obs_version,
             enabled,
+            self.water_bootstrap,
         )
 
     def enabled_mechanics_at(self, step: int = 0) -> tuple[str, ...]:
@@ -474,6 +479,7 @@ class Config:
             "unlock_ids": self.effective_unlock_ids(),
             "use_curriculum_tab": bool(self.use_curriculum_tab),
             "curriculum_resources": str(self.curriculum_resources or ""),
+            "water_bootstrap": bool(self.water_bootstrap),
             "obs_version": int(self.obs_version),
             "tax_to_debt": bool(self.tax_to_debt),
             "disabled_mechanics": list(self.disabled_mechanics),

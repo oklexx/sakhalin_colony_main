@@ -27,7 +27,8 @@ class ModelInfo:
 
     @property
     def model_file(self) -> Path:
-        return self.path / "final_model.pt"
+        """Best available weights, including the human-BC ``model.pt``."""
+        return pick_model_file(self.path) or (self.path / "final_model.pt")
 
 
 #: Файлы, по которым каталог считается обученной моделью. `final_model.pt`
@@ -36,7 +37,10 @@ class ModelInfo:
 #: каталог исчезал из списка моделей, и «👁 Наблюдать» отвечал «Нет моделей»,
 #: хотя смотреть там есть что (watch_champion.py сам выбирает best → final →
 #: последний checkpoint).
-MODEL_WEIGHT_NAMES = ("final_model.pt", "best_model.pt")
+# `model.pt` is the checkpoint produced by human-game BC. Keep it after the
+# PPO files so a normal PPO run still wins model selection, while BC runs are
+# visible in the same UI registry and can be handed to PPO/watch.
+MODEL_WEIGHT_NAMES = ("final_model.pt", "best_model.pt", "model.pt")
 
 _CHECKPOINT_STEPS_RE = re.compile(r"checkpoint_(\d+)_")
 

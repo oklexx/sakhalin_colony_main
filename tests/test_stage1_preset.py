@@ -109,6 +109,7 @@ def test_apply_stage1_preset_on_config():
     assert state.all_builds is False
     assert set(state.allowed_builds) == set(parse_unlock_ids(STAGE1_PRESET["unlock_ids"]))
     assert state.enabled_mechanics == ("sell", "credit")
+    assert state.water_bootstrap is True
     assert state.all_resources is False
     # веса: вода/еда/дерево = 1, остальное 0
     w = dict(zip(RESOURCE_NAMES, state.resource_weights, strict=True))

@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QTextCursor
@@ -58,6 +58,7 @@ from train_ui2 import theme as T
 from train_ui2.charts import Bars, Chart, action_ru
 from train_ui2.controls import ParamGroup, StatCard
 from train_ui2.curriculum_table import ScheduleParse, parse_schedule_rows
+from train_ui2.demo import DemoStats, aggregate_demo_stats, copy_demo_files, scan_demo_dir
 from train_ui2.models import ModelRegistry, pick_model_file
 from train_ui2.monitor import fmt_pct, split_by_panel, watch_report
 from train_ui2.soft_stop import STOP_GRACE_S, SoftStop
@@ -121,6 +122,19 @@ class MainWindow2(QMainWindow):
         self._cur_table_warnings: list[str] = []
         self._msg_timer = QTimer(self)
         self._msg_timer.timeout.connect(self._poll_worker)
+        # Human-game recording and BC are deliberately separate processes:
+        # recording opens the native GUI, while BC can run for minutes without
+        # freezing this window. Both are polled through files/timers.
+        self._demo_proc: subprocess.Popen | None = None
+        self._demo_timer = QTimer(self)
+        self._demo_timer.timeout.connect(self._poll_demo_process)
+        self._bc_proc: subprocess.Popen | None = None
+        self._bc_timer = QTimer(self)
+        self._bc_timer.timeout.connect(self._poll_bc_process)
+        self._bc_log_path: Path | None = None
+        self._bc_log_offset = 0
+        self._bc_log_handle: TextIO | None = None
+        self._demo_stats: list[DemoStats] = []
         # watch state
         self._watch_proc: subprocess.Popen | None = None
         self._watch_log: str | None = None
@@ -143,6 +157,7 @@ class MainWindow2(QMainWindow):
         split = QSplitter(Qt.Vertical)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._tab_training(), "Обучение")
+        self.tabs.addTab(self._tab_demos(), "Игра → BC")
         self.tabs.addTab(self._tab_monitor(), "Мониторинг")
         self.tabs.addTab(self._tab_rewards(), "Награды")
         self.tabs.addTab(self._tab_curriculum(), "Курикулум")
@@ -320,6 +335,132 @@ class MainWindow2(QMainWindow):
         scroll_w.setLayout(cols)
         scroll.setWidget(scroll_w)
         root.addWidget(scroll, 1)
+        return page
+
+    # ── Tab: Игра → BC ──
+    def _tab_demos(self) -> QWidget:
+        """Human-game recording, demo import/validation and BC hand-off.
+
+        This is intentionally a first-class tab instead of a hidden command:
+        the user can select existing JSONL games, launch the native recorder,
+        run BC and then pass the resulting checkpoint to the normal PPO worker.
+        """
+        page = QWidget()
+        root = QVBoxLayout(page)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        intro = T.label(
+            "Здесь можно сыграть несколько партий, подтянуть уже записанные игры "
+            "и обучить стартовую модель. Схема: игра → JSONL → BC → PPO. "
+            "BC повторяет решения высокого уровня, а не координаты мыши. "
+            "Импортированные игры должны быть записаны в том же сценарии и сборке.",
+            T.DIM, word_wrap=True)
+        root.addWidget(intro)
+
+        game_box = T.group("1. Записать игру или подключить существующие JSONL")
+        grid = game_box.layout()
+        grid.addWidget(T.field_label("Папка игр", "Все *.jsonl в этой папке попадут в BC."), 0, 0)
+        self.edit_demo_dir = QLineEdit(str(_PROJECT / "demos"))
+        grid.addWidget(self.edit_demo_dir, 0, 1)
+        grid.addWidget(T.button("📁 Выбрать…", self._choose_demo_dir), 0, 2)
+        grid.addWidget(T.button("➕ Добавить файлы…", self._import_demo_files,
+                                tooltip="Скопировать выбранные JSONL в папку игр"), 0, 3)
+
+        grid.addWidget(T.field_label("GUI игры", "Свежий sakhalin_colony_gui.exe после build_gui.bat."), 1, 0)
+        self.edit_demo_exe = QLineEdit(str(_PROJECT / "sakhalin_colony_gui.exe"))
+        grid.addWidget(self.edit_demo_exe, 1, 1)
+        grid.addWidget(T.button("📁 Выбрать…", self._choose_demo_exe), 1, 2)
+        self.btn_record_demo = T.button("▶ Записать игру", self._start_demo_recording, "primary")
+        self.btn_stop_demo = T.button("■ Остановить запись", self._stop_demo_recording, "danger")
+        self.btn_stop_demo.setEnabled(False)
+        grid.addWidget(self.btn_record_demo, 1, 3)
+        grid.addWidget(self.btn_stop_demo, 1, 4)
+
+        grid.addWidget(T.field_label("Сценарий", "Для проблемы с водой выбирайте stage1: Road → WaterChannel."), 2, 0)
+        self.cmb_demo_scenario = T.combo(["stage1 · вода сначала", "full · без гейта"],
+                                         "stage1 · вода сначала")
+        self.cmb_demo_scenario.setMinimumWidth(150)
+        grid.addWidget(self.cmb_demo_scenario, 2, 1)
+        grid.addWidget(T.field_label("Seed", "После каждой партии меняйте seed, чтобы собрать разные карты."), 2, 2)
+        self.spn_demo_seed = QSpinBox()
+        self.spn_demo_seed.setRange(0, 999_999_999)
+        self.spn_demo_seed.setValue(42)
+        self.spn_demo_seed.setFixedWidth(92)
+        grid.addWidget(self.spn_demo_seed, 2, 3)
+        grid.addWidget(T.field_label("Размер карты"), 2, 4)
+        self.spn_demo_map = QSpinBox()
+        self.spn_demo_map.setRange(100, 500)
+        self.spn_demo_map.setValue(280)
+        self.spn_demo_map.setFixedWidth(72)
+        grid.addWidget(self.spn_demo_map, 2, 5)
+
+        self.lbl_demo_status = T.label("Запись не запущена", T.DIM, word_wrap=True)
+        grid.addWidget(self.lbl_demo_status, 3, 0, 1, 6)
+        root.addWidget(game_box)
+
+        list_box = T.group("Подключённые игры")
+        list_grid = list_box.layout()
+        top = QHBoxLayout()
+        top.addWidget(T.button("↻ Обновить список", self._refresh_demo_files))
+        top.addWidget(T.button("📂 Открыть папку", self._open_demo_dir))
+        self.lbl_demo_summary = T.label("Нет данных", T.DIM)
+        top.addWidget(self.lbl_demo_summary, 1)
+        list_grid.addLayout(top, 0, 0, 1, 6)
+        self.tbl_demos = QTableWidget(0, 6)
+        self.tbl_demos.setHorizontalHeaderLabels(
+            ["файл", "переходы", "эпизоды", "obs", "действий", "статус"])
+        self.tbl_demos.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_demos.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_demos.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tbl_demos.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_demos.verticalHeader().setVisible(False)
+        list_grid.addWidget(self.tbl_demos, 1, 0, 1, 6)
+        root.addWidget(list_box, 1)
+
+        bc_box = T.group("2. Behavioral cloning и передача в PPO")
+        bc = bc_box.layout()
+        bc.addWidget(T.field_label("Имя BC-модели", "Каталог будет создан в папке моделей UI."), 0, 0)
+        self.edit_bc_name = QLineEdit("human_bc")
+        self.edit_bc_name.textChanged.connect(self._update_bc_output_label)
+        bc.addWidget(self.edit_bc_name, 0, 1)
+        bc.addWidget(T.field_label("Устройство"), 0, 2)
+        self.cmb_bc_device = T.combo(["cuda", "cpu"], "cuda")
+        bc.addWidget(self.cmb_bc_device, 0, 3)
+        bc.addWidget(T.field_label("Эпохи"), 0, 4)
+        self.spn_bc_epochs = QSpinBox()
+        self.spn_bc_epochs.setRange(1, 500)
+        self.spn_bc_epochs.setValue(30)
+        self.spn_bc_epochs.setFixedWidth(72)
+        bc.addWidget(self.spn_bc_epochs, 0, 5)
+        bc.addWidget(T.field_label("Batch"), 1, 0)
+        self.spn_bc_batch = QSpinBox()
+        self.spn_bc_batch.setRange(1, 8192)
+        self.spn_bc_batch.setValue(256)
+        self.spn_bc_batch.setFixedWidth(72)
+        bc.addWidget(self.spn_bc_batch, 1, 1)
+        bc.addWidget(T.field_label("Patience"), 1, 2)
+        self.spn_bc_patience = QSpinBox()
+        self.spn_bc_patience.setRange(0, 100)
+        self.spn_bc_patience.setValue(8)
+        self.spn_bc_patience.setFixedWidth(72)
+        bc.addWidget(self.spn_bc_patience, 1, 3)
+        self.btn_bc = T.button("🎓 Обучить BC", self._start_bc, "primary")
+        self.btn_bc_stop = T.button("■ Остановить BC", self._stop_bc, "danger")
+        self.btn_bc_stop.setEnabled(False)
+        bc.addWidget(self.btn_bc, 1, 4)
+        bc.addWidget(self.btn_bc_stop, 1, 5)
+        self.lbl_bc_output = T.label("", T.DIM, word_wrap=True)
+        bc.addWidget(self.lbl_bc_output, 2, 0, 1, 4)
+        self.btn_bc_ppo = T.button(
+            "🚀 BC → PPO stage1", self._start_bc_ppo, "primary",
+            "Запустить обычный PPO stage1 от model.pt, обученной на ваших партиях")
+        bc.addWidget(self.btn_bc_ppo, 2, 4, 1, 2)
+        self.lbl_bc_status = T.label("BC не запускался", T.DIM, word_wrap=True)
+        bc.addWidget(self.lbl_bc_status, 3, 0, 1, 6)
+        root.addWidget(bc_box)
+        self._update_bc_output_label()
+        self._refresh_demo_files()
         return page
 
     # ── Tab: Мониторинг ──
@@ -1001,6 +1142,21 @@ class MainWindow2(QMainWindow):
         idx = self.cmb_watch_speed.findText(str(cfg.get("watch_speed", "5")))
         if idx >= 0:
             self.cmb_watch_speed.setCurrentIndex(idx)
+        # human-game / BC workspace
+        self.edit_demo_dir.setText(str(cfg.get("demo_dir", _PROJECT / "demos")))
+        self.edit_demo_exe.setText(str(cfg.get("demo_exe", _PROJECT / "sakhalin_colony_gui.exe")))
+        self.spn_demo_seed.setValue(int(cfg.get("demo_seed", 42)))
+        self.spn_demo_map.setValue(int(cfg.get("demo_map_size", cfg.get("map_size", 280))))
+        scenario = str(cfg.get("demo_scenario", "stage1"))
+        self.cmb_demo_scenario.setCurrentIndex(0 if scenario == "stage1" else 1)
+        self.edit_bc_name.setText(str(cfg.get("bc_name", "human_bc")))
+        self.spn_bc_epochs.setValue(int(cfg.get("bc_epochs", 30)))
+        self.spn_bc_batch.setValue(int(cfg.get("bc_batch_size", 256)))
+        self.spn_bc_patience.setValue(int(cfg.get("bc_patience", 8)))
+        idx = self.cmb_bc_device.findText(str(cfg.get("bc_device", "cuda")))
+        if idx >= 0:
+            self.cmb_bc_device.setCurrentIndex(idx)
+        self._refresh_demo_files()
         # curriculum: buildings
         unlock = str(cfg.get("unlock_ids", "")).strip()
         unlocked = set(s.strip() for s in unlock.split(",") if s.strip())
@@ -1050,9 +1206,11 @@ class MainWindow2(QMainWindow):
         self._extra_cfg = {k: v for k, v in cfg.items() if k not in (
             "model_name","difficulty","obs_mode","minimap_radius","curriculum_stage",
             "unlock_ids","use_curriculum_tab","curriculum_resources","curriculum_schedule",
-            "disabled_mechanics","mechanics_unlock_schedule",
+            "disabled_mechanics","mechanics_unlock_schedule","water_bootstrap",
             "net_arch","use_amp","torch_compile","cpp_threads",
             "watch_map_size","watch_seed","watch_visual","watch_speed",
+            "demo_dir","demo_exe","demo_seed","demo_map_size","demo_scenario",
+            "bc_name","bc_epochs","bc_batch_size","bc_patience","bc_device",
             "config_version"
         ) and k not in self._all_param_keys()}
         self._update_preset_status()
@@ -1104,6 +1262,9 @@ class MainWindow2(QMainWindow):
             "use_curriculum_tab": self.chk_use_curriculum_tab.isChecked(),
             "curriculum_resources": curriculum_resources,
             "curriculum_schedule": sched,
+            # Stage 1 is the only UI preset that uses the phase-gated water
+            # bootstrap. A hand-edited full run remains legacy/unrestricted.
+            "water_bootstrap": self._detect_preset() == "stage1",
             "disabled_mechanics": [m for m in MECHANIC_IDS if m not in checked_mech],
             # UI не редактирует расписание разблокировки механик: пусто =
             # «не трогать» (worker/Config применит свой дефолт для новых прогонов).
@@ -1119,6 +1280,18 @@ class MainWindow2(QMainWindow):
         cfg["watch_visual"] = self.chk_watch_visual.isChecked()
         cfg["watch_sample"] = self.chk_watch_sample.isChecked()
         cfg["watch_speed"] = self.cmb_watch_speed.currentText()
+        # Human-game/BC workspace is persisted in the same UI config, but the
+        # keys are excluded from the worker's training-only _extra_cfg above.
+        cfg["demo_dir"] = str(self._demo_dir())
+        cfg["demo_exe"] = self.edit_demo_exe.text().strip()
+        cfg["demo_seed"] = self.spn_demo_seed.value()
+        cfg["demo_map_size"] = self.spn_demo_map.value()
+        cfg["demo_scenario"] = "stage1" if self.cmb_demo_scenario.currentIndex() == 0 else "full"
+        cfg["bc_name"] = self.edit_bc_name.text().strip()
+        cfg["bc_epochs"] = self.spn_bc_epochs.value()
+        cfg["bc_batch_size"] = self.spn_bc_batch.value()
+        cfg["bc_patience"] = self.spn_bc_patience.value()
+        cfg["bc_device"] = self.cmb_bc_device.currentText()
         return cfg
 
     def _on_param_changed(self, *_a):
@@ -1136,6 +1309,10 @@ class MainWindow2(QMainWindow):
                 return
             self._stop_training()
             self._wait_soft_stop_blocking()
+        if self._demo_proc and self._demo_proc.poll() is None:
+            self._stop_demo_recording()
+        if self._bc_proc and self._bc_proc.poll() is None:
+            self._stop_bc()
         if self._watch_proc and self._watch_proc.poll() is None:
             # Дерево целиком: raylib-окно — ребёнок watch_champion.py и иначе
             # остаётся висеть после закрытия UI (см. _stop_watch_proc).
@@ -1155,6 +1332,271 @@ class MainWindow2(QMainWindow):
 
     # ─────────────────────────── training ───────────────────────────
 
+    # ─────────────────────────── human demos / BC ───────────────────────────
+    def _demo_dir(self) -> Path:
+        return Path(self.edit_demo_dir.text().strip() or (_PROJECT / "demos")).expanduser()
+
+    def _bc_model_path(self) -> Path:
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.edit_bc_name.text().strip())
+        name = name.strip("._") or "human_bc"
+        return self.registry.root / name / "model.pt"
+
+    def _update_bc_output_label(self, *_):
+        if hasattr(self, "lbl_bc_output"):
+            path = self._bc_model_path()
+            self.lbl_bc_output.setText(f"Выход: {path}")
+            if hasattr(self, "btn_bc_ppo") and not (self._bc_proc and self._bc_proc.poll() is None):
+                self.btn_bc_ppo.setEnabled(path.exists())
+
+    def _choose_demo_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Папка с играми", str(self._demo_dir()))
+        if path:
+            self.edit_demo_dir.setText(path)
+            self._refresh_demo_files()
+            self._save_state()
+
+    def _choose_demo_exe(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Исполняемый файл игры", str(Path(self.edit_demo_exe.text()).parent),
+            "Executable (*.exe);;All files (*)")
+        if path:
+            self.edit_demo_exe.setText(path)
+            self._save_state()
+
+    def _open_demo_dir(self):
+        directory = self._demo_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
+
+    def _import_demo_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Добавить записанные игры", str(self._demo_dir()),
+            "Демонстрации JSONL (*.jsonl);;Все файлы (*)")
+        if not files:
+            return
+        try:
+            copied = copy_demo_files(files, self._demo_dir())
+        except OSError as exc:
+            QMessageBox.warning(self, "Игры", f"Не удалось скопировать файлы: {exc}")
+            return
+        self._refresh_demo_files()
+        self.log("info", f"Подключено игр: {len(copied)}")
+        self._save_state()
+
+    def _refresh_demo_files(self):
+        if not hasattr(self, "tbl_demos"):
+            return
+        self._demo_stats = scan_demo_dir(self._demo_dir())
+        self.tbl_demos.setRowCount(0)
+        for stat in self._demo_stats:
+            row = self.tbl_demos.rowCount()
+            self.tbl_demos.insertRow(row)
+            values = [
+                stat.path.name,
+                str(stat.transitions),
+                str(stat.episodes),
+                str(stat.obs_size or "—"),
+                str(stat.n_actions or "—"),
+                stat.status if stat.valid else (stat.errors[0] if stat.errors else "пусто"),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 0:
+                    item.setData(Qt.UserRole, str(stat.path))
+                self.tbl_demos.setItem(row, col, item)
+        summary = aggregate_demo_stats(self._demo_stats)
+        if summary["files"] == 0:
+            text = "Нет JSONL. Запишите игру или добавьте файлы."
+        else:
+            text = (f"Файлов: {summary['files']} · валидных: {summary['valid_files']} · "
+                    f"переходов: {summary['transitions']} · эпизодов: {summary['episodes']} · "
+                    f"obs={summary['obs_size'] or '—'} actions={summary['n_actions'] or '—'}")
+            if not summary["consistent"]:
+                text += " · проверьте размеры"
+        self.lbl_demo_summary.setText(text)
+
+    def _demo_curriculum_payload(self) -> dict[str, Any]:
+        from rl.config import Config
+        from rl.curriculum import CurriculumState, apply_stage1_preset
+
+        if self.cmb_demo_scenario.currentIndex() == 0:
+            cfg = Config()
+            apply_stage1_preset(cfg)
+            return cfg.curriculum_state().to_dict()
+        return CurriculumState.all().to_dict()
+
+    def _start_demo_recording(self):
+        if self._demo_proc and self._demo_proc.poll() is None:
+            self.log("warn", "Запись игры уже идёт")
+            return
+        exe = Path(self.edit_demo_exe.text().strip()).expanduser()
+        if not exe.exists():
+            QMessageBox.warning(
+                self, "Запись игры",
+                f"Не найден GUI игры:\n{exe}\n\nСначала выполните build_gui.bat или выберите exe вручную.")
+            return
+        directory = self._demo_dir()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Запись игры", str(exc))
+            return
+        stamp = time.strftime("human_%Y%m%d_%H%M%S")
+        demo_path = directory / f"{stamp}.jsonl"
+        suffix = 2
+        while demo_path.exists():
+            demo_path = directory / f"{stamp}_{suffix}.jsonl"
+            suffix += 1
+        curriculum = json.dumps(self._demo_curriculum_payload(), ensure_ascii=False, separators=(",", ":"))
+        map_size = int(self.spn_demo_map.value())
+        seed = int(self.spn_demo_seed.value())
+        args = [str(exe), "--record-demo", str(demo_path), "--seed", str(seed),
+                "--map-size", str(map_size), "--curriculum", curriculum]
+        try:
+            self._demo_proc = subprocess.Popen(
+                args, cwd=str(_PROJECT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        except OSError as exc:
+            QMessageBox.warning(self, "Запись игры", f"Не удалось запустить GUI: {exc}")
+            return
+        self._demo_timer.start(500)
+        self.btn_record_demo.setEnabled(False)
+        self.btn_stop_demo.setEnabled(True)
+        self.lbl_demo_status.setText(f"Идёт запись: {demo_path.name} · seed={seed}")
+        self.log("info", f"Запущена запись игры: {demo_path}")
+        self._save_state()
+
+    def _poll_demo_process(self):
+        if not self._demo_proc:
+            self._demo_timer.stop()
+            return
+        if self._demo_proc.poll() is None:
+            return
+        code = self._demo_proc.returncode
+        self._demo_proc = None
+        self._demo_timer.stop()
+        self.btn_record_demo.setEnabled(True)
+        self.btn_stop_demo.setEnabled(False)
+        self.lbl_demo_status.setText(f"Запись завершена (code={code}). Проверяю JSONL…")
+        self._refresh_demo_files()
+        self.log("info", f"GUI записи завершён: code={code}")
+
+    def _stop_demo_recording(self):
+        if not self._demo_proc or self._demo_proc.poll() is not None:
+            self._poll_demo_process()
+            return
+        self._demo_proc.terminate()
+        try:
+            self._demo_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._demo_proc.kill()
+            self._demo_proc.wait(timeout=2)
+        self._poll_demo_process()
+
+    def _start_bc(self):
+        if self._bc_proc and self._bc_proc.poll() is None:
+            self.log("warn", "BC уже запущен")
+            return
+        if self._train_proc and self._train_proc.poll() is None:
+            QMessageBox.information(self, "BC", "Сначала остановите обычное PPO-обучение.")
+            return
+        self._refresh_demo_files()
+        summary = aggregate_demo_stats(self._demo_stats)
+        if not summary["consistent"]:
+            QMessageBox.warning(
+                self, "BC", "Нет согласованного набора JSONL. Нужны непустые файлы "
+                "с одинаковыми obs/action dimensions.")
+            return
+        if int(summary["transitions"] or 0) < 10:
+            QMessageBox.warning(self, "BC", "Слишком мало переходов: сыграйте хотя бы одну полноценную партию.")
+            return
+        out = self._bc_model_path()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(tempfile.gettempdir()) / f"colony_bc_{int(time.time() * 1000)}.log"
+        try:
+            self._bc_log_handle = open(log_path, "w", encoding="utf-8")
+            args = [sys.executable, "-u", "-m", "rl.bc_pretrain",
+                    "--demo", str(self._demo_dir()), "--out", str(out),
+                    "--epochs", str(self.spn_bc_epochs.value()),
+                    "--batch-size", str(self.spn_bc_batch.value()),
+                    "--patience", str(self.spn_bc_patience.value()),
+                    "--device", self.cmb_bc_device.currentText()]
+            self._bc_proc = subprocess.Popen(
+                args, cwd=str(_PROJECT), stdout=self._bc_log_handle,
+                stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as exc:
+            if self._bc_log_handle:
+                self._bc_log_handle.close()
+                self._bc_log_handle = None
+            QMessageBox.warning(self, "BC", f"Не удалось запустить BC: {exc}")
+            return
+        self._bc_log_path = log_path
+        self._bc_log_offset = 0
+        self._bc_timer.start(300)
+        self.btn_bc.setEnabled(False)
+        self.btn_bc_stop.setEnabled(True)
+        self.btn_bc_ppo.setEnabled(False)
+        self.lbl_bc_status.setText(f"BC обучается… лог: {log_path}")
+        self.log("info", f"Запущен BC: {out}")
+
+    def _poll_bc_process(self):
+        if self._bc_log_path and self._bc_log_path.exists():
+            try:
+                with self._bc_log_path.open(encoding="utf-8") as fh:
+                    fh.seek(self._bc_log_offset)
+                    text = fh.read()
+                    self._bc_log_offset = fh.tell()
+                if text:
+                    for line in text.splitlines():
+                        self.log("info", f"[BC] {line}")
+            except OSError:
+                pass
+        if not self._bc_proc or self._bc_proc.poll() is None:
+            return
+        code = self._bc_proc.returncode
+        self._bc_proc = None
+        self._bc_timer.stop()
+        if self._bc_log_handle:
+            self._bc_log_handle.close()
+            self._bc_log_handle = None
+        out = self._bc_model_path()
+        ok = code == 0 and out.exists()
+        self.btn_bc.setEnabled(True)
+        self.btn_bc_stop.setEnabled(False)
+        self.btn_bc_ppo.setEnabled(ok)
+        self.lbl_bc_status.setText(
+            f"BC {'готов: ' + str(out) if ok else f'завершён с ошибкой code={code}'}")
+        self.log("info" if ok else "error", self.lbl_bc_status.text())
+        if ok:
+            self._refresh_models()
+
+    def _stop_bc(self):
+        if not self._bc_proc or self._bc_proc.poll() is not None:
+            self._poll_bc_process()
+            return
+        self._bc_proc.terminate()
+        try:
+            self._bc_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._bc_proc.kill()
+            self._bc_proc.wait(timeout=2)
+        self._poll_bc_process()
+
+    def _start_bc_ppo(self):
+        model = self._bc_model_path()
+        if not model.exists():
+            QMessageBox.warning(self, "BC → PPO", f"Не найден BC-чекпойнт:\n{model}")
+            return
+        if self._bc_proc and self._bc_proc.poll() is None:
+            QMessageBox.information(self, "BC → PPO", "Сначала дождитесь окончания BC.")
+            return
+        # Keep the demo and PPO scenario identical: stage1 carries the
+        # water-bootstrap gate through the normal UI worker/config path.
+        self._apply_preset("stage1")
+        self.name_edit.setText(f"{self.edit_bc_name.text().strip() or 'human_bc'}_ppo")
+        self.tabs.setCurrentIndex(0)
+        self._start_training(resume_model=model)
+
     def _randomize_seed(self):
         seed = random.randint(1, 999_999_999)
         self.pgroups["Среда"].rows["seed"].set_value(seed)
@@ -1163,6 +1605,9 @@ class MainWindow2(QMainWindow):
     def _start_training(self, resume_model: Path | None = None):
         if self._train_proc and self._train_proc.poll() is None:
             self.log("warn", "Обучение уже запущено")
+            return
+        if self._bc_proc and self._bc_proc.poll() is None:
+            self.log("warn", "Сначала дождитесь окончания BC или остановите его")
             return
         if self.chk_rand_seed.isChecked():
             self._randomize_seed()
@@ -1635,7 +2080,7 @@ class MainWindow2(QMainWindow):
             QMessageBox.information(self, "Модели", "Выберите модель в таблице")
             return
         self._sync_watch_model()
-        self.tabs.setCurrentIndex(5)
+        self.tabs.setCurrentIndex(6)
         self._toggle_watch(start=True)
 
     def _finetune_selected(self):

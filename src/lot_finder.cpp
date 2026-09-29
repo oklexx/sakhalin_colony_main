@@ -234,6 +234,18 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(const BaseData& d) {
     const Game& g = game_;
     const int ms = g.map_size();
     const int32_t* idx_map = g.base_index_map().data();
+    // A Road is infrastructure, not a water extractor. Reserve water tiles
+    // for WaterChannel until the channel is operational; otherwise the generic
+    // LT_EVERYWHERE placement rule can permanently eat the only legal target.
+    const bool reserve_water = d.id == ROAD_ID &&
+                               build_allowed("WaterChannel") &&
+                               !water_channel_operational();
+    // In the explicit bootstrap mode the plain BUILD:Road action is still
+    // usable (important for the human demo), but its auto-target becomes a
+    // goal-oriented planner: choose the reachable frontier cell closest to the
+    // nearest water instead of the first BFS cell.
+    const bool route_to_water = reserve_water && water_bootstrap_active() &&
+                                target_water_x_ >= 0;
 
     auto is_traversable_base = [&](int x, int y) -> bool {
         size_t idx = (size_t)y * ms + x;
@@ -242,6 +254,7 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(const BaseData& d) {
     };
 
     std::vector<std::pair<int, int>> frontier;
+    std::vector<std::pair<int, int>> goal_candidates;
     std::vector<char> visited((size_t)ms * ms, 0);
     const int dx4[4] = {1, -1, 0, 0};
     const int dy4[4] = {0, 0, 1, -1};
@@ -251,8 +264,15 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(const BaseData& d) {
             frontier.push_back({nx, ny});
             return std::nullopt;
         }
-        if (g.can_build_at(d, nx, ny).first)
+        if (reserve_water && g.earth.lot(nx, ny) == LT_WATER)
+            return std::nullopt;
+        if (g.can_build_at(d, nx, ny).first) {
+            if (route_to_water) {
+                goal_candidates.push_back({nx, ny});
+                return std::nullopt;
+            }
             return std::make_pair(nx, ny);
+        }
         return std::nullopt;
     };
 
@@ -280,6 +300,23 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot(const BaseData& d) {
             if (result) return result;
         }
     }
+    if (route_to_water && !goal_candidates.empty()) {
+        auto best = goal_candidates.front();
+        long long dx0 = (long long)best.first - target_water_x_;
+        long long dy0 = (long long)best.second - target_water_y_;
+        long long best_dist = dx0 * dx0 + dy0 * dy0;
+        for (size_t i = 1; i < goal_candidates.size(); ++i) {
+            const auto& cell = goal_candidates[i];
+            long long dx = (long long)cell.first - target_water_x_;
+            long long dy = (long long)cell.second - target_water_y_;
+            long long dist = dx * dx + dy * dy;
+            if (dist < best_dist) {
+                best = cell;
+                best_dist = dist;
+            }
+        }
+        return best;
+    }
     return std::nullopt;
 }
 
@@ -288,6 +325,11 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(const BaseData& d,
     const Game& g = game_;
     const int ms = g.map_size();
     const int32_t* idx_map = g.base_index_map().data();
+    // Never consume a future WaterChannel tile with a Road. This applies to
+    // directional actions in both full and bootstrap curricula.
+    const bool reserve_water = d.id == ROAD_ID &&
+                               build_allowed("WaterChannel") &&
+                               !water_channel_operational();
 
     auto is_traversable_base = [&](int x, int y) -> bool {
         size_t idx = (size_t)y * ms + x;
@@ -315,6 +357,8 @@ std::optional<std::pair<int, int>> ColonyEnvCpp::find_lot_dir(const BaseData& d,
             frontier.push_back({nx, ny});
             return;
         }
+        if (reserve_water && g.earth.lot(nx, ny) == LT_WATER)
+            return;
         if (g.can_build_at(d, nx, ny).first)
             candidates.push_back({nx, ny});
     };

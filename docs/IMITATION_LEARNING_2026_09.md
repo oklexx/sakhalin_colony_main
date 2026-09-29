@@ -19,8 +19,9 @@ pretrain) an RL policy from it.
 
 ## 2. Design decision: route recording through `env.step()`, not through raw clicks
 
-The RL action space (`env.n_actions()` = 50 for the current 33-building
-`configs/bases.json`) is **always an auto-targeting/auto-amount space**:
+The RL action space (`env.n_actions()` = 49 for the current 32 buildable
+entries; `City` is the initial depot and has no BUILD slot) is **always an
+auto-targeting/auto-amount space**:
 every action ID resolves a concrete cell, target building, or resource
 amount *inside* `env.step()` — no action ever carries an explicit (x, y) or
 a custom quantity. Concretely (see `src/env.cpp`):

@@ -111,6 +111,7 @@ Curriculum Curriculum::from_json(const std::string& text) {
         throw std::runtime_error("bad --curriculum JSON: expected an object");
     c.all_builds = j.value("all_builds", true);
     c.stage_report = j.value("stage", 0);
+    c.water_bootstrap = j.value("water_bootstrap", false);
     c.all_resources = j.value("all_resources", true);
     if (j.contains("allowed_builds")) {
         if (!j["allowed_builds"].is_array())
@@ -183,6 +184,7 @@ void ColonyEnvCpp::set_curriculum(const Curriculum& c) {
     std::cout << "[C++ ColonyEnvCpp] set_curriculum: all_builds=" << curriculum_.all_builds
               << " allowed=" << curriculum_.allowed_builds.size()
               << " stage_report=" << curriculum_.stage_report
+              << " water_bootstrap=" << (curriculum_.water_bootstrap ? 1 : 0)
               << " mechanics=" << mech;
     if (!curriculum_.all_builds) {
         std::cout << ":";
@@ -202,6 +204,14 @@ void ColonyEnvCpp::set_step_log(const std::string& path) {
         step_log_.open(path, std::ios::app);
         step_log_ << "=== Step log started ===" << std::endl;
     }
+}
+
+bool ColonyEnvCpp::water_channel_operational() const {
+    for (const Base& b : game_.bases) {
+        if (b.data->id == "WaterChannel" && b.build_days == 0 && !b.preserved)
+            return true;
+    }
+    return false;
 }
 
 void ColonyEnvCpp::reset(int64_t seed) {
@@ -457,8 +467,14 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     const bool gated_build =
         (action >= A_BUILD0 && action < A_BUILD0 + n_build_) &&
         !build_allowed(build_data_[action - A_BUILD0]->id);
+    const bool water_phase_build =
+        water_bootstrap_active() &&
+        (action >= A_BUILD0 && action < A_BUILD0 + n_build_) &&
+        build_data_[action - A_BUILD0]->id != ROAD_ID &&
+        build_data_[action - A_BUILD0]->id != "WaterChannel";
+    const bool blocked_build = gated_build || water_phase_build;
     // Grace period: count days since the player postponed the tax.
-    if (!gated_build) {
+    if (!blocked_build) {
         if (g.tax_postponed_ && (g.annual_tax_due() || g.main_tax_due()))
             tax_grace_days_ += 1;
         else
@@ -495,11 +511,14 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
         // PR 6: заблокированное действие — чистый штраф и ранний выход: день не
         // проходит (без advance_day и дневных/каталожных бонусов), obs — текущий.
         // Попытка строго убыточна: раньше день проходил и tax_daily_bonus капал.
-        if (gated_build) {
+        if (blocked_build) {
             rew += cfg_.error_penalty; c_error += cfg_.error_penalty;
             if (step_log_.is_open()) {
                 step_log_ << "  BUILD FAILED: " << d->id << " | has_cell=NO"
-                          << " | REASON: Постройка закрыта курикулумом.\n";
+                          << " | REASON: "
+                          << (gated_build ? "Постройка закрыта курикулумом."
+                                          : "Водный bootstrap: сначала рабочий WaterChannel.")
+                          << "\n";
             }
             steps_ += 1;
             // R4: finite-гвард ДО накопления — иначе -inf/NaN (например, из
