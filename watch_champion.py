@@ -597,6 +597,11 @@ def launch_visual_watch(
         args.extend(["--minimap-radius", str(minimap_radius)])
     workdir = str(PROJECT_ROOT)
     kwargs: dict = {"cwd": workdir}
+    # Окно пишет stdout/stderr в наследованный дескриптор: Python-двойник в
+    # тестах (и любой Python-экзешник) кодирует вывод в локаль (Windows cp1251),
+    # а gui_output.log читается как UTF-8 — диагностика превращалась в «битые»
+    # символы (regression: tests/test_watch_visual.py, локаль ru-RU).
+    kwargs["env"] = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
