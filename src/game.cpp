@@ -122,6 +122,7 @@ Game::Game(const Game& other)
       sunduk(other.sunduk), bases(other.bases), rng(other.rng),
       rng_np(other.rng_np), good_lots(other.good_lots),
       destroyed_lots(other.destroyed_lots), occupied(other.occupied),
+      tax_postponed_(other.tax_postponed_),
       base_data_(other.base_data_), events_data_(other.events_data_),
       map_size_(other.map_size_),
       difficulty_(other.difficulty_),
@@ -129,12 +130,15 @@ Game::Game(const Game& other)
       no_people_days_limit_(other.no_people_days_limit_),
       tax_annual_paid_(other.tax_annual_paid_),
       tax_main_paid_(other.tax_main_paid_),
-      tax_postponed_(other.tax_postponed_),
       tax_to_debt_(other.tax_to_debt_),
       next_uid_(other.next_uid_),
       enable_undo_(other.enable_undo_),
       gate_(other.gate_),
-      gate_ctx_(other.gate_ctx_) {
+      gate_ctx_(other.gate_ctx_),
+      last_base_milestone_(other.last_base_milestone_),
+      last_people_milestone_(other.last_people_milestone_),
+      last_day_milestone_(other.last_day_milestone_),
+      year_bonus_given_(other.year_bonus_given_) {
     data_id_to_idx_ = other.data_id_to_idx_;
     depot_ = find_data(DEPOT_ID);
     if (other.undo_) undo_ = std::make_unique<Game>(*other.undo_);
@@ -167,6 +171,10 @@ Game& Game::operator=(const Game& other) {
     tax_main_paid_ = other.tax_main_paid_;
     tax_postponed_ = other.tax_postponed_;
     tax_to_debt_ = other.tax_to_debt_;
+    last_base_milestone_ = other.last_base_milestone_;
+    last_people_milestone_ = other.last_people_milestone_;
+    last_day_milestone_ = other.last_day_milestone_;
+    year_bonus_given_ = other.year_bonus_given_;
     next_uid_ = other.next_uid_;
     enable_undo_ = other.enable_undo_;
     gate_ = other.gate_;
@@ -175,6 +183,9 @@ Game& Game::operator=(const Game& other) {
     depot_ = find_data(DEPOT_ID);
     undo_ = other.undo_ ? std::make_unique<Game>(*other.undo_) : nullptr;
     base_index_map_ = other.base_index_map_;
+    // Cached capacity/worker totals describe the previous target state. Do not
+    // copy them: snapshots and undo must never expose stale can_work() results.
+    invalidate_caches();
     return *this;
 }
 
@@ -651,6 +662,7 @@ Game::RestoreOut Game::restore_all() {
 
     // Частичный ремонт — точный алгоритм RestoreBases из оригинала.
     int64_t restored = 0;
+    int64_t spent = 0;
     bool out_of_money = false;
     while (true) {
         Base* slow = find_slowest(-1);
@@ -674,8 +686,10 @@ Game::RestoreOut Game::restore_all() {
         if (per_day <= 0) break;
         if (money < per_day * day_count) day_count = money / per_day;
         if (day_count > 0) {
+            const int64_t cost = per_day * day_count;
             for (Base* g : group) g->live_time += day_count;
-            money -= per_day * day_count;
+            money -= cost;
+            spent += cost;
             restored += (int64_t)group.size();
             continue;
         }
@@ -686,8 +700,10 @@ Game::RestoreOut Game::restore_all() {
                 g->data->restore_price_per_day() < cheapest->data->restore_price_per_day())
                 cheapest = g;
         while (cheapest != nullptr && money >= cheapest->data->restore_price_per_day()) {
+            const int64_t cost = cheapest->data->restore_price_per_day();
             cheapest->live_time += 1;
-            money -= cheapest->data->restore_price_per_day();
+            money -= cost;
+            spent += cost;
             restored += 1;
             group.erase(std::remove(group.begin(), group.end(), cheapest), group.end());
             if (group.empty()) break;
@@ -702,7 +718,7 @@ Game::RestoreOut Game::restore_all() {
     if (restored == 0 && !out_of_money)
         return {false, "Нет поврежденных строений", 0, 0};
     if (restored == 0) return {false, "Недостаточно денег.", 0, 0};
-    return {true, "Денег не хватило на восстановление всех построек. Часть отремонтирована.", 0, restored};
+    return {true, "Денег не хватило на восстановление всех построек. Часть отремонтирована.", spent, restored};
 }
 
 Base* Game::find_slowest(int64_t more_than) {

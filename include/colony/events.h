@@ -45,7 +45,7 @@ inline const BaseEvent* choice_event(const std::vector<BaseEvent>& events,
         if (e.target == base_id) slots++;
     if (slots < EVENT_BLANK_SLOTS) slots = EVENT_BLANK_SLOTS;
     uint64_t i = rng.randrange((uint64_t)slots);
-    if (i < slots) {
+    if (i < static_cast<uint64_t>(slots)) {
         int idx = 0;
         for (const BaseEvent& e : events) {
             if (e.target == base_id) {

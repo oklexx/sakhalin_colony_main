@@ -18,8 +18,6 @@ namespace colony {
 
 namespace {
 
-const char* SEASON_NAMES_ENV[4] = {"spring", "summer", "autumn", "winter"};
-
 // Measure resource-flow depth without letting cycles (coal <-> energy, for
 // example) inflate the result indefinitely. There are only SUNDUK_SIZE resource
 // nodes, so memoizing (current resource, visited-resource bitset) is bounded by
@@ -453,8 +451,8 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     std::string action_name = "?";
 
     // Update episode metrics peaks
-    if (g.bases.size() > episode_metrics_.base_count_peak)
-        episode_metrics_.base_count_peak = g.bases.size();
+    if (static_cast<int64_t>(g.bases.size()) > episode_metrics_.base_count_peak)
+        episode_metrics_.base_count_peak = static_cast<int64_t>(g.bases.size());
     if (g.people > episode_metrics_.population_peak)
         episode_metrics_.population_peak = g.people;
 
@@ -1192,8 +1190,8 @@ ColonyEnvCpp::StepOut ColonyEnvCpp::step(int action) {
     episode_metrics_.net_worth = net_worth();
     if (g.people > episode_metrics_.population_peak)
         episode_metrics_.population_peak = g.people;
-    if (g.bases.size() > episode_metrics_.base_count_peak)
-        episode_metrics_.base_count_peak = (int64_t)g.bases.size();
+    if (static_cast<int64_t>(g.bases.size()) > episode_metrics_.base_count_peak)
+        episode_metrics_.base_count_peak = static_cast<int64_t>(g.bases.size());
 
     StepOut out;
     out.obs = obs();

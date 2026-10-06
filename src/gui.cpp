@@ -861,8 +861,8 @@ static void draw_market(ColonyEnvCpp& env) {
     if (btn(x + w - 184, y + h - 44, 86, 34, dlg_mode == 0 ? "Купить" : "Продать")) {
         Sunduk s{}; for (int i = 0; i < 9; i++) s[i] = market_qty[i];
         auto r = dlg_mode == 0 ? g.market_buy(s) : g.market_sell(s);
-        strcpy(mess_title, r.ok ? "Сообщение" : "Ошибка");
-        strncpy(mess_text, r.msg.c_str(), sizeof(mess_text) - 1);
+        snprintf(mess_title, sizeof(mess_title), "%s", r.ok ? "Сообщение" : "Ошибка");
+        snprintf(mess_text, sizeof(mess_text), "%s", r.msg.c_str());
         for (int i = 0; i < 9; i++) market_qty[i] = 0;
         cur_dlg = DLG_MESS;
     }
@@ -884,12 +884,12 @@ static void draw_bank(ColonyEnvCpp& env) {
     DrawRectangleLines(x + 14, y + 92, 180, 28, WHITE);
     if (btn(x + 210, y + 90, 90, 30, "Взять (T)")) {
         long long v = bank_buf[0] ? (long long)strtoll(bank_buf, nullptr, 10) : g.credit;
-        if (v > 0) { auto r = g.bank_take(v); if (!r.first) { strcpy(mess_title,"Ошибка"); strncpy(mess_text,r.second.c_str(),sizeof(mess_text)-1); cur_dlg=DLG_MESS; } else cur_dlg=DLG_NONE; }
+        if (v > 0) { auto r = g.bank_take(v); if (!r.first) { snprintf(mess_title,sizeof(mess_title),"%s","Ошибка"); snprintf(mess_text,sizeof(mess_text),"%s",r.second.c_str()); cur_dlg=DLG_MESS; } else cur_dlg=DLG_NONE; }
         bank_buf[0] = 0;
     }
     if (btn(x + 210, y + 126, 90, 30, "Вернуть (Q)")) {
         long long v = bank_buf[0] ? (long long)strtoll(bank_buf, nullptr, 10) : g.credit;
-        if (v > 0) { auto r = g.bank_give(v); if (!r.first) { strcpy(mess_title,"Ошибка"); strncpy(mess_text,r.second.c_str(),sizeof(mess_text)-1); cur_dlg=DLG_MESS; } else cur_dlg=DLG_NONE; }
+        if (v > 0) { auto r = g.bank_give(v); if (!r.first) { snprintf(mess_title,sizeof(mess_title),"%s","Ошибка"); snprintf(mess_text,sizeof(mess_text),"%s",r.second.c_str()); cur_dlg=DLG_MESS; } else cur_dlg=DLG_NONE; }
         bank_buf[0] = 0;
     }
     if (btn(x + 14, y + h - 40, 100, 30, "Отмена")) { cur_dlg = DLG_NONE; bank_buf[0] = 0; }
@@ -1023,7 +1023,7 @@ static void draw_open(ColonyEnvCpp& env) {
     auto items = list_saves();
     static int sel = -1;
     list_box(x + 14, y + 64, 300, 150, items, sel, sel);
-    if (btn(x + 330, y + 64, 110, 32, "ОК")) { strcpy(mess_title,"Сообщение"); snprintf(mess_text, sizeof(mess_text), "%s",
+    if (btn(x + 330, y + 64, 110, 32, "ОК")) { snprintf(mess_title, sizeof(mess_title), "%s", "Сообщение"); snprintf(mess_text, sizeof(mess_text), "%s",
         "Загрузка сохранений пока не реализована.\n"
         "Сейчас партию можно начать заново: Игра → Новая (F4),\n"
         "а на экране итогов — «Повторить карту» (тот же сид)."); cur_dlg=DLG_MESS; }
@@ -1037,7 +1037,7 @@ static void draw_save() {
     static int sel = -1;
     list_box(x + 14, y + 64, 300, 150, items, sel, sel);
     text("Введите название файла", x + 14, y + 224, 14, WHITE);
-    if (btn(x + 330, y + 64, 110, 32, "ОК")) { strcpy(mess_title,"Сообщение"); snprintf(mess_text, sizeof(mess_text), "%s",
+    if (btn(x + 330, y + 64, 110, 32, "ОК")) { snprintf(mess_title, sizeof(mess_title), "%s", "Сообщение"); snprintf(mess_text, sizeof(mess_text), "%s",
         "Сохранение пока не реализовано: состояние партии\n"
         "(дата, деньги, все постройки, износ, казна) ещё не сериализуется.\n"
         "Сид карты виден в заголовке — его можно переиграть заново."); cur_dlg=DLG_MESS; }
@@ -1100,7 +1100,7 @@ static void draw_top_menu(ColonyEnvCpp& env) {
             Rectangle r = {(float)tx[2], (float)(dy + i*CH), 240, CH};
             bool h = CheckCollisionPointRec(mp, r);
             if (h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                if (i == 0) { strcpy(mess_title,"Помощь"); snprintf(mess_text, sizeof(mess_text), "%s", "КАРТА И КЛЕТКА\nWASD или стрелки — двигать активную клетку (она активна всегда)\nЛКМ — выбрать клетку/здание, протяжка — выделить область\nCtrl+стрелки, средняя кнопка мыши, край экрана — сдвиг карты; Home — к городу\nКолесо или +/- — зум (к курсору мыши)\n\nСТРОИТЕЛЬСТВО\nИконка в палитре или ПКМ по карте — взять постройку в руку:\nзелёная подсветка = встанет, красная = нельзя (море, тип земли, нет связи)\nЛКМ — поставить, протяжка — заполнить область, Enter — в активную клетку\nEsc или ПКМ — выйти из режима строительства\n\nВРЕМЯ\nПробел — день, Shift+Пробел — неделя, Ctrl+Пробел — месяц\n0 — пауза, 1/2/3 — автоматический ход времени\n\nДЕЙСТВИЯ НАД АКТИВНОЙ КЛЕТКОЙ\nR — ремонт, Shift+R — ремонт всех, Delete — снести, P — консервация\nG — выкупить участок (снимает налог), F — найти изношенное\nB — купить, M — продать, K — банк, Ctrl+Z — отменить\nF1 помощь, F2 сохранить, F4 новая, F5 загрузить, F9 полный экран"); cur_dlg = DLG_MESS; }
+                if (i == 0) { snprintf(mess_title, sizeof(mess_title), "%s", "Помощь"); snprintf(mess_text, sizeof(mess_text), "%s", "КАРТА И КЛЕТКА\nWASD или стрелки — двигать активную клетку (она активна всегда)\nЛКМ — выбрать клетку/здание, протяжка — выделить область\nCtrl+стрелки, средняя кнопка мыши, край экрана — сдвиг карты; Home — к городу\nКолесо или +/- — зум (к курсору мыши)\n\nСТРОИТЕЛЬСТВО\nИконка в палитре или ПКМ по карте — взять постройку в руку:\nзелёная подсветка = встанет, красная = нельзя (море, тип земли, нет связи)\nЛКМ — поставить, протяжка — заполнить область, Enter — в активную клетку\nEsc или ПКМ — выйти из режима строительства\n\nВРЕМЯ\nПробел — день, Shift+Пробел — неделя, Ctrl+Пробел — месяц\n0 — пауза, 1/2/3 — автоматический ход времени\n\nДЕЙСТВИЯ НАД АКТИВНОЙ КЛЕТКОЙ\nR — ремонт, Shift+R — ремонт всех, Delete — снести, P — консервация\nG — выкупить участок (снимает налог), F — найти изношенное\nB — купить, M — продать, K — банк, Ctrl+Z — отменить\nF1 помощь, F2 сохранить, F4 новая, F5 загрузить, F9 полный экран"); cur_dlg = DLG_MESS; }
                 else cur_dlg = DLG_ABOUT;
                 open_menu = -1;
             }
@@ -2106,7 +2106,7 @@ int main(int argc, char* argv[]) {
             if (IsKeyPressed(KEY_F5)) cur_dlg = DLG_OPEN;
             if (IsKeyPressed(KEY_F2)) cur_dlg = DLG_SAVE;
             if (IsKeyPressed(KEY_F1)) {
-                strcpy(mess_title, "Помощь");
+                snprintf(mess_title, sizeof(mess_title), "%s", "Помощь");
                 snprintf(mess_text, sizeof(mess_text), "%s", "КАРТА И КЛЕТКА\nWASD или стрелки — двигать активную клетку (она активна всегда)\nЛКМ — выбрать клетку/здание, протяжка — выделить область\nCtrl+стрелки, средняя кнопка мыши, край экрана — сдвиг карты; Home — к городу\nКолесо или +/- — зум (к курсору мыши)\n\nСТРОИТЕЛЬСТВО\nИконка в палитре или ПКМ по карте — взять постройку в руку:\nзелёная подсветка = встанет, красная = нельзя (море, тип земли, нет связи)\nЛКМ — поставить, протяжка — заполнить область, Enter — в активную клетку\nEsc или ПКМ — выйти из режима строительства\n\nВРЕМЯ\nПробел — день, Shift+Пробел — неделя, Ctrl+Пробел — месяц\n0 — пауза, 1/2/3 — автоматический ход времени\n\nДЕЙСТВИЯ НАД АКТИВНОЙ КЛЕТКОЙ\nR — ремонт, Shift+R — ремонт всех, Delete — снести, P — консервация\nG — выкупить участок (снимает налог), F — найти изношенное\nB — купить, M — продать, K — банк, Ctrl+Z — отменить\nF1 помощь, F2 сохранить, F4 новая, F5 загрузить, F9 полный экран");
                 cur_dlg = DLG_MESS;
             }

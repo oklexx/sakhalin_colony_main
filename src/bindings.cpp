@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -527,9 +528,15 @@ PYBIND11_MODULE(colony_cpp, m) {
         })
         .def("obs", [](ColonyEnvCpp& env) { return env.obs(); })
         .def("minimap", [](const ColonyEnvCpp& env) {
+            constexpr size_t expected = (size_t)8 * 32 * 32;
             std::vector<float> mm = env.minimap();
+            if (mm.size() != expected) {
+                throw std::runtime_error(
+                    "ColonyEnvCpp::minimap: unexpected minimap size " +
+                    std::to_string(mm.size()) + ", expected " + std::to_string(expected));
+            }
             py::array_t<float> arr({8, 32, 32});
-            std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
+            std::memcpy(arr.mutable_data(), mm.data(), expected * sizeof(float));
             return arr;
         })
         .def("minimap_radius", &ColonyEnvCpp::minimap_radius)
@@ -671,9 +678,15 @@ PYBIND11_MODULE(colony_cpp, m) {
         .def("clear_step_log", &ColonyVecEnvCpp::clear_step_log, py::arg("env_idx"))
         .def("dump_obs", &ColonyVecEnvCpp::dump_obs, py::arg("env_idx"))
         .def("minimap_batch", [](const ColonyVecEnvCpp& v) {
+            const size_t expected = (size_t)v.n_envs() * 8 * 32 * 32;
             std::vector<float> mm = v.minimap_batch();
+            if (mm.size() != expected) {
+                throw std::runtime_error(
+                    "ColonyVecEnvCpp::minimap_batch: unexpected buffer size " +
+                    std::to_string(mm.size()) + ", expected " + std::to_string(expected));
+            }
             py::array_t<float> arr({(int)v.n_envs(), 8, 32, 32});
-            std::memcpy(arr.mutable_data(), mm.data(), mm.size() * sizeof(float));
+            std::memcpy(arr.mutable_data(), mm.data(), expected * sizeof(float));
             return arr;
         })
         .def("terminal_minimap_batch", [](const ColonyVecEnvCpp& v) {
