@@ -9,7 +9,7 @@
 #   1) объекты ядра (один раз, дальше только линковка);
 #   2) compile-only всех проб — поломка сборки видна даже у проб-замеров;
 #   3) прогон проверок с кодом возврата: curriculum_check, reward_regressions,
-#      episode_metrics_check, road_water_occupancy_check, road_direction_check,
+#      episode_metrics_check, build_preview_check, road_water_occupancy_check, road_direction_check,
 #      water_mask_check, p0_p1_check, gui_watch_check,
 #      reward_v4_longrun, stage1_gate_check, mask_reason_check, watch_ipc_check. Проба-замер (water_probe*, *_probe,
 #      longrun_check, ...) всегда возвращает 0, поэтому здесь только компилируется.
@@ -29,7 +29,7 @@ CXXFLAGS="-std=c++17 -O1 -Wall -Iinclude -Iinclude/third_party"
 SHARED_SRC="src/rng.cpp src/resources.cpp src/data.cpp src/earth.cpp src/game.cpp src/rewards.cpp src/env.cpp src/lot_finder.cpp src/action_mask.cpp src/observation.cpp src/vec_env.cpp"
 
 # Проверки с кодом возврата (упала — CI красный).
-CHECKS="tax_land_check curriculum_check reward_regressions episode_metrics_check road_water_occupancy_check road_direction_check water_mask_check p0_p1_check gui_watch_check reward_v4_longrun stage1_gate_check mask_reason_check watch_ipc_check"
+CHECKS="tax_land_check build_preview_check curriculum_check reward_regressions episode_metrics_check road_water_occupancy_check road_direction_check water_mask_check p0_p1_check gui_watch_check reward_v4_longrun stage1_gate_check mask_reason_check watch_ipc_check"
 
 mkdir -p "$OUT"
 
