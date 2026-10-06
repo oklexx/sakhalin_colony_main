@@ -276,6 +276,8 @@ int main() {
         }
         printf("  legal managers: applicability=%d, legacy=%d\n", legal_new, legal_old);
         check("applicability mask is strictly tighter than legacy", legal_new < legal_old);
+        check("legacy flag restores all manager slots", legal_old == N_MANAGERS,
+              "legacy legal=" + std::to_string(legal_old));
 
         // После займа REPAY становится применимым, а TAKE_LOAN — ещё нет (лимит не выбран).
         auto loan = e.step(MGR + 8);

@@ -104,7 +104,14 @@ std::vector<float> ColonyEnvCpp::action_mask(std::vector<uint8_t>* reasons) {
             if (rs) (*rs)[act] = (uint8_t)MR_CURRICULUM;
             continue;
         }
-        if (i == 4) {
+        if (!apply_mask) {
+            // Legacy mode deliberately restores the old, formally-legal
+            // manager mask. The applicability checks below must not leak into
+            // this branch (notably PRESERVE/UNPRESERVE), while the curriculum
+            // gate above remains authoritative.
+            mask[act] = 1.0f;
+            if (rs) (*rs)[act] = (uint8_t)MR_OPEN;
+        } else if (i == 4) {
             // PRESERVE: только если есть непreserved здания
             bool has_unpreserved = false;
             for (const Base& b : g.bases) {
@@ -131,9 +138,6 @@ std::vector<float> ColonyEnvCpp::action_mask(std::vector<uint8_t>* reasons) {
                 mask[act] = 1.0f;
                 if (rs) (*rs)[act] = (uint8_t)MR_OPEN;
             }
-        } else if (!apply_mask) {
-            mask[act] = 1.0f;
-            if (rs) (*rs)[act] = (uint8_t)MR_OPEN;
         } else if (i == 0) {
             // IMPROVE_LAND: нужны деньги и клетка, за которую ещё платится
             // земельный налог. Выкуп снимает налог навсегда (см.

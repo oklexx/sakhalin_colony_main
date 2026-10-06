@@ -282,6 +282,11 @@ std::vector<float> ColonyVecEnvCpp::minimap_batch() const {
     std::vector<float> out((size_t)n * per, 0.0f);
     for (int i = 0; i < n; i++) {
         std::vector<float> mm = envs_[(size_t)i].minimap();
+        if (mm.size() != per) {
+            throw std::runtime_error(
+                "ColonyVecEnvCpp::minimap_batch: unexpected minimap size " +
+                std::to_string(mm.size()) + ", expected " + std::to_string(per));
+        }
         std::copy(mm.begin(), mm.end(), out.begin() + (size_t)i * per);
     }
     return out;
