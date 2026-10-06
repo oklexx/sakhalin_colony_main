@@ -1,6 +1,7 @@
 #include "colony/bases.h"
 #include "colony/constants.h"
 #include "colony/data.h"
+#include "colony/build_preview.h"
 #include "colony/env.h"
 #include "colony/game.h"
 #include "colony/earth.h"
@@ -78,9 +79,18 @@ static const Color C_WATER     = {131, 208, 227, 255};
 static const Color C_LAND      = {186, 211, 178, 255};
 static const Color C_WHITE     = {255, 255, 255, 255};
 static const Color C_BLACK     = {0, 0, 0, 255};
+// Море вокруг острова (LT_NONE). Раньше рисовалось тем же светло-зелёным, что
+// и «ровная земля», хотя строить на нём нельзя (Game::can_build_at требует
+// lot >= LT_NORMAL). Из-за этого протяжка дороги по «полю» молча обтекала
+// невидимую воду — дорога выходила «лесенкой», и причина была не видна.
+static const Color C_SEA       = {72, 112, 140, 255};
+static const Color C_SEA_DEEP  = {54, 88, 114, 255};
+// Подсветка законности постройки (предпросмотр).
+static const Color C_OK_TINT   = {60, 220, 90, 90};
+static const Color C_BAD_TINT  = {230, 60, 50, 95};
 
 static const char* LOT_NAMES[9] = {
-    "ничего", "ровная земля", "вода", "лес", "уголь",
+    "море (строить нельзя)", "ровная земля", "вода", "лес", "уголь",
     "железо", "нефть", "золото", "?"
 };
 static const char* RES_SHORT[9] = {
@@ -92,9 +102,13 @@ static const char* RES_SHORT[9] = {
 static Color lot_color(int8_t lot) {
     switch (lot) {
         case LT_WATER: return C_WATER;
+        case LT_NONE:  return C_SEA;   // не остров: строить нельзя
         default:       return C_LAND;
     }
 }
+// Клетка в принципе пригодна под застройку по типу земли (без учёта
+// примыкания/денег). Первая проверка Game::can_build_at.
+static bool lot_is_land(int8_t lot) { return colony::preview::lot_is_land(lot); }
 
 // ═══ BUILDING ICON FALLBACK COLORS ═══
 struct BIcon { const char* id; Color c; };
@@ -197,6 +211,94 @@ static bool can_build_cell(const Game& g, const BaseData& bd, int x, int y) {
     return g.can_build_at(bd, x, y).first;
 }
 static bool game_over = false;
+
+// ═══════════════════════════════════════════════════════════════
+// UX-слой: сообщения, активная клетка, предпросмотр застройки
+// ═══════════════════════════════════════════════════════════════
+//
+// Раньше строка `status` («Место занято», «Недостаточно денег», «Построено:
+// 12», «Здание должно примыкать…») собиралась в обработчиках и НИГДЕ не
+// выводилась — игрок не получал ни одного объяснения, почему постройка не
+// встала. Теперь каждое сообщение попадает в журнал и показывается поверх
+// карты несколько секунд.
+struct LogMsg { std::string text; float age; bool error; };
+static std::vector<LogMsg> g_log;        // последние сообщения (новые в конце)
+static const size_t LOG_KEEP = 6;
+static const float LOG_TTL = 6.0f;
+
+// Сообщение-ошибка? Нужен только цвет, поэтому эвристика по началу строки.
+static bool msg_is_error(const std::string& s) {
+    static const char* bad[] = {
+        "Нельзя", "Недостаточно", "Не ", "Нет ", "Место занято", "Нужно",
+        "Здание должно", "Постройка закрыта", "Неподходящий", "Вне карты",
+        "Там нет", "Эту постройку", "Нечего", "Ремонт не требуется",
+    };
+    for (const char* b : bad)
+        if (s.rfind(b, 0) == 0) return true;
+    return false;
+}
+static void push_log(const std::string& s) {
+    if (s.empty()) return;
+    if (!g_log.empty() && g_log.back().text == s) { g_log.back().age = 0.0f; return; }
+    g_log.push_back({s, 0.0f, msg_is_error(s)});
+    while (g_log.size() > LOG_KEEP) g_log.erase(g_log.begin());
+}
+static void tick_log(float dt) {
+    for (auto& m : g_log) m.age += dt;
+    while (!g_log.empty() && g_log.front().age > LOG_TTL) g_log.erase(g_log.begin());
+}
+
+// ─── Активная клетка ───────────────────────────────────────────
+// Контракт: активная клетка существует ВСЕГДА (стартует на городе), её
+// двигают WASD/стрелки и клик мышью, камера сама подтягивается следом.
+static int act_x = -1, act_y = -1;
+static void reset_active_cell(const Game& g) {
+    act_x = g.earth.init_sel_x;
+    act_y = g.earth.init_sel_y;
+}
+static void clamp_active_cell(const Game& g) {
+    const int ms = g.map_size();
+    if (act_x < 0 || act_y < 0) { reset_active_cell(g); return; }
+    act_x = std::max(0, std::min(ms - 1, act_x));
+    act_y = std::max(0, std::min(ms - 1, act_y));
+}
+
+// ─── Предпросмотр застройки ────────────────────────────────────
+// Логика живёт в include/colony/build_preview.h и проверяется пробой
+// tests/cpp/build_preview_check.cpp (сверка с Game::can_build_at по всей
+// карте) — gui.cpp под Linux не собрать, а ошибаться подсветкой нельзя.
+static std::vector<char> g_conn;        // 1 = клетка примыкает к колонии
+static int g_conn_ms = -1;
+
+static void refresh_connectivity(const Game& g) {
+    // Считается заново каждый кадр и только когда включён режим стройки:
+    // один обход карты (≤78 тыс. клеток) против 2500 BFS, если звать
+    // can_build_at() на каждую клетку выделения. Кэшировать нельзя — после
+    // постройки/сноса/undo карта меняется, а подсветка обязана быть точной.
+    g_conn_ms = g.map_size();
+    colony::preview::connectivity_map(g, g_conn);
+}
+static std::string preview_reason(const Game& g, const BaseData& bd, int x, int y) {
+    return colony::preview::reason(g, bd, x, y, g_conn);
+}
+static bool preview_ok(const Game& g, const BaseData& bd, int x, int y) {
+    return colony::preview::ok(g, bd, x, y, g_conn);
+}
+
+// Разделитель разрядов для денег: 48 400 читается, 48400 — нет.
+static std::string money_str(int64_t v) {
+    char raw[32];
+    snprintf(raw, sizeof(raw), "%lld", (long long)(v < 0 ? -v : v));
+    std::string s(raw), out;
+    int c = 0;
+    for (int i = (int)s.size() - 1; i >= 0; --i) {
+        out += s[(size_t)i];
+        if (++c % 3 == 0 && i > 0) out += ' ';
+    }
+    if (v < 0) out += '-';
+    std::reverse(out.begin(), out.end());
+    return out;
+}
 
 // ═══ Demo recording (behavioral cloning): --record-demo PATH ═══
 //
@@ -342,6 +444,7 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
     }
     // Build: always add cells adjacent to already-built to the frontier
     int built = 0, skipped = 0;
+    bool out_of_money = false;
     std::string fail_reason;  // PR 2: первая ошибка — гейт виден как гейт
     for (size_t frontier_head = 0; frontier_head < frontier.size(); ++frontier_head) {
         Cell c = frontier[frontier_head];
@@ -359,19 +462,31 @@ static void do_build_area(ColonyEnvCpp& env, Game& g, int action, bool area,
         } else {
             skipped++;
             if (fail_reason.empty()) fail_reason = r.second;
-            status = r.second;
-            break;
+            // Деньги кончились — дальше смысла нет. Любая другая причина
+            // (тип земли, сгоревший участок, гейт) касается ОДНОЙ клетки:
+            // раньше цикл обрывался на ней и остальная часть выделения молча
+            // не застраивалась — со стороны это и выглядело «лесенкой».
+            if (r.second == "Недостаточно денег.") { out_of_money = true; break; }
         }
     }
-    if (built > 0 && skipped > 0) {
-        // PR 2: «не хватило денег» — только когда ошибка и правда денежная,
-        // иначе (гейт курикулума) показываем её текст как есть.
-        if (fail_reason == "Недостаточно денег.")
-            status = TextFormat("Построено: %d, не хватило денег на %d", built, skipped);
-        else
-            status = TextFormat("Построено: %d; %s", built, fail_reason.c_str());
-    } else if (built > 0)
-        status = TextFormat("Построено: %d", built);
+    // Клетки области, до которых застройка вообще не дошла (море, чужой тип
+    // земли, нет связи с колонией) — главная причина «дырявой» дороги.
+    const int unreachable = (int)remaining.size();
+    if (built > 0) {
+        std::string msg = TextFormat("Построено: %d", built);
+        if (out_of_money)
+            msg += TextFormat(", дальше не хватило денег (нужно %lld ₽ за клетку)",
+                              (long long)bd->price);
+        if (unreachable > 0 || (skipped > 0 && !out_of_money)) {
+            int bad = unreachable + (out_of_money ? 0 : skipped);
+            msg += TextFormat("; пропущено клеток: %d", bad);
+            if (!fail_reason.empty()) msg += " — " + fail_reason;
+            else msg += " — море / не тот тип земли / нет связи с колонией";
+        }
+        status = msg;
+    } else if (!fail_reason.empty()) {
+        status = fail_reason;
+    }
 }
 static void load_assets() {
     char p[256];
@@ -455,6 +570,7 @@ static void draw_build_pixel(int x, int y, int sz, const std::string& id, bool s
 
 // ═══ Time helpers (День / Неделя / Месяц / jump) ═══
 static Rectangle g_time_btn[3];
+static Rectangle g_speed_btn[4] = {};
 static Rectangle g_date_strip = {0, 0, 0, 0};
 static Rectangle g_tool_rect[12];
 
@@ -488,9 +604,13 @@ static void jump_to_day(ColonyEnvCpp& env, int target) {
 // ═══ Real terrain minimap (как _render_plan) ═══
 static Texture2D g_mini_tex = {0};
 static int g_mini_ms = 0;
+static uint64_t g_mini_seed = 0;
 static void draw_minimap(int mx, int my, int mw, int mh, const Game& g, const Camera2D& cam) {
     int ms = g.map_size();
-    if (g_mini_ms != ms) {
+    // БАГ: текстура кэшировалась только по размеру карты — после «Новая
+    // карта» того же размера миникарта продолжала показывать СТАРЫЙ остров.
+    if (g_mini_ms != ms || g_mini_seed != (uint64_t)g.earth.seed()) {
+        g_mini_seed = (uint64_t)g.earth.seed();
         if (g_mini_tex.id) UnloadTexture(g_mini_tex);
         Image img = GenImageColor(ms, ms, BLANK);
         unsigned char* p = (unsigned char*)img.data;
@@ -512,6 +632,9 @@ static void draw_minimap(int mx, int my, int mw, int mh, const Game& g, const Ca
     for (const Base& b : g.bases) {
         int bx = mx + (int)(b.x * scale);
         int by = my + (int)(b.y * scale);
+        // дороги — отдельным (тёмным) цветом: сеть видно как сеть,
+        // а не как россыпь таких же красных точек, что и здания
+        if (b.data->id == ROAD_ID) { DrawRectangle(bx, by, 2, 2, {90, 80, 70, 255}); continue; }
         if (b.data->plan) DrawRectangle(bx - 2, by - 2, 4, 4, {200, 40, 30, 255});
         else DrawRectangle(bx - 1, by - 1, 3, 3, {200, 40, 30, 255});
         if (b.is_alarm()) draw_tex(iconTex[0], bx - 7, by - 7, 14);
@@ -533,7 +656,8 @@ static void draw_minimap(int mx, int my, int mw, int mh, const Game& g, const Ca
 // DIALOG / MENU STATE (immediate mode)
 // ═══════════════════════════════════════════════════════════════
 enum Dlg { DLG_NONE, DLG_MARKET, DLG_BANK, DLG_NALON, DLG_NALON_MAIN,
-           DLG_SEASON, DLG_ABOUT, DLG_MESS, DLG_NEW, DLG_OPEN, DLG_SAVE };
+           DLG_SEASON, DLG_ABOUT, DLG_MESS, DLG_NEW, DLG_OPEN, DLG_SAVE,
+           DLG_CONFIRM };
 static Dlg cur_dlg = DLG_NONE;
 static bool tax_from_dialog = false;  // рынок открыт из диалога налогов
 static int open_menu = -1;
@@ -542,7 +666,8 @@ static long long market_qty[9] = {0};
 static char bank_buf[32] = {0};
 static int dlg_season = 0;
 static char mess_title[64] = "Сообщение";
-static char mess_text[1024] = "";
+// 4 КБ: текст помощи в UTF-8 (кириллица — 2 байта на символ)
+static char mess_text[4096] = "";
 static bool want_close = false;
 
 // ═══ Headless AI mode (policy-driven) ═══
@@ -670,6 +795,7 @@ static void ai_reset_env(ColonyEnvCpp& env) {
     ai_terminated = false;
     ai_reset_timer = 0.0f;
     sel_bx = sel_by = -1;
+    reset_active_cell(env.game());
     cur_dlg = DLG_NONE;
     stat_built.clear(); stat_earned = 0; stat_spent = 0;
     stat_started = false; stat_tax_over = false;
@@ -833,9 +959,26 @@ static void draw_about() {
 
 // ─── MESS ───
 static void draw_mess() {
-    int w = 320, h = 140, x = (WIN_W - w)/2, y = (WIN_H - h)/2;
+    // Окно подстраивается под текст: справка теперь длинная (раньше короткая
+    // строка была зашита в 320x140, и любой многострочный текст вылезал).
+    std::vector<std::string> lines;
+    {
+        std::string cur;
+        for (const char* p = mess_text; *p; ++p) {
+            if (*p == '\n') { lines.push_back(cur); cur.clear(); }
+            else cur += *p;
+        }
+        lines.push_back(cur);
+    }
+    int lh = 19, maxw = 240;
+    for (const std::string& l : lines)
+        maxw = std::max(maxw, (int)MeasureTextEx(gFont, l.c_str(), 16.0f, 1.0f).x);
+    int w = std::min(WIN_W - 40, maxw + 36);
+    int h = std::min(WIN_H - 40, (int)lines.size() * lh + 96);
+    int x = (WIN_W - w)/2, y = (WIN_H - h)/2;
     panel(x, y, w, h, mess_title);
-    text(mess_text, x + 16, y + 44, 16, WHITE);
+    for (size_t i = 0; i < lines.size(); i++)
+        text(lines[i].c_str(), x + 16, y + 40 + (int)i * lh, 16, WHITE);
     if (btn(x + (w - 80)/2, y + h - 40, 80, 30, "OK")) cur_dlg = DLG_NONE;
 }
 
@@ -870,7 +1013,7 @@ static void draw_newgame(ColonyEnvCpp& env) {
     std::vector<std::string> maps = {"Старый город", "Новый город 2", "Сахалин"};
     static int sel = 0;
     list_box(x + 14, y + 64, 300, 150, maps, sel, sel);
-    if (btn(x + 330, y + 64, 110, 32, "ОК")) { env.reset(42); sel_bx = sel_by = -1; cur_dlg = DLG_NONE; tax_from_dialog = false; stat_built.clear(); stat_earned = 0; stat_spent = 0; stat_started = false; stat_tax_over = false; ai_build_msg[0] = '\0'; ai_build_msg_timer = 0.0f; }
+    if (btn(x + 330, y + 64, 110, 32, "ОК")) { env.reset(42); reset_active_cell(env.game()); sel_bx = sel_by = -1; cur_dlg = DLG_NONE; tax_from_dialog = false; stat_built.clear(); stat_earned = 0; stat_spent = 0; stat_started = false; stat_tax_over = false; ai_build_msg[0] = '\0'; ai_build_msg_timer = 0.0f; }
     if (btn(x + 330, y + 104, 110, 32, "Отмена")) cur_dlg = DLG_NONE;
 }
 static void draw_open(ColonyEnvCpp& env) {
@@ -880,7 +1023,10 @@ static void draw_open(ColonyEnvCpp& env) {
     auto items = list_saves();
     static int sel = -1;
     list_box(x + 14, y + 64, 300, 150, items, sel, sel);
-    if (btn(x + 330, y + 64, 110, 32, "ОК")) { strcpy(mess_title,"Сообщение"); strcpy(mess_text,"Загрузка в C++ не реализована"); cur_dlg=DLG_MESS; }
+    if (btn(x + 330, y + 64, 110, 32, "ОК")) { strcpy(mess_title,"Сообщение"); snprintf(mess_text, sizeof(mess_text), "%s",
+        "Загрузка сохранений пока не реализована.\n"
+        "Сейчас партию можно начать заново: Игра → Новая (F4),\n"
+        "а на экране итогов — «Повторить карту» (тот же сид)."); cur_dlg=DLG_MESS; }
     if (btn(x + 330, y + 104, 110, 32, "Отмена")) cur_dlg = DLG_NONE;
 }
 static void draw_save() {
@@ -891,7 +1037,10 @@ static void draw_save() {
     static int sel = -1;
     list_box(x + 14, y + 64, 300, 150, items, sel, sel);
     text("Введите название файла", x + 14, y + 224, 14, WHITE);
-    if (btn(x + 330, y + 64, 110, 32, "ОК")) { strcpy(mess_title,"Сообщение"); strcpy(mess_text,"Сохранение в C++ не реализовано"); cur_dlg=DLG_MESS; }
+    if (btn(x + 330, y + 64, 110, 32, "ОК")) { strcpy(mess_title,"Сообщение"); snprintf(mess_text, sizeof(mess_text), "%s",
+        "Сохранение пока не реализовано: состояние партии\n"
+        "(дата, деньги, все постройки, износ, казна) ещё не сериализуется.\n"
+        "Сид карты виден в заголовке — его можно переиграть заново."); cur_dlg=DLG_MESS; }
     if (btn(x + 330, y + 104, 110, 32, "Отмена")) cur_dlg = DLG_NONE;
 }
 
@@ -928,8 +1077,10 @@ static void draw_top_menu(ColonyEnvCpp& env) {
         DrawRectangleLines(tx[0], dy, 240, 4*CH, C_ACCENT);
     } else if (open_menu == 1) {
         int dy = TOP_H;
-        const char* its[] = {"Звук (F7)", "Музыка (F8)", "Полный экран (F9)", "Параметры (F12)"};
-        bool en[] = {true, false, true, false};
+        // «Звук» был рабочим с виду переключателем, который ничего не делал:
+        // звуков в сборке нет вовсе. Честнее показать его выключенным.
+        const char* its[] = {"Звук — нет в сборке", "Музыка (F8)", "Полный экран (F9)", "Параметры (F12)"};
+        bool en[] = {false, false, true, false};
         for (int i = 0; i < 4; i++) {
             Rectangle r = {(float)tx[1], (float)(dy + i*CH), 240, CH};
             bool h = en[i] && CheckCollisionPointRec(mp, r);
@@ -949,7 +1100,7 @@ static void draw_top_menu(ColonyEnvCpp& env) {
             Rectangle r = {(float)tx[2], (float)(dy + i*CH), 240, CH};
             bool h = CheckCollisionPointRec(mp, r);
             if (h && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-                if (i == 0) { strcpy(mess_title,"Помощь"); strcpy(mess_text,"Стрелки — сдвиг карты, Пробел — день, W — неделя,\nB — купить, S — продать, K — банк, G — выкупить участок (снимает налог),\nF — поиск, R — восстановить, P — блок, D — разобрать,\nU — отмена, ЛКМ по карте — зажать и выделить область, ПКМ — меню зданий (выбор ЛКМ строит)."); cur_dlg = DLG_MESS; }
+                if (i == 0) { strcpy(mess_title,"Помощь"); snprintf(mess_text, sizeof(mess_text), "%s", "КАРТА И КЛЕТКА\nWASD или стрелки — двигать активную клетку (она активна всегда)\nЛКМ — выбрать клетку/здание, протяжка — выделить область\nCtrl+стрелки, средняя кнопка мыши, край экрана — сдвиг карты; Home — к городу\nКолесо или +/- — зум (к курсору мыши)\n\nСТРОИТЕЛЬСТВО\nИконка в палитре или ПКМ по карте — взять постройку в руку:\nзелёная подсветка = встанет, красная = нельзя (море, тип земли, нет связи)\nЛКМ — поставить, протяжка — заполнить область, Enter — в активную клетку\nEsc или ПКМ — выйти из режима строительства\n\nВРЕМЯ\nПробел — день, Shift+Пробел — неделя, Ctrl+Пробел — месяц\n0 — пауза, 1/2/3 — автоматический ход времени\n\nДЕЙСТВИЯ НАД АКТИВНОЙ КЛЕТКОЙ\nR — ремонт, Shift+R — ремонт всех, Delete — снести, P — консервация\nG — выкупить участок (снимает налог), F — найти изношенное\nB — купить, M — продать, K — банк, Ctrl+Z — отменить\nF1 помощь, F2 сохранить, F4 новая, F5 загрузить, F9 полный экран"); cur_dlg = DLG_MESS; }
                 else cur_dlg = DLG_ABOUT;
                 open_menu = -1;
             }
@@ -962,6 +1113,23 @@ static void draw_top_menu(ColonyEnvCpp& env) {
 
 // ─── TOOL BUTTONS (top band, справа от палитры) ───
 struct ToolDef { int img; int action; int row; int col; };
+// Подписи кнопок: 12 безымянных иконок игрок мог опознать только методом тыка
+// (а половина из них ещё и не работала — см. фикс `over_map` в обработчике).
+static const char* TOOL_HINT[13] = {
+    "",
+    "Выкупить участок под активной клеткой (G) — снимает земельный налог",
+    "Найти самую изношенную постройку (F)",
+    "Ремонт постройки в активной клетке (R)",
+    "Ремонт всех построек (Shift+R)",
+    "Снести постройку в активной клетке (Delete)",
+    "Отменить последнее действие (Ctrl+Z)",
+    "Банк: кредит и погашение (K)",
+    "Консервация / расконсервация (P)",
+    "Купить ресурсы (B)",
+    "Продать ресурсы (M)",
+    "Прожить день (Пробел)",
+    "Прожить неделю (Shift+Пробел)",
+};
 static void draw_tools(ColonyEnvCpp& env) {
     (void)env;
     static const ToolDef tools[12] = {
@@ -969,6 +1137,7 @@ static void draw_tools(ColonyEnvCpp& env) {
         {25,7,1,0},  {23,8,1,1},
         {12,9,2,0},  {11,10,2,1}, {10,11,2,4}, {14,12,2,5},
     };
+    int hint = -1, hx = 0, hy = 0;
     for (int i = 0; i < 12; i++) {
         int x = TOOL_X0 + tools[i].col * BSTEP;
         int y = PAL_Y0 + tools[i].row * BSTEP;
@@ -979,6 +1148,15 @@ static void draw_tools(ColonyEnvCpp& env) {
         DrawRectangleRec(r, hov ? Color{60,120,200,255} : C_TOOLBTN);
         DrawRectangleLines(x, y, BS, BS, {70, 90, 80, 255});
         draw_tex(toolTex[tools[i].img], x + 3, y + 3, BS - 6);
+        if (hov) { hint = tools[i].action; hx = x; hy = y + BS + 4; }
+    }
+    if (hint > 0 && hint < 13) {
+        const char* t = TOOL_HINT[hint];
+        int w = (int)MeasureTextEx(gFont, t, 15.0f, 1.0f).x + 16;
+        int x = std::min(hx, WIN_W - w - 4);
+        DrawRectangle(x, hy, w, 22, Color{20, 26, 18, 245});
+        DrawRectangleLines(x, hy, w, 22, C_ACCENT);
+        text(t, x + 8, hy + 3, 15, C_WHITE);
     }
 }
 
@@ -1191,6 +1369,23 @@ int main(int argc, char* argv[]) {
     static Rectangle g_mini_rect = {0, 0, 0, 0};
     static Rectangle g_popup_rect = {0, 0, 0, 0};
     std::string status = "";
+    // Режим строительства: выбрал здание — курсор «держит» его, ЛКМ ставит,
+    // Esc/ПКМ выходит. До этого здание можно было поставить только так:
+    // «выдели область → ткни в палитру», причём выделение гасилось после
+    // КАЖДОЙ постройки.
+    static bool build_mode = false;
+    static bool mini_drag = false;
+    static bool follow_active = false;   // подтянуть камеру к активной клетке
+    // Авто-ход времени: 0 — пауза, иначе дней в секунду.
+    static const float SPEED_DPS[4] = {0.0f, 2.0f, 6.0f, 20.0f};
+    static int speed_idx = 0;
+    static float speed_acc = 0.0f;
+    // Подтверждение сноса (ценное здание сносилось одним нажатием D).
+    static bool ask_destroy = true;
+    static int confirm_x = -1, confirm_y = -1;
+    static std::string confirm_text;
+
+    reset_active_cell(g);
 
     SetConfigFlags(FLAG_VSYNC_HINT);
     InitWindow(WIN_W, WIN_H, "Сахалинская колония 3.47");
@@ -1338,7 +1533,7 @@ int main(int argc, char* argv[]) {
             text(TextFormat("Потрачено:  %lld", (long long)stat_spent), lx, my, 18, C_PANEL_FG); my += 26;
             if (btn(px + 20, py + ph - 50, 170, 36, "Новая карта")) {
                 int64_t new_seed = (int64_t)GetRandomValue(1, 999999999);
-                env.reset(new_seed); sel_bx = sel_by = -1; cur_dlg = DLG_NONE;
+                env.reset(new_seed); reset_active_cell(env.game()); sel_bx = sel_by = -1; cur_dlg = DLG_NONE;
                 tax_from_dialog = false;
                 cam.target = {(float)env.game().earth.init_sel_x * TILE,
                               (float)env.game().earth.init_sel_y * TILE};
@@ -1350,7 +1545,7 @@ int main(int argc, char* argv[]) {
             }
             if (btn(px + pw/2 - 80, py + ph - 50, 160, 36, "Повторить карту")) {
                 int64_t same_seed = (int64_t)env.game().earth.seed();
-                env.reset(same_seed); sel_bx = sel_by = -1; cur_dlg = DLG_NONE;
+                env.reset(same_seed); reset_active_cell(env.game()); sel_bx = sel_by = -1; cur_dlg = DLG_NONE;
                 tax_from_dialog = false;
                 cam.target = {(float)env.game().earth.init_sel_x * TILE,
                               (float)env.game().earth.init_sel_y * TILE};
@@ -1373,9 +1568,15 @@ int main(int argc, char* argv[]) {
         Game& gm = env.game();
 
         if (!headless_ai) {
-        // ── Esc closes any open dialog ──
-        if (cur_dlg != DLG_NONE && IsKeyPressed(KEY_ESCAPE)) {
-            cur_dlg = DLG_NONE;
+        // ── Esc: диалог → режим стройки → выделение ──
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            if (cur_dlg != DLG_NONE)      cur_dlg = DLG_NONE;
+            else if (popup_open)          popup_open = false;
+            else if (build_mode)        { build_mode = false; status = "Режим строительства выключен"; }
+            else if (has_sel || sel_bx >= 0) {
+                has_sel = false; sel_bx = -1; sel_by = -1;
+                sel_x0 = sel_x1 = act_x; sel_y0 = sel_y1 = act_y;
+            }
         }
 
         // drag-pan (middle button only; LMB is reserved for area selection)
@@ -1388,15 +1589,28 @@ int main(int argc, char* argv[]) {
         }
         if (IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE)) panning = false;
 
-        float wh = GetMouseWheelMove();
+        // Зум к курсору мыши (а не к центру экрана) и только над картой:
+        // колесо над панелью/палитрой больше не дёргает масштаб.
+        float wh = (over_map && cur_dlg == DLG_NONE) ? GetMouseWheelMove() : 0.0f;
         if (wh != 0) {
+            Vector2 before = GetScreenToWorld2D(mpos, cam);
             cam.zoom *= (wh > 0) ? 1.1f : 0.9f;
             if (cam.zoom < 0.4f) cam.zoom = 0.4f;
             if (cam.zoom > 3.0f) cam.zoom = 3.0f;
+            Vector2 after = GetScreenToWorld2D(mpos, cam);
+            cam.target.x += before.x - after.x;
+            cam.target.y += before.y - after.y;
+        }
+        if (cur_dlg == DLG_NONE) {
+            if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD))
+                cam.zoom = std::min(3.0f, cam.zoom * 1.25f);
+            if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT))
+                cam.zoom = std::max(0.4f, cam.zoom * 0.8f);
         }
 
-        // ── Keyboard arrow panning ──
-        {
+        // ── Камера с клавиатуры: Ctrl+стрелки (сами стрелки двигают клетку) ──
+        if (cur_dlg == DLG_NONE &&
+            (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))) {
             float ps = 14.0f / cam.zoom;
             if (IsKeyDown(KEY_RIGHT)) cam.target.x += ps;
             if (IsKeyDown(KEY_LEFT))  cam.target.x -= ps;
@@ -1407,7 +1621,7 @@ int main(int argc, char* argv[]) {
         // ── Edge-scroll when mouse approaches map border (with small delay) ──
         {
             float ed = 28.0f;
-            bool in_edge = over_map &&
+            bool in_edge = over_map && !popup_open &&
                 (mpos.x - MAP_X < ed || MAP_X + MAP_W - mpos.x < ed ||
                  mpos.y - MAP_Y < ed || MAP_Y + MAP_H - mpos.y < ed);
             static float edge_hold = 0.0f;
@@ -1419,6 +1633,61 @@ int main(int argc, char* argv[]) {
                 if (MAP_X + MAP_W - mpos.x < ed) cam.target.x += ps;
                 if (mpos.y - MAP_Y < ed)         cam.target.y -= ps;
                 if (MAP_Y + MAP_H - mpos.y < ed) cam.target.y += ps;
+            }
+        }
+
+        // ── Камеру нельзя увести за пределы карты (раньше можно было
+        //    уехать в пустоту и потерять колонию) ──
+        {
+            float lim = (float)g.map_size() * TILE;
+            cam.target.x = std::max(0.0f, std::min(lim, cam.target.x));
+            cam.target.y = std::max(0.0f, std::min(lim, cam.target.y));
+        }
+
+        // ── Активная клетка: WASD и стрелки, камера едет следом ──────────
+        // Клетка активна ВСЕГДА (стартует на городе) — раньше «курсор» жил
+        // только под мышью и исчезал, стоило увести её с карты.
+        clamp_active_cell(g);
+        if (cur_dlg == DLG_NONE && !popup_open) {
+            bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+            auto rep = [](int k) { return IsKeyPressed(k) || IsKeyPressedRepeat(k); };
+            int mvx = 0, mvy = 0;
+            if (rep(KEY_D) || (!ctrl && rep(KEY_RIGHT))) mvx += 1;
+            if (rep(KEY_A) || (!ctrl && rep(KEY_LEFT)))  mvx -= 1;
+            if (rep(KEY_S) || (!ctrl && rep(KEY_DOWN)))  mvy += 1;
+            if (rep(KEY_W) || (!ctrl && rep(KEY_UP)))    mvy -= 1;
+            if (mvx != 0 || mvy != 0) {
+                int stepn = (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT)) ? 5 : 1;
+                act_x += mvx * stepn;
+                act_y += mvy * stepn;
+                clamp_active_cell(g);
+                follow_active = true;
+                has_sel = false;          // клавиатура работает с одной клеткой
+                sel_x0 = sel_x1 = act_x;
+                sel_y0 = sel_y1 = act_y;
+            }
+            if (IsKeyPressed(KEY_HOME)) {
+                act_x = g.earth.init_sel_x;
+                act_y = g.earth.init_sel_y;
+                cam.target = {(float)act_x * TILE, (float)act_y * TILE};
+            }
+        }
+        // Камера подтягивается к активной клетке ТОЛЬКО когда её подвинули с
+        // клавиатуры: иначе было бы невозможно осмотреть карту мышью —
+        // вид отщёлкивало бы назад каждый кадр.
+        if (follow_active) {
+            follow_active = false;
+            float halfW = (MAP_W / 2.0f) / cam.zoom, halfH = (MAP_H / 2.0f) / cam.zoom;
+            float pxc = act_x * (float)TILE + TILE / 2.0f;
+            float pyc = act_y * (float)TILE + TILE / 2.0f;
+            float marg = TILE * 1.5f;
+            if (halfW > marg) {
+                if (pxc < cam.target.x - halfW + marg) cam.target.x = pxc + halfW - marg;
+                if (pxc > cam.target.x + halfW - marg) cam.target.x = pxc - halfW + marg;
+            }
+            if (halfH > marg) {
+                if (pyc < cam.target.y - halfH + marg) cam.target.y = pyc + halfH - marg;
+                if (pyc > cam.target.y + halfH - marg) cam.target.y = pyc - halfH + marg;
             }
         }
 
@@ -1448,11 +1717,14 @@ int main(int argc, char* argv[]) {
                             status = "Постройка закрыта курикулумом.";
                         } else {
                             sel_action = A_BUILD0 + i;
-                            status = env.build_data()[i]->caption;
+                            build_mode = true;   // курсор «держит» постройку
                             if (has_sel) {
+                                // есть выделенная область — ставим сразу в неё
                                 do_build_area(env, gm, A_BUILD0 + i, true,
                                               sel_x0, sel_y0, sel_x1, sel_y1, prc_x, prc_y, status);
-                                has_sel = false;
+                            } else {
+                                status = std::string(env.build_data()[i]->caption) +
+                                         " — ЛКМ по карте ставит, Esc отменяет";
                             }
                         }
                     }
@@ -1486,7 +1758,12 @@ int main(int argc, char* argv[]) {
                     }
                     else if (act == 11) { auto o = env_step_and_record(env, A_DAY); if (o.terminated) game_over = true; }
                     else if (act == 12) { auto o = env_step_and_record(env, A_WEEK); if (o.terminated) game_over = true; }
-                    else if (over_map && cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size()) {
+                    // БАГ: раньше здесь стояло `else if (over_map && ...)`,
+                    // а при клике по кнопке тулбара мышь по определению НЕ над
+                    // картой — все восемь «клеточных» кнопок молча ничего не
+                    // делали. Теперь они работают с АКТИВНОЙ клеткой.
+                    else {
+                        const int tx_ = act_x, ty_ = act_y;
                         if (act == 1) {
                             // IMPROVE_LAND (manager+0): RL сама решает, какую
                             // клетку улучшать (find_lot); клик (cx,cy) в
@@ -1496,12 +1773,16 @@ int main(int argc, char* argv[]) {
                                 auto o = env_step_and_record(env, MGR_IMPROVE_LAND);
                                 if (o.terminated) game_over = true;
                             } else {
-                                auto r = gm.good_earth(cx, cy); if (!r.first) status = r.second;
+                                auto r = gm.good_earth(tx_, ty_); if (!r.first) status = r.second;
                             }
                         }
                         else if (act == 2) {
                             Base* b = gm.find_slowest_base();
-                            if (b) { cam.target.x = (float)b->x*TILE; cam.target.y = (float)b->y*TILE; status = "Слабейшее: " + b->data->caption; }
+                            if (b) {
+                                cam.target.x = (float)b->x*TILE; cam.target.y = (float)b->y*TILE;
+                                act_x = b->x; act_y = b->y; sel_bx = b->x; sel_by = b->y;
+                                status = "Слабейшее: " + b->data->caption;
+                            }
                             else status = "Нет изношенных построек";
                         }
                         else if (act == 3) {
@@ -1511,7 +1792,7 @@ int main(int argc, char* argv[]) {
                                 auto o = env_step_and_record(env, MGR_REPAIR);
                                 if (o.terminated) game_over = true;
                             } else {
-                                auto r = gm.restore(cx, cy); if (!r.ok) status = r.msg;
+                                auto r = gm.restore(tx_, ty_); if (!r.ok) status = r.msg;
                             }
                         }
                         else if (act == 4) {
@@ -1529,7 +1810,16 @@ int main(int argc, char* argv[]) {
                                 auto o = env_step_and_record(env, MGR_DEMOLISH);
                                 if (o.terminated) game_over = true;
                             } else {
-                                auto r = gm.destroy(cx, cy); if (!r.first) status = r.second;
+                                const Base* b = gm.base_in_box(tx_, ty_);
+                                if (!b) status = "Там нет постройки";
+                                else if (ask_destroy) {
+                                    confirm_x = tx_; confirm_y = ty_;
+                                    confirm_text = "Снести «" + b->data->caption + "»?";
+                                    cur_dlg = DLG_CONFIRM;
+                                } else {
+                                    auto r = gm.destroy(tx_, ty_);
+                                    status = r.first ? "Постройка снесена" : r.second;
+                                }
                             }
                         }
                         else if (act == 6) {
@@ -1552,54 +1842,77 @@ int main(int argc, char* argv[]) {
                             // консервации с уже законсервированного здания
                             // логируется как manager+5, а не manager+4.
                             if (g_record_demo) {
-                                const Base* clicked = gm.base_in_box(cx, cy);
+                                const Base* clicked = gm.base_in_box(tx_, ty_);
                                 int mgr_action = (clicked != nullptr && clicked->preserved)
                                     ? MGR_UNPRESERVE : MGR_PRESERVE;
                                 auto o = env_step_and_record(env, mgr_action);
                                 if (o.terminated) game_over = true;
                             } else {
-                                auto r = gm.preserve(cx, cy); if (!r.first) status = r.second;
+                                auto r = gm.preserve(tx_, ty_); if (!r.first) status = r.second;
                             }
                         }
                     }
                 }
             }
-            // ── LMB drag = select area ONLY (no build yet) ──
+            // ── ЛКМ: клик — активная клетка, протяжка — область ──
+            // В режиме строительства отпускание кнопки СРАЗУ ставит здание
+            // (клик — одну штуку, протяжка — всю область). Вне режима клик
+            // выбирает клетку/здание и не гасит ничего лишнего.
             if (!popup_open) {
                 if (pressed && over_map) {
-                    selecting = true; has_sel = false; sel_bx = -1; sel_by = -1;
+                    selecting = true;
                     sel_x0 = sel_x1 = cx; sel_y0 = sel_y1 = cy;
+                    act_x = cx; act_y = cy; clamp_active_cell(g);
                 }
                 if (selecting && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && over_map) {
                     sel_x1 = cx; sel_y1 = cy;
+                    act_x = cx; act_y = cy; clamp_active_cell(g);
                 }
                 if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && selecting) {
                     selecting = false;
-                    if (sel_x0 == sel_x1 && sel_y0 == sel_y1) {
-                        // single-cell click: if a building is there, select it for info
-                        const Base* b = (cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size())
-                                           ? g.base_in_box(cx, cy) : nullptr;
-                        if (b) { sel_bx = cx; sel_by = cy; has_sel = false; status = b->data->caption; }
-                        else   { sel_bx = -1; sel_by = -1; has_sel = true; sel_x0 = sel_x1 = cx; sel_y0 = sel_y1 = cy; }
+                    const bool single = (sel_x0 == sel_x1 && sel_y0 == sel_y1);
+                    const bool in_map = sel_x1 >= 0 && sel_y1 >= 0 &&
+                                        sel_x1 < g.map_size() && sel_y1 < g.map_size();
+                    const Base* b = (single && in_map) ? g.base_in_box(sel_x1, sel_y1) : nullptr;
+                    int bi = sel_action - A_BUILD0;
+                    if (build_mode && in_map && bi >= 0 && bi < nb) {
+                        has_sel = !single;
+                        sel_bx = -1; sel_by = -1;
+                        do_build_area(env, gm, sel_action, !single,
+                                      sel_x0, sel_y0, sel_x1, sel_y1, sel_x1, sel_y1, status);
+                    } else if (b) {
+                        // клик по зданию — карточка здания справа внизу
+                        sel_bx = sel_x1; sel_by = sel_y1; has_sel = false;
+                        status = b->data->caption;
                     } else {
-                        has_sel = true; sel_bx = -1; sel_by = -1;
+                        sel_bx = -1; sel_by = -1;
+                        has_sel = true;   // остаётся до Esc или нового выделения
                     }
                 }
             }
 
-            // ── Minimap LMB click = recenter big map to that point ──
-            if (pressed && g_mini_rect.width > 0 && CheckCollisionPointRec(mpos, g_mini_rect)) {
+            // ── Миникарта: клик И перетаскивание переносят вид ──
+            if (g_mini_rect.width > 0 &&
+                ((pressed && CheckCollisionPointRec(mpos, g_mini_rect)) ||
+                 (mini_drag && IsMouseButtonDown(MOUSE_BUTTON_LEFT)))) {
+                mini_drag = true;
                 float fx = (mpos.x - g_mini_rect.x) / g_mini_rect.width;
                 float fy = (mpos.y - g_mini_rect.y) / g_mini_rect.height;
+                fx = std::max(0.0f, std::min(1.0f, fx));
+                fy = std::max(0.0f, std::min(1.0f, fy));
                 int msz = gm.map_size();
                 cam.target.x = fx * msz * TILE;
                 cam.target.y = fy * msz * TILE;
             }
+            if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) mini_drag = false;
 
-            // ── ПКМ = open building popup (or close if already open) ──
+            // ── ПКМ = отмена режима стройки, иначе меню зданий ──
             if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) {
                 if (popup_open) {
                     popup_open = false;
+                } else if (build_mode) {
+                    build_mode = false;
+                    status = "Режим строительства выключен";
                 } else if (over_map) {
                     int pcols = 6, pcell = 44;
                     int prows = (nb + pcols - 1) / pcols;
@@ -1631,7 +1944,7 @@ int main(int argc, char* argv[]) {
                             do_build_area(env, gm, A_BUILD0 + ci, has_sel,
                                           sel_x0, sel_y0, sel_x1, sel_y1, prc_x, prc_y, status);
                             sel_action = A_BUILD0 + ci;
-                            has_sel = false;
+                            build_mode = true;   // можно продолжать ставить ЛКМ
                         }
                     }
                     popup_open = false;
@@ -1644,9 +1957,17 @@ int main(int argc, char* argv[]) {
             // time buttons
             for (int i = 0; i < 3; i++) {
                 if (pressed && CheckCollisionPointRec(mpos, g_time_btn[i])) {
-                    if (i == 0) { auto o = env.step(A_DAY); if (o.terminated) game_over = true; }
-                    else if (i == 1) { auto o = env.step(A_WEEK); if (o.terminated) game_over = true; }
+                    if (i == 0) { auto o = env_step_and_record(env, A_DAY); if (o.terminated) game_over = true; }
+                    else if (i == 1) { auto o = env_step_and_record(env, A_WEEK); if (o.terminated) game_over = true; }
                     else advance_month(env);
+                }
+            }
+            // кнопки скорости авто-хода
+            for (int i = 0; i < 4; i++) {
+                if (pressed && g_speed_btn[i].width > 0 &&
+                    CheckCollisionPointRec(mpos, g_speed_btn[i])) {
+                    speed_idx = i; speed_acc = 0.0f;
+                    status = (i == 0) ? "Пауза" : TextFormat("Авто-ход x%d", i);
                 }
             }
             // date strip click -> jump
@@ -1664,71 +1985,114 @@ int main(int argc, char* argv[]) {
             // человек, играющий горячими клавишами вместо кликов по
             // тулбару, молча выпадал бы из записи демо (см.
             // docs/IMITATION_LEARNING_2026_09.md).
-            if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_N)) {
-                auto out = env_step_and_record(env, A_DAY); if (out.terminated) game_over = true;
+            //
+            // Раскладка переехала: WASD заняты движением активной клетки, а
+            // действия над клеткой теперь применяются к АКТИВНОЙ клетке и не
+            // требуют держать мышь над картой (раньше U/A/R молчали, если
+            // курсор ушёл на панель).
+            const bool shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+            const bool ctrl  = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+            const int kx = act_x, ky = act_y;
+
+            if (IsKeyPressed(KEY_SPACE) || IsKeyPressed(KEY_N)) {
+                if (ctrl) advance_month(env);
+                else if (shift) { auto o = env_step_and_record(env, A_WEEK); if (o.terminated) game_over = true; }
+                else { auto o = env_step_and_record(env, A_DAY); if (o.terminated) game_over = true; }
             }
-            if (IsKeyPressed(KEY_W)) {
-                auto out = env_step_and_record(env, A_WEEK); if (out.terminated) game_over = true;
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER)) {
+                int bi = sel_action - A_BUILD0;
+                if (build_mode && bi >= 0 && bi < nb) {
+                    do_build_area(env, gm, sel_action, has_sel,
+                                  sel_x0, sel_y0, sel_x1, sel_y1, kx, ky, status);
+                } else {
+                    auto o = env_step_and_record(env, A_DAY); if (o.terminated) game_over = true;
+                }
             }
-            if (over_map && cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size()) {
+            // скорость времени: 0 — пауза, 1/2/3 — авто-ход
+            for (int s = 0; s < 4; s++)
+                if (IsKeyPressed(KEY_ZERO + s)) {
+                    speed_idx = s; speed_acc = 0.0f;
+                    status = s == 0 ? "Пауза" : TextFormat("Авто-ход ×%d", s);
+                }
+            {
                 if (IsKeyPressed(KEY_G)) {
                     if (g_record_demo) {
                         auto o = env_step_and_record(env, MGR_IMPROVE_LAND);
                         if (o.terminated) game_over = true;
                     } else {
-                        auto r = gm.good_earth(cx, cy); if (!r.first) status = r.second;
+                        auto r = gm.good_earth(kx, ky); if (!r.first) status = r.second;
+                        else status = "Участок выкуплен — налога за него больше нет";
                     }
                 }
                 if (IsKeyPressed(KEY_F)) {
                     Base* b = gm.find_slowest_base();
-                    if (b) { cam.target.x = (float)b->x*TILE; cam.target.y = (float)b->y*TILE; status = "Слабейшее: " + b->data->caption; }
-                    else status = "Нет изношенных построек";
+                    if (b) {
+                        cam.target.x = (float)b->x*TILE; cam.target.y = (float)b->y*TILE;
+                        act_x = b->x; act_y = b->y;
+                        sel_bx = b->x; sel_by = b->y;
+                        status = "Слабейшее: " + b->data->caption;
+                    } else status = "Нет изношенных построек";
                 }
                 if (IsKeyPressed(KEY_R)) {
-                    if (g_record_demo) {
+                    if (shift) {
+                        if (g_record_demo) {
+                            auto o = env_step_and_record(env, MGR_REPAIR_ALL);
+                            if (o.terminated) game_over = true;
+                        } else {
+                            auto r = gm.restore_all();
+                            status = r.ok ? TextFormat("Отремонтировано построек: %lld за %s ₽",
+                                                       (long long)r.days, money_str(r.price).c_str())
+                                          : r.msg;
+                        }
+                    } else if (g_record_demo) {
                         auto o = env_step_and_record(env, MGR_REPAIR);
                         if (o.terminated) game_over = true;
                     } else {
-                        auto r = gm.restore(cx, cy); if (!r.ok) status = r.msg;
-                    }
-                }
-                if (IsKeyPressed(KEY_A)) {
-                    if (g_record_demo) {
-                        auto o = env_step_and_record(env, MGR_REPAIR_ALL);
-                        if (o.terminated) game_over = true;
-                    } else {
-                        auto r = gm.restore_all(); if (!r.ok) status = r.msg;
+                        auto r = gm.restore(kx, ky);
+                        status = r.ok ? TextFormat("Ремонт: %s ₽", money_str(r.price).c_str()) : r.msg;
                     }
                 }
                 if (IsKeyPressed(KEY_P)) {
                     if (g_record_demo) {
-                        const Base* clicked = gm.base_in_box(cx, cy);
+                        const Base* clicked = gm.base_in_box(kx, ky);
                         int mgr_action = (clicked != nullptr && clicked->preserved)
                             ? MGR_UNPRESERVE : MGR_PRESERVE;
                         auto o = env_step_and_record(env, mgr_action);
                         if (o.terminated) game_over = true;
                     } else {
-                        auto r = gm.preserve(cx, cy); if (!r.first) status = r.second;
+                        auto r = gm.preserve(kx, ky); if (!r.first) status = r.second;
+                        else status = "Консервация переключена";
                     }
                 }
-                if (IsKeyPressed(KEY_D)) {
+                // Снос — Delete (или X): с подтверждением, одной клавишей
+                // больше не теряется здание за 380 000 ₽.
+                if (IsKeyPressed(KEY_DELETE) || IsKeyPressed(KEY_X)) {
                     if (g_record_demo) {
                         auto o = env_step_and_record(env, MGR_DEMOLISH);
                         if (o.terminated) game_over = true;
                     } else {
-                        auto r = gm.destroy(cx, cy); if (!r.first) status = r.second;
+                        const Base* b = gm.base_in_box(kx, ky);
+                        if (!b) status = "Там нет постройки";
+                        else if (ask_destroy) {
+                            confirm_x = kx; confirm_y = ky;
+                            confirm_text = "Снести «" + b->data->caption + "»?";
+                            cur_dlg = DLG_CONFIRM;
+                        } else {
+                            auto r = gm.destroy(kx, ky);
+                            status = r.first ? "Постройка снесена" : r.second;
+                        }
                     }
                 }
-                if (IsKeyPressed(KEY_U)) {
+                if (IsKeyPressed(KEY_U) || (ctrl && IsKeyPressed(KEY_Z))) {
                     if (g_record_demo) status = "Отмена недоступна в режиме записи демо";
-                    else if (!gm.undo()) status = "Нечего отменять";
+                    else status = gm.undo() ? "Последнее действие отменено" : "Нечего отменять";
                 }
             }
             if (IsKeyPressed(KEY_B)) {
                 if (g_record_demo) status = "Рынок недоступен в режиме записи демо";
                 else { dlg_mode = 0; cur_dlg = DLG_MARKET; }
             }
-            if (IsKeyPressed(KEY_S)) {
+            if (IsKeyPressed(KEY_M)) {
                 if (g_record_demo) status = "Рынок недоступен в режиме записи демо";
                 else { dlg_mode = 1; cur_dlg = DLG_MARKET; }
             }
@@ -1743,7 +2107,7 @@ int main(int argc, char* argv[]) {
             if (IsKeyPressed(KEY_F2)) cur_dlg = DLG_SAVE;
             if (IsKeyPressed(KEY_F1)) {
                 strcpy(mess_title, "Помощь");
-                strcpy(mess_text, "Стрелки — сдвиг карты, Пробел — день, W — неделя,\nB — купить, S — продать, K — банк, G — выкупить участок (снимает налог),\nF — поиск, R — восстановить, P — блок, D — разобрать,\nU — отмена, ЛКМ по карте — зажать и выделить область, ПКМ — меню зданий (выбор ЛКМ строит).");
+                snprintf(mess_text, sizeof(mess_text), "%s", "КАРТА И КЛЕТКА\nWASD или стрелки — двигать активную клетку (она активна всегда)\nЛКМ — выбрать клетку/здание, протяжка — выделить область\nCtrl+стрелки, средняя кнопка мыши, край экрана — сдвиг карты; Home — к городу\nКолесо или +/- — зум (к курсору мыши)\n\nСТРОИТЕЛЬСТВО\nИконка в палитре или ПКМ по карте — взять постройку в руку:\nзелёная подсветка = встанет, красная = нельзя (море, тип земли, нет связи)\nЛКМ — поставить, протяжка — заполнить область, Enter — в активную клетку\nEsc или ПКМ — выйти из режима строительства\n\nВРЕМЯ\nПробел — день, Shift+Пробел — неделя, Ctrl+Пробел — месяц\n0 — пауза, 1/2/3 — автоматический ход времени\n\nДЕЙСТВИЯ НАД АКТИВНОЙ КЛЕТКОЙ\nR — ремонт, Shift+R — ремонт всех, Delete — снести, P — консервация\nG — выкупить участок (снимает налог), F — найти изношенное\nB — купить, M — продать, K — банк, Ctrl+Z — отменить\nF1 помощь, F2 сохранить, F4 новая, F5 загрузить, F9 полный экран");
                 cur_dlg = DLG_MESS;
             }
             if (IsKeyPressed(KEY_F7)) sound_on = !sound_on;
@@ -1777,6 +2141,29 @@ int main(int argc, char* argv[]) {
             else if (g.main_tax_due()) cur_dlg = DLG_NALON_MAIN;
         }
 
+        // ─── Авто-ход времени (пауза / ×1 / ×2 / ×3) ───
+        // Раньше время двигалось только кнопками «День/Неделя/Месяц»: на
+        // 10 000 игровых дней это десятки тысяч кликов.
+        if (!headless_ai && speed_idx > 0) {
+            if (cur_dlg != DLG_NONE || game_over || popup_open) {
+                speed_acc = 0.0f;
+            } else {
+                speed_acc += GetFrameTime() * SPEED_DPS[speed_idx];
+                int budget = 0;
+                while (speed_acc >= 1.0f && budget < 40 && !game_over && cur_dlg == DLG_NONE) {
+                    speed_acc -= 1.0f;
+                    budget++;
+                    auto o = env_step_and_record(env, A_DAY);
+                    if (o.terminated) { game_over = true; speed_idx = 0; }
+                }
+                if (speed_acc > 2.0f) speed_acc = 0.0f;
+            }
+        }
+
+        // ─── Сообщения: показать то, что раньше молча терялось ───
+        tick_log(GetFrameTime());
+        if (!status.empty()) { push_log(status); status.clear(); }
+
         // ─── Статистика: учёт заработано / потрачено ───
         if (!stat_started) { stat_prev_money = g.money; stat_started = true; }
         if (!game_over) {
@@ -1805,6 +2192,15 @@ int main(int argc, char* argv[]) {
                 // PR 2: закрытые курикулумом иконки затемнены (поверх ховера).
                 if (!env.build_allowed(env.build_data()[i]->id))
                     DrawRectangle(ix, iy, BS, BS, {0, 0, 0, 140});
+                // Не по карману — приглушаем и помечаем уголком, чтобы не
+                // кликать вслепую в то, на что всё равно не хватит денег.
+                else if (env.build_data()[i]->price > g.money) {
+                    DrawRectangle(ix, iy, BS, BS, {0, 0, 0, 90});
+                    DrawRectangle(ix + BS - 5, iy, 5, 5, {220, 70, 60, 255});
+                }
+                // рамка активного здания в режиме стройки — ярче
+                if (sel && build_mode) DrawRectangleLinesEx({(float)ix - 1, (float)iy - 1,
+                                                             (float)BS + 2, (float)BS + 2}, 2, C_ACCENT);
             }
         }
         // ─── Tool buttons ───
@@ -1832,6 +2228,11 @@ int main(int argc, char* argv[]) {
             }
             if (info_bd) {
                 auto L = base_info_lines(info_bd);
+                if (!env.build_allowed(info_bd->id))
+                    L.push_back("ЗАКРЫТО КУРИКУЛУМОМ");
+                else if (info_bd->price > g.money)
+                    L.push_back(TextFormat("НЕ ХВАТАЕТ %s ₽", money_str(info_bd->price - g.money).c_str()));
+                L.push_back("ЛКМ — взять в руку, потом клик по карте");
                 draw_info_box(L, INFO_X, INFO_Y, INFO_W);
             }
         }
@@ -1840,10 +2241,12 @@ int main(int argc, char* argv[]) {
         DrawRectangle(0, MAP_Y - 6, WIN_W, 1, {70, 90, 80, 255});
 
         // ─── MAP ───
+        int prev_ok_cells = 0, prev_bad_cells = 0;
+        bool prev_shown = false;
         {
             int vx = MAP_X, vy = MAP_Y, vw = MAP_W, vh = MAP_H;
             BeginScissorMode(vx, vy, vw, vh);
-            DrawRectangle(vx, vy, vw, vh, C_LAND);
+            DrawRectangle(vx, vy, vw, vh, C_SEA_DEEP);
             cam.offset = {(float)vx + vw/2.0f, (float)vy + vh/2.0f};
             int msz = g.map_size();
             float halfW = (vw/2.0f)/cam.zoom, halfH = (vh/2.0f)/cam.zoom;
@@ -1867,6 +2270,23 @@ int main(int argc, char* argv[]) {
                         c.g = (unsigned char)std::max(0, std::min(255, (int)c.g + (int)(hsh%9) - 4));
                         c.b = (unsigned char)std::max(0, std::min(255, (int)c.b + (int)(hsh%9) - 4));
                         DrawRectangle(x*TILE, y*TILE, TILE, TILE, c);
+                        // Море (LT_NONE): рябь + береговая линия со стороны
+                        // суши. Без этого остров и море были одного цвета, и
+                        // дорога «необъяснимо» обтекала воду лесенкой.
+                        if (lot == LT_NONE) {
+                            if (((x * 5 + y * 3) % 7) == 0)
+                                DrawRectangle(x*TILE + 5, y*TILE + TILE/2, TILE - 10, 2, C_SEA_DEEP);
+                            const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
+                            for (int k = 0; k < 4; k++) {
+                                int nx = x + dxs[k], ny = y + dys[k];
+                                if (!g.earth.in_bounds(nx, ny)) continue;
+                                if (!lot_is_land(g.earth.lot(nx, ny))) continue;
+                                if (dxs[k] == 1)  DrawRectangle(x*TILE + TILE - 2, y*TILE, 2, TILE, C_SEA_DEEP);
+                                if (dxs[k] == -1) DrawRectangle(x*TILE, y*TILE, 2, TILE, C_SEA_DEEP);
+                                if (dys[k] == 1)  DrawRectangle(x*TILE, y*TILE + TILE - 2, TILE, 2, C_SEA_DEEP);
+                                if (dys[k] == -1) DrawRectangle(x*TILE, y*TILE, TILE, 2, C_SEA_DEEP);
+                            }
+                        }
                     }
                 }
             }
@@ -1887,25 +2307,168 @@ int main(int argc, char* argv[]) {
                 if (b.build_days == 0 && !b.data->season_works(g.season)) draw_tex(iconTex[5], bx + 14, by + 4, 14);
                 if (b.is_alarm())        draw_tex(iconTex[0], bx + 14, by + 14, 14);
             }
-            // cursor = animated selection frame (only when no build menu is open)
-            if (!popup_open && over_map && cx >= 0 && cy >= 0 && cx < msz && cy < msz) {
-                int px = cx * TILE, py = cy * TILE;
-                int f = (int)(GetTime() * 12.0) % 12;
-                int8_t fl = g.earth.lot(cx, cy);
-                draw_tex(fl == LT_NONE ? selNoneTex[f] : selEarthTex[f], px, py, TILE);
+            // ── Предпросмотр застройки: зелёный = встанет, красный = нет ──
+            // Главный ответ на «дорога строится лесенкой»: теперь ещё ДО
+            // клика видно, какие клетки выделенной области непригодны (море,
+            // чужой тип земли, нет связи с колонией) — дорога обтекает их не
+            // «непонятно почему», а по видимой причине.
+            if (build_mode && !popup_open) {
+                int bidx = sel_action - A_BUILD0;
+                if (bidx >= 0 && bidx < nb) {
+                    const BaseData* pbd = env.build_data()[bidx];
+                    refresh_connectivity(g);
+                    int px0, py0, px1, py1;
+                    if (selecting || has_sel) {
+                        px0 = std::min(sel_x0, sel_x1); px1 = std::max(sel_x0, sel_x1);
+                        py0 = std::min(sel_y0, sel_y1); py1 = std::max(sel_y0, sel_y1);
+                    } else if (over_map) {
+                        px0 = px1 = cx; py0 = py1 = cy;
+                    } else {
+                        px0 = px1 = act_x; py0 = py1 = act_y;
+                    }
+                    const int MAXP = 4000;   // защита от гигантской протяжки
+                    if ((int64_t)(px1 - px0 + 1) * (py1 - py0 + 1) <= MAXP) {
+                        for (int y = py0; y <= py1; y++)
+                            for (int x = px0; x <= px1; x++) {
+                                if (x < 0 || y < 0 || x >= msz || y >= msz) continue;
+                                bool ok = preview_ok(g, *pbd, x, y);
+                                DrawRectangle(x*TILE, y*TILE, TILE, TILE,
+                                              ok ? C_OK_TINT : C_BAD_TINT);
+                                if (ok) {
+                                    prev_ok_cells++;
+                                    int bi2 = base_icon_index(pbd->id);
+                                    if (bi2 >= 0 && cam.zoom > 0.6f) {
+                                        Rectangle src = {0, 0, (float)baseTex[bi2].width,
+                                                         (float)baseTex[bi2].height};
+                                        Rectangle dst = {(float)(x*TILE), (float)(y*TILE),
+                                                         (float)TILE, (float)TILE};
+                                        if (baseTex[bi2].id)
+                                            DrawTexturePro(baseTex[bi2], src, dst, {0,0}, 0.0f,
+                                                           Color{255,255,255,130});
+                                    }
+                                } else {
+                                    prev_bad_cells++;
+                                }
+                            }
+                        prev_shown = true;
+                    }
+                }
             }
             // area selection = every cell inside the rectangle gets an animated frame
             if (selecting || has_sel) {
                 int x0 = std::min(sel_x0, sel_x1), x1 = std::max(sel_x0, sel_x1);
                 int y0 = std::min(sel_y0, sel_y1), y1 = std::max(sel_y0, sel_y1);
                 int f = (int)(GetTime() * 12.0) % 12;
-                for (int y = y0; y <= y1; y++)
-                    for (int x = x0; x <= x1; x++)
-                        draw_tex(selEarthTex[f], x*TILE, y*TILE, TILE);
+                if ((int64_t)(x1 - x0 + 1) * (y1 - y0 + 1) <= 4000) {
+                    for (int y = y0; y <= y1; y++)
+                        for (int x = x0; x <= x1; x++)
+                            draw_tex(selEarthTex[f], x*TILE, y*TILE, TILE);
+                }
+                DrawRectangleLinesEx({(float)(x0*TILE), (float)(y0*TILE),
+                                      (float)((x1-x0+1)*TILE), (float)((y1-y0+1)*TILE)},
+                                     2.0f, C_ACCENT);
+            }
+            // hover = animated frame under the mouse
+            if (!popup_open && over_map && cx >= 0 && cy >= 0 && cx < msz && cy < msz) {
+                int px = cx * TILE, py = cy * TILE;
+                int f = (int)(GetTime() * 12.0) % 12;
+                int8_t fl = g.earth.lot(cx, cy);
+                draw_tex(fl == LT_NONE ? selNoneTex[f] : selEarthTex[f], px, py, TILE);
+            }
+            // ── АКТИВНАЯ КЛЕТКА: видна всегда, даже когда мышь ушла с карты ──
+            {
+                int px = act_x * TILE, py = act_y * TILE;
+                float pulse = 0.5f + 0.5f * (float)sin(GetTime() * 4.0);
+                Color ac = {255, 230, 90, (unsigned char)(140 + 100 * pulse)};
+                DrawRectangleLinesEx({(float)px, (float)py, (float)TILE, (float)TILE}, 2.0f, ac);
+                int corn = 7;
+                DrawRectangle(px - 1, py - 1, corn, 3, ac);
+                DrawRectangle(px - 1, py - 1, 3, corn, ac);
+                DrawRectangle(px + TILE - corn + 1, py - 1, corn, 3, ac);
+                DrawRectangle(px + TILE - 2, py - 1, 3, corn, ac);
+                DrawRectangle(px - 1, py + TILE - 2, corn, 3, ac);
+                DrawRectangle(px - 1, py + TILE - corn + 1, 3, corn, ac);
+                DrawRectangle(px + TILE - corn + 1, py + TILE - 2, corn, 3, ac);
+                DrawRectangle(px + TILE - 2, py + TILE - corn + 1, 3, corn, ac);
+            }
+            // выбранное здание — отдельная постоянная рамка
+            if (sel_bx >= 0 && sel_by >= 0 && sel_bx < msz && sel_by < msz) {
+                DrawRectangleLinesEx({(float)(sel_bx*TILE) - 2, (float)(sel_by*TILE) - 2,
+                                      (float)TILE + 4, (float)TILE + 4}, 2.0f,
+                                     Color{120, 220, 255, 230});
             }
             EndMode2D();
             EndScissorMode();
             DrawRectangleLines(vx, vy, vw, vh, {60, 80, 70, 255});
+
+            // ── Подсказка режима стройки: что, сколько и почём ──
+            if (prev_shown) {
+                int bidx = sel_action - A_BUILD0;
+                const BaseData* pbd = env.build_data()[bidx];
+                int64_t cost = (int64_t)prev_ok_cells * pbd->price;
+                bool poor = cost > g.money;
+                std::vector<std::string> L;
+                L.push_back(pbd->caption);
+                if (prev_ok_cells + prev_bad_cells > 1)
+                    L.push_back(TextFormat("Клеток: %d подходит, %d нельзя",
+                                           prev_ok_cells, prev_bad_cells));
+                L.push_back(TextFormat("Цена: %s ₽%s", money_str(cost).c_str(),
+                                       poor ? "  — НЕ ХВАТАЕТ ДЕНЕГ" : ""));
+                if (pbd->build_time)
+                    L.push_back(TextFormat("Стройка: %lld дн.", (long long)pbd->build_time));
+                if (prev_ok_cells == 0) {
+                    int hx = over_map ? cx : act_x, hy = over_map ? cy : act_y;
+                    std::string why = preview_reason(g, *pbd, hx, hy);
+                    if (!why.empty()) L.push_back(why);
+                }
+                int tipx = (over_map ? (int)mpos.x + 18 : MAP_X + 12);
+                int tipy = (over_map ? (int)mpos.y + 18 : MAP_Y + 12);
+                draw_info_box(L, tipx, tipy, 300);
+            }
+
+            // ── Журнал сообщений (раньше всё это молча терялось) ──
+            if (!g_log.empty()) {
+                int lh = 19;
+                int n = (int)g_log.size();
+                int boxh = n * lh + 8;
+                int bx = MAP_X + 8, by = MAP_Y + MAP_H - boxh - 8;
+                DrawRectangle(bx, by, 430, boxh, Color{10, 16, 12, 170});
+                for (int i = 0; i < n; i++) {
+                    const LogMsg& m = g_log[(size_t)i];
+                    float fade = m.age > LOG_TTL - 1.0f ? (LOG_TTL - m.age) : 1.0f;
+                    if (fade < 0.0f) fade = 0.0f;
+                    unsigned char a = (unsigned char)(255 * fade);
+                    Color c = m.error ? Color{255, 140, 120, a} : Color{190, 240, 180, a};
+                    text(m.text.c_str(), bx + 8, by + 4 + i * lh, 16, c);
+                }
+            }
+
+            // ── Карточка выбранного здания ──
+            if (sel_bx >= 0 && sel_by >= 0) {
+                const Base* b = g.base_in_box(sel_bx, sel_by);
+                if (b) {
+                    std::vector<std::string> L;
+                    L.push_back(TextFormat("%s (%d,%d)", b->data->caption.c_str(), b->x, b->y));
+                    if (b->build_days > 0)
+                        L.push_back(TextFormat("Строится, осталось %lld дн.", (long long)b->build_days));
+                    if (b->data->live_years) {
+                        int64_t full = b->data->live_time_total();
+                        int pct = full > 0 ? (int)(100 * b->live_time / full) : 100;
+                        L.push_back(TextFormat("Состояние: %d%%%s", pct, b->is_alarm() ? " — ИЗНОШЕНО" : ""));
+                        int64_t rp = b->data->restore_price(b->live_time);
+                        if (rp > 0) L.push_back(TextFormat("Ремонт (R): %s ₽", money_str(rp).c_str()));
+                    }
+                    if (b->preserved)     L.push_back("Законсервировано (P — снять)");
+                    if (b->need_sunduk)   L.push_back("Не хватает ресурсов");
+                    if (b->need_workers)  L.push_back("Не хватает рабочих");
+                    if (b->build_days == 0 && !b->data->season_works(g.season))
+                        L.push_back("Не работает в этот сезон");
+                    L.push_back("R ремонт · P консервация · Del снести");
+                    draw_info_box(L, MAP_X + MAP_W - 290, MAP_Y + 8, 280);
+                } else {
+                    sel_bx = sel_by = -1;
+                }
+            }
         }
 
         // ─── RIGHT PANEL ───
@@ -1958,7 +2521,25 @@ int main(int argc, char* argv[]) {
                     int tw = (int)MeasureTextEx(gFont, labs[i], 16.0f, 1.0f).x;
                     text(labs[i], bx + (bw - tw)/2, by + 3, 16, {10,15,12,255});
                 }
-                sy = by + bh + 6;
+                sy = by + bh + 4;
+                // ── Скорость хода времени: пауза / ×1 / ×2 / ×3 ──
+                {
+                    const char* sl[4] = {"II", "x1", "x2", "x3"};
+                    int sw = (pw - 12) / 4, sh = 20;
+                    for (int i = 0; i < 4; i++) {
+                        int bx = px + i*(sw+4);
+                        Rectangle r = {(float)bx, (float)sy, (float)sw, (float)sh};
+                        g_speed_btn[i] = r;
+                        bool hov = CheckCollisionPointRec(GetMousePosition(), r);
+                        bool on = (speed_idx == i);
+                        DrawRectangleRec(r, on ? Color{40,120,60,255}
+                                               : (hov ? Color{60,120,200,255} : Color{200,206,198,255}));
+                        DrawRectangleLines(bx, sy, sw, sh, {255,255,255,255});
+                        int tw = (int)MeasureTextEx(gFont, sl[i], 15.0f, 1.0f).x;
+                        text(sl[i], bx + (sw - tw)/2, sy + 2, 15, on ? C_WHITE : Color{10,15,12,255});
+                    }
+                    sy += sh + 6;
+                }
             }
 
             // Resources (imlTools 0..8)
@@ -1985,11 +2566,18 @@ int main(int argc, char* argv[]) {
         {
             int by = WIN_H - BOTTOM_H;
             DrawRectangle(0, by, WIN_W, BOTTOM_H, C_BG);
-            // status of current cell
+            // Информация о клетке: под мышью, а если мышь ушла с карты — об
+            // активной клетке (раньше в этом случае показывалась просто дата).
             char st[256];
-            if (over_map && cx >= 0 && cy >= 0 && cx < g.map_size() && cy < g.map_size()) {
+            const bool hov_map = over_map && cx >= 0 && cy >= 0 &&
+                                 cx < g.map_size() && cy < g.map_size();
+            {
+                int ix = hov_map ? cx : act_x, iy = hov_map ? cy : act_y;
+                cx = ix; cy = iy;
                 int8_t lot = g.earth.lot(cx, cy);
-                snprintf(st, sizeof(st), "Клетка (%d,%d): %s", cx, cy, LOT_NAMES[lot < 0 || lot > 8 ? 8 : lot]);
+                snprintf(st, sizeof(st), "%s (%d,%d): %s",
+                         hov_map ? "Клетка" : "Активная клетка", cx, cy,
+                         LOT_NAMES[lot < 0 || lot > 8 ? 8 : lot]);
                 if (g.is_good(cx, cy)) { int l = (int)strlen(st); snprintf(st + l, sizeof(st) - l, ", выкуплена (без налога)"); }
                 const Base* b = g.base_in_box(cx, cy);
                 if (b) {
@@ -2003,10 +2591,21 @@ int main(int argc, char* argv[]) {
                 } else if (g.destroyed_lots[(size_t)cy * g.map_size() + cx]) {
                     int l = (int)strlen(st); snprintf(st + l, sizeof(st) - l, ", сгоревший участок");
                 }
-            } else {
-                snprintf(st, sizeof(st), "Ход: %s %d %s %d", month_ru(g.month), g.day, "года", g.year);
             }
             text(st, 6, by + 4, 16, C_ACCENT);
+            // режим стройки / скорость — справа в той же строке
+            {
+                char rg[160];
+                int bi = sel_action - A_BUILD0;
+                const char* bn = (build_mode && bi >= 0 && bi < nb)
+                                   ? env.build_data()[bi]->caption.c_str() : "";
+                snprintf(rg, sizeof(rg), "%s%s%s",
+                         build_mode ? "Строим: " : "", bn,
+                         speed_idx > 0 ? (speed_idx == 1 ? "   ▶ x1" : (speed_idx == 2 ? "   ▶ x2" : "   ▶ x3"))
+                                       : "   II пауза");
+                int rw = (int)MeasureTextEx(gFont, rg, 16.0f, 1.0f).x;
+                text(rg, WIN_W - rw - 10, by + 4, 16, build_mode ? C_ACCENT : C_FG_DIM);
+            }
 
             // AI build notification
             if (headless_ai && ai_build_msg_timer > 0.0f && ai_build_msg[0]) {
@@ -2020,16 +2619,22 @@ int main(int argc, char* argv[]) {
             DrawRectangle(0, ly, WIN_W, CH, C_LEGEND_BG);
             text("Карта:", 6, ly + 2, 16, {40, 50, 30, 255});
             int lx = 6 + 7 * CW;
-            int lott[] = {LT_WATER, LT_NORMAL, LT_WOOD, LT_COAL, LT_IRON, LT_OIL, LT_GOLD};
-            const char* lname[] = {"вода","земля","лес","уголь","железо","нефть","золото"};
-            for (int i = 0; i < 7; i++) {
+            // В легенде появилось МОРЕ: именно его невидимость и давала
+            // «дорогу лесенкой» — застройка обтекала воду, покрашенную в
+            // цвет травы.
+            int lott[] = {LT_NONE, LT_WATER, LT_NORMAL, LT_WOOD, LT_COAL, LT_IRON, LT_OIL, LT_GOLD};
+            const char* lname[] = {"море (нельзя)","вода","земля","лес","уголь","железо","нефть","золото"};
+            for (int i = 0; i < 8; i++) {
                 int t = 16;
-                if (lott[i] == LT_NORMAL) DrawRectangle(lx, ly + 2, t, t, C_LAND);
+                if (lott[i] == LT_NORMAL)    DrawRectangle(lx, ly + 2, t, t, C_LAND);
+                else if (lott[i] == LT_NONE) { DrawRectangle(lx, ly + 2, t, t, C_SEA);
+                                               DrawRectangleLines(lx, ly + 2, t, t, C_SEA_DEEP); }
                 else draw_tex(earthTex[earth_icon_index((int8_t)lott[i], 0, 0)], lx, ly + 2, t);
                 text(lname[i], lx + t + 4, ly + 2, 16, {40, 50, 30, 255});
-                lx += t + 6 + (int)strlen(lname[i]) * CW;
+                lx += t + 6 + (int)(MeasureTextEx(gFont, lname[i], 16.0f, 1.0f).x) + 4;
             }
-            text("ЛКМ — выделить область, ПКМ — меню зданий, колесо — зум, ср. кнопка — сдвиг", lx + 6, ly + 2, 14, {70, 70, 40, 255});
+            text("WASD — клетка · ЛКМ — поставить · Esc — отмена · F1 — помощь",
+                 lx + 6, ly + 2, 14, {70, 70, 40, 255});
         }
 
         // ─── MENU (dropdowns on top) ───
@@ -2074,6 +2679,34 @@ int main(int argc, char* argv[]) {
                 case DLG_NEW:        draw_newgame(env); break;
                 case DLG_OPEN:       draw_open(env); break;
                 case DLG_SAVE:       draw_save(); break;
+                case DLG_CONFIRM: {
+                    // Подтверждение сноса: одно нажатие больше не уносит
+                    // постройку за сотни тысяч рублей.
+                    int w = 460, h = 190, x = (WIN_W - w)/2, y = (WIN_H - h)/2;
+                    panel(x, y, w, h, "Подтверждение");
+                    text(confirm_text.c_str(), x + 16, y + 44, 18, C_WHITE);
+                    const Base* cb = (confirm_x >= 0) ? gm.base_in_box(confirm_x, confirm_y) : nullptr;
+                    if (cb) text(TextFormat("Клетка (%d,%d). Вернётся половина остаточной стоимости.",
+                                            confirm_x, confirm_y), x + 16, y + 70, 15, C_FG_DIM);
+                    Rectangle cbx = {(float)(x + 16), (float)(y + 104), 18, 18};
+                    DrawRectangleRec(cbx, ask_destroy ? Color{40,80,150,255} : Color{60,60,60,255});
+                    DrawRectangleLinesEx(cbx, 1, WHITE);
+                    if (!ask_destroy) text("v", x + 20, y + 104, 16, C_WHITE);
+                    text("спрашивать каждый раз", x + 42, y + 105, 15, C_FG_DIM);
+                    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                        CheckCollisionPointRec(mpos, cbx)) ask_destroy = !ask_destroy;
+                    if (btn(x + w - 250, y + h - 52, 110, 34, "Снести")) {
+                        auto r = gm.destroy(confirm_x, confirm_y);
+                        push_log(r.first ? "Постройка снесена" : r.second);
+                        confirm_x = confirm_y = -1;
+                        cur_dlg = DLG_NONE;
+                    }
+                    if (btn(x + w - 130, y + h - 52, 110, 34, "Отмена")) {
+                        confirm_x = confirm_y = -1;
+                        cur_dlg = DLG_NONE;
+                    }
+                    break;
+                }
                 default: break;
             }
         }
